@@ -1,0 +1,44 @@
+Octo Daemon CLI
+Copyright 2026 MININGLAMP Technology and the OCTO contributors
+
+Licensed under the Apache License, Version 2.0.
+See LICENSE for the full license text.
+
+--------------------------------------------------------------------
+Third-party Go module dependencies requiring attribution
+--------------------------------------------------------------------
+
+This product uses the following direct Go module dependencies:
+
+Apache License 2.0:
+  - google.golang.org/* (where applicable)
+  - go.uber.org/zap (if present in go.sum)
+
+MIT / BSD-2 / BSD-3 / ISC permissive licenses:
+  - github.com/spf13/cobra
+  - github.com/google/uuid
+  - github.com/mattn/go-isatty
+  - github.com/fatih/color
+  - golang.org/x/sys, golang.org/x/sync (BSD-3)
+
+For the exhaustive module-by-module license inventory, run
+`go-licenses csv ./...` or inspect each upstream's LICENSE file
+via `go.sum`.
+
+--------------------------------------------------------------------
+Service framework integrations
+--------------------------------------------------------------------
+
+This product interacts with — but does not bundle — the following
+service frameworks at runtime via their CLI surfaces:
+
+* macOS launchd (Apple Inc., proprietary; documented APIs)
+* Linux systemd (LGPL-2.1+, not linked, invoked as user-mode service)
+* OpenClaw (https://github.com/openclaw/openclaw)
+* Claude Code CLI (Anthropic)
+* OpenAI Codex CLI
+* Hermes Agent (https://github.com/NousResearch/hermes-agent)
+
+Detection and version-probing of these tools is read-only and uses
+their published CLI contracts; no source from these projects is
+incorporated.

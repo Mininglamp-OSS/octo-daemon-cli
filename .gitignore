@@ -1,0 +1,12 @@
+bin/
+dist/
+.gocache/
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+.idea/
+.vscode/
+.DS_Store
