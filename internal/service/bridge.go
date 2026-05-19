@@ -1,3 +1,5 @@
+//go:build darwin
+
 package service
 
 import "github.com/Mininglamp-OSS/octo-daemon-cli/internal"

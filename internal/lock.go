@@ -28,7 +28,7 @@ func TryLock() (*os.File, error) {
 	}
 
 	if err := lockFile(f); err != nil {
-		f.Close()
+		_ = f.Close()
 		return nil, fmt.Errorf("another daemon is already running. Use 'octo-daemon stop' first")
 	}
 

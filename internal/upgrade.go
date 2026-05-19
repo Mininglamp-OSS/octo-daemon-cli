@@ -88,7 +88,7 @@ func (d *Daemon) handleDaemonUpgrade(ctx context.Context, up *PendingUpgrade) {
 	log.Printf("[INFO] checksum verified")
 
 	// 4. 解压
-	os.MkdirAll(tmpDir, 0755)
+	_ = os.MkdirAll(tmpDir, 0755)
 	extractedBinary, err := extractTarGz(downloadPath, tmpDir)
 	if err != nil {
 		d.reportUpgrade(ctx, up.TaskID, "failed", fmt.Sprintf("extract failed: %v", err))
@@ -108,13 +108,13 @@ func (d *Daemon) handleDaemonUpgrade(ctx context.Context, up *PendingUpgrade) {
 		cleanup(downloadPath, tmpDir)
 		return
 	}
-	os.Chmod(newPath, 0755)
+	_ = os.Chmod(newPath, 0755)
 
 	// 7. 备份当前二进制
 	if err := copyFile(exePath, bakPath); err != nil {
 		d.reportUpgrade(ctx, up.TaskID, "failed", fmt.Sprintf("backup failed: %v", err))
 		cleanup(downloadPath, tmpDir)
-		os.Remove(newPath)
+		_ = os.Remove(newPath)
 		return
 	}
 	log.Printf("[INFO] backed up current binary to %s", bakPath)
@@ -198,7 +198,7 @@ func downloadFile(ctx context.Context, url, dest string) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != 200 {
 		return fmt.Errorf("download returned %d", resp.StatusCode)
 	}
@@ -207,7 +207,7 @@ func downloadFile(ctx context.Context, url, dest string) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	_, err = io.Copy(f, resp.Body)
 	return err
 }
@@ -236,7 +236,7 @@ func extractTarGz(archive, destDir string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer gzr.Close()
+	defer func() { _ = gzr.Close() }()
 
 	tr := tar.NewReader(gzr)
 	var binaryPath string
@@ -262,10 +262,10 @@ func extractTarGz(archive, destDir string) (string, error) {
 				return "", err
 			}
 			if _, err := io.Copy(out, tr); err != nil {
-				out.Close()
+				_ = out.Close()
 				return "", err
 			}
-			out.Close()
+			_ = out.Close()
 			binaryPath = dest
 			break
 		}
@@ -281,12 +281,12 @@ func copyFile(src, dst string) error {
 	if err != nil {
 		return err
 	}
-	defer in.Close()
+	defer func() { _ = in.Close() }()
 	out, err := os.Create(dst)
 	if err != nil {
 		return err
 	}
-	defer out.Close()
+	defer func() { _ = out.Close() }()
 	_, err = io.Copy(out, in)
 	return err
 }
@@ -298,13 +298,13 @@ func checkWritable(path string) error {
 	if err != nil {
 		return fmt.Errorf("%s: %w", dir, err)
 	}
-	f.Close()
-	os.Remove(tmp)
+	_ = f.Close()
+	_ = os.Remove(tmp)
 	return nil
 }
 
 func cleanup(paths ...string) {
 	for _, p := range paths {
-		os.RemoveAll(p)
+		_ = os.RemoveAll(p)
 	}
 }
