@@ -71,7 +71,7 @@ func TestExtractJSONArray_Empty(t *testing.T) {
 }
 
 func TestExtractJSONArray_PrefixWithBracket(t *testing.T) {
-	input := `[plugins] openclaw-channel-dmwork loaded
+	input := `[plugins] octo loaded
 [dmwork] hook registered
 [
   {"id": "main", "bindings": 5, "isDefault": true}

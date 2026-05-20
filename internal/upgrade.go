@@ -20,7 +20,7 @@ import (
 
 func (d *Daemon) handleUpgrade(ctx context.Context, up *PendingUpgrade) {
 	switch up.Component {
-	case "openclaw-channel-dmwork":
+	case "octo":
 		d.handlePluginUpgrade(ctx, up)
 	case "", "octo-daemon":
 		d.handleDaemonUpgrade(ctx, up)

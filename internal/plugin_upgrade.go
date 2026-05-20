@@ -8,9 +8,11 @@ import (
 	"time"
 )
 
-// handlePluginUpgrade 执行 openclaw-channel-dmwork 插件升级
-//   - npx -y openclaw-channel-dmwork install --force
-//   - CLI 自身会：下载最新 npm 版本 → 安装到 openclaw npm node_modules → 自动重启 openclaw gateway
+// handlePluginUpgrade 执行 octo 插件升级
+//   - npx -y openclaw-channel-octo install --force
+//   - openclaw-channel-octo 包的 install 脚本是 ClawHub wrapper（内部调
+//     openclaw plugins install clawhub:octo），从 ClawHub 拉新插件
+//   - CLI 自身会：从 ClawHub 下载 → 装到 openclaw extensions → 自动重启 openclaw gateway
 //   - daemon 不主动上报 completed，靠 register handler 里的 plugin 关单路径关闭
 //     (register 上报 metadata.plugins 含新版本 → 服务端 completeUpgradeIfMatchedWithRuntime 关单)
 func (d *Daemon) handlePluginUpgrade(ctx context.Context, up *PendingUpgrade) {
@@ -23,8 +25,11 @@ func (d *Daemon) handlePluginUpgrade(ctx context.Context, up *PendingUpgrade) {
 	installCtx, cancel := context.WithTimeout(ctx, 9*time.Minute)
 	defer cancel()
 
+	// up.Component 是 plugin id ("octo")，但 npm 包名是 "openclaw-channel-octo"，
+	// 必须 hardcode npm 包名（不能用 up.Component 当 npx target）。
+	// 不带 dist-tag → 走 @latest，安装脚本是 ClawHub wrapper，装到 ClawHub 最新版。
 	// v1 只装 latest，不传版本号；--force 避免 CLI 交互式确认
-	cmd := exec.CommandContext(installCtx, "npx", "-y", up.Component, "install", "--force")
+	cmd := exec.CommandContext(installCtx, "npx", "-y", "openclaw-channel-octo", "install", "--force")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		msg := fmt.Sprintf("npx install failed: %v\noutput: %s", err, truncateOutput(string(out), 2000))
@@ -35,7 +40,7 @@ func (d *Daemon) handlePluginUpgrade(ctx context.Context, up *PendingUpgrade) {
 	log.Printf("[INFO] plugin upgrade npx exited cleanly (task=%s)", up.TaskID)
 
 	// npx 退出只能保证 CLI 流程跑完，不能保证 openclaw gateway 已经带新插件起来。
-	// openclaw-channel-dmwork 的 install 脚本里 gateway restart 失败只打 warning，
+	// octo 的 install 脚本里 gateway restart 失败只打 warning，
 	// 会导致"磁盘插件升级+服务端关单 completed 但 gateway 还在跑旧插件"。
 	// 这里显式探 gateway，不通则上报 failed。
 	// 给 gateway 一点启动时间（用户 install 命令内部已经重启，但可能进程刚 spawn 还没 bind）。

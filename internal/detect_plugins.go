@@ -34,7 +34,7 @@ type openclawPluginsListJSON struct {
 // parseOpenclawPluginsJSON parses output of `openclaw plugins list --json`.
 // Returns only enabled plugins as PluginInfo{Name: id, Version: version}.
 // Name field on the wire is the npm/id string (not the human display name) because
-// the server and frontend match plugins by name == "openclaw-channel-dmwork".
+// the server and frontend match plugins by name == "octo".
 //
 // Missing plugins field → error (so caller can fall back to directory scan).
 // Empty plugins array → nil slice, no error (legitimate "nothing enabled").

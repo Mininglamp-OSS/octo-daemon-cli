@@ -16,10 +16,10 @@ const pluginsListFixture = `{
       "status": "disabled"
     },
     {
-      "id": "openclaw-channel-dmwork",
-      "name": "openclaw-channel-dmwork",
+      "id": "octo",
+      "name": "octo",
       "version": "0.6.3-dev.dc640a2e",
-      "source": "/Users/caster/.openclaw/npm/node_modules/openclaw-channel-dmwork/dist/index.js",
+      "source": "/Users/caster/.openclaw/npm/node_modules/octo/dist/index.js",
       "origin": "global",
       "enabled": true,
       "status": "loaded"
@@ -54,7 +54,7 @@ func TestParseOpenclawPluginsJSON_FiltersDisabledAndMissingVersion(t *testing.T)
 	for _, p := range got {
 		byName[p.Name] = p.Version
 	}
-	if byName["openclaw-channel-dmwork"] != "0.6.3-dev.dc640a2e" {
+	if byName["octo"] != "0.6.3-dev.dc640a2e" {
 		t.Errorf("octo plugin wire name/version wrong: %+v", byName)
 	}
 	if byName["@larksuite/openclaw-lark"] != "2026.4.8" {
@@ -72,7 +72,7 @@ func TestParseOpenclawPluginsJSON_UsesIDAsName(t *testing.T) {
 	// Regression guard for the server/frontend matching invariant:
 	// PluginInfo.Name must be the openclaw plugin id (= npm package name),
 	// NOT the human-readable display name. Otherwise close-out by name breaks.
-	input := `{"plugins":[{"id":"openclaw-channel-dmwork","name":"Display Name","version":"1.0.0","enabled":true}]}`
+	input := `{"plugins":[{"id":"octo","name":"Display Name","version":"1.0.0","enabled":true}]}`
 	got, err := parseOpenclawPluginsJSON([]byte(input))
 	if err != nil {
 		t.Fatalf("err: %v", err)
@@ -80,7 +80,7 @@ func TestParseOpenclawPluginsJSON_UsesIDAsName(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("expected 1, got %d", len(got))
 	}
-	if got[0].Name != "openclaw-channel-dmwork" {
+	if got[0].Name != "octo" {
 		t.Errorf("PluginInfo.Name should carry id, got %q", got[0].Name)
 	}
 }
@@ -112,12 +112,12 @@ func TestParseOpenclawPluginsJSON_PrefixNoise(t *testing.T) {
 	// Future-proof: if stdout ever prefixes log lines before the JSON object.
 	input := `[openclaw] booting extensions...
 warning: something
-{"plugins":[{"id":"openclaw-channel-dmwork","version":"0.6.0","enabled":true}]}`
+{"plugins":[{"id":"octo","version":"0.6.0","enabled":true}]}`
 	got, err := parseOpenclawPluginsJSON([]byte(input))
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
-	if len(got) != 1 || got[0].Name != "openclaw-channel-dmwork" {
+	if len(got) != 1 || got[0].Name != "octo" {
 		t.Errorf("expected octo plugin, got %+v", got)
 	}
 }
@@ -128,12 +128,12 @@ func TestParseOpenclawPluginsJSON_NoisyJSONBeforeReal(t *testing.T) {
 	// it and find the real plugins object that follows.
 	input := `{"level":"info","msg":"starting"}
 {"trace":"abc","ignored":true}
-{"plugins":[{"id":"openclaw-channel-dmwork","version":"0.6.0","enabled":true}]}`
+{"plugins":[{"id":"octo","version":"0.6.0","enabled":true}]}`
 	got, err := parseOpenclawPluginsJSON([]byte(input))
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
-	if len(got) != 1 || got[0].Name != "openclaw-channel-dmwork" {
+	if len(got) != 1 || got[0].Name != "octo" {
 		t.Errorf("expected octo plugin after log noise, got %+v (err=%v)", got, err)
 	}
 }
@@ -141,7 +141,7 @@ func TestParseOpenclawPluginsJSON_NoisyJSONBeforeReal(t *testing.T) {
 func TestParseOpenclawPluginsJSON_TrailingJunkAfterObject(t *testing.T) {
 	// Noise after the plugins object (e.g. a trailing log line) should not
 	// cause extraction to fail. First candidate wins.
-	input := `{"plugins":[{"id":"openclaw-channel-dmwork","version":"0.6.0","enabled":true}]}
+	input := `{"plugins":[{"id":"octo","version":"0.6.0","enabled":true}]}
 bye`
 	got, err := parseOpenclawPluginsJSON([]byte(input))
 	if err != nil {
