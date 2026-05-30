@@ -88,7 +88,11 @@ func (d *Daemon) handleDaemonUpgrade(ctx context.Context, up *PendingUpgrade) {
 	log.Printf("[INFO] checksum verified")
 
 	// 4. 解压
-	os.MkdirAll(tmpDir, 0755)
+	if err := os.MkdirAll(tmpDir, 0755); err != nil {
+		d.reportUpgrade(ctx, up.TaskID, "failed", fmt.Sprintf("create temp dir: %v", err))
+		cleanup(downloadPath)
+		return
+	}
 	extractedBinary, err := extractTarGz(downloadPath, tmpDir)
 	if err != nil {
 		d.reportUpgrade(ctx, up.TaskID, "failed", fmt.Sprintf("extract failed: %v", err))
@@ -108,13 +112,18 @@ func (d *Daemon) handleDaemonUpgrade(ctx context.Context, up *PendingUpgrade) {
 		cleanup(downloadPath, tmpDir)
 		return
 	}
-	os.Chmod(newPath, 0755)
+	if err := os.Chmod(newPath, 0755); err != nil {
+		d.reportUpgrade(ctx, up.TaskID, "failed", fmt.Sprintf("chmod new binary: %v", err))
+		cleanup(downloadPath, tmpDir)
+		_ = os.Remove(newPath)
+		return
+	}
 
 	// 7. 备份当前二进制
 	if err := copyFile(exePath, bakPath); err != nil {
 		d.reportUpgrade(ctx, up.TaskID, "failed", fmt.Sprintf("backup failed: %v", err))
 		cleanup(downloadPath, tmpDir)
-		os.Remove(newPath)
+		_ = os.Remove(newPath)
 		return
 	}
 	log.Printf("[INFO] backed up current binary to %s", bakPath)
@@ -188,7 +197,7 @@ func (d *Daemon) reportUpgrade(ctx context.Context, taskID, status, errMsg strin
 	}
 }
 
-func downloadFile(ctx context.Context, url, dest string) error {
+func downloadFile(ctx context.Context, url, dest string) (err error) {
 	client := &http.Client{Timeout: 5 * time.Minute}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -198,7 +207,7 @@ func downloadFile(ctx context.Context, url, dest string) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != 200 {
 		return fmt.Errorf("download returned %d", resp.StatusCode)
 	}
@@ -207,7 +216,11 @@ func downloadFile(ctx context.Context, url, dest string) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() {
+		if cerr := f.Close(); cerr != nil && err == nil {
+			err = cerr
+		}
+	}()
 	_, err = io.Copy(f, resp.Body)
 	return err
 }
@@ -217,7 +230,7 @@ func sha256File(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	h := sha256.New()
 	if _, err := io.Copy(h, f); err != nil {
 		return "", err
@@ -230,13 +243,13 @@ func extractTarGz(archive, destDir string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	gzr, err := gzip.NewReader(f)
 	if err != nil {
 		return "", err
 	}
-	defer gzr.Close()
+	defer func() { _ = gzr.Close() }()
 
 	tr := tar.NewReader(gzr)
 	var binaryPath string
@@ -262,10 +275,12 @@ func extractTarGz(archive, destDir string) (string, error) {
 				return "", err
 			}
 			if _, err := io.Copy(out, tr); err != nil {
-				out.Close()
+				_ = out.Close()
 				return "", err
 			}
-			out.Close()
+			if err := out.Close(); err != nil {
+				return "", fmt.Errorf("close extracted file: %w", err)
+			}
 			binaryPath = dest
 			break
 		}
@@ -276,17 +291,21 @@ func extractTarGz(archive, destDir string) (string, error) {
 	return binaryPath, nil
 }
 
-func copyFile(src, dst string) error {
+func copyFile(src, dst string) (err error) {
 	in, err := os.Open(src)
 	if err != nil {
 		return err
 	}
-	defer in.Close()
+	defer func() { _ = in.Close() }()
 	out, err := os.Create(dst)
 	if err != nil {
 		return err
 	}
-	defer out.Close()
+	defer func() {
+		if cerr := out.Close(); cerr != nil && err == nil {
+			err = cerr
+		}
+	}()
 	_, err = io.Copy(out, in)
 	return err
 }
@@ -298,13 +317,13 @@ func checkWritable(path string) error {
 	if err != nil {
 		return fmt.Errorf("%s: %w", dir, err)
 	}
-	f.Close()
-	os.Remove(tmp)
+	_ = f.Close()
+	_ = os.Remove(tmp)
 	return nil
 }
 
 func cleanup(paths ...string) {
 	for _, p := range paths {
-		os.RemoveAll(p)
+		_ = os.RemoveAll(p)
 	}
 }

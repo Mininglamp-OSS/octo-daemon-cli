@@ -59,8 +59,12 @@ func (d *Daemon) Run(ctx context.Context) error {
 	d.lockFile = lockFile
 	defer func() {
 		RemovePID()
-		d.lockFile.Close()
-		os.Remove(LockFilePath())
+		if err := d.lockFile.Close(); err != nil {
+			log.Printf("[WARN] close lock file: %v", err)
+		}
+		if err := os.Remove(LockFilePath()); err != nil && !os.IsNotExist(err) {
+			log.Printf("[WARN] remove lock file: %v", err)
+		}
 	}()
 
 	ctx, cancel := context.WithCancel(ctx)

@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/Mininglamp-OSS/octo-daemon-cli/internal"
 )
 
 type launchdService struct{}
@@ -78,7 +80,7 @@ func (s *launchdService) Install(cfg InstallConfig, force bool) error {
 		EnvFile:       EnvFilePath(),
 		ExecPath:      cfg.ExecPath,
 		ConfigPath:    cfg.ConfigPath,
-		DataDir:       internalDataDir(),
+		DataDir:       internal.DataDir(),
 		StdoutLog:     StdoutLogPath(),
 		StderrLog:     StderrLogPath(),
 	})
