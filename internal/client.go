@@ -79,10 +79,39 @@ type PendingUpgrade struct {
 	Metadata      string `json:"metadata"` // 预留字段，插件升级未使用
 }
 
+// PendingAgentCommand is the server's pull-mode dispatch for a managed agent
+// provisioning task. Returned in heartbeat response when there's work to do.
+// The daemon must run the side-effects and then POST back via AckManagedAgent
+// with the matching ClaimToken.
+type PendingAgentCommand struct {
+	ID          int64  `json:"id"`
+	Action      string `json:"action"` // "agent.create" for now
+	AgentID     string `json:"agent_id"`
+	DisplayName string `json:"display_name"`
+	BotUID      string `json:"bot_uid"`
+	BotToken    string `json:"bot_token"`
+	APIURL      string `json:"api_url"`
+	ClaimToken  string `json:"claim_token"`
+}
+
 type HeartbeatResponse struct {
-	Status         string          `json:"status"`
-	PendingPing    *PendingPing    `json:"pending_ping,omitempty"`
-	PendingUpgrade *PendingUpgrade `json:"pending_upgrade,omitempty"`
+	Status         string               `json:"status"`
+	PendingPing    *PendingPing         `json:"pending_ping,omitempty"`
+	PendingUpgrade *PendingUpgrade      `json:"pending_upgrade,omitempty"`
+	PendingCommand *PendingAgentCommand `json:"pending_command,omitempty"`
+	PendingTask    *PendingBotTask      `json:"pending_task,omitempty"`
+}
+
+// PendingBotTask is the server's pull-mode dispatch for a matter-driven
+// agent task. Server has already resolved bot_uid → agent_id binding; we
+// just spawn `openclaw agent --agent <id>` with the prompt and ack back.
+type PendingBotTask struct {
+	ID         int64  `json:"id"`
+	AgentID    string `json:"agent_id"`
+	Prompt     string `json:"prompt"`
+	MatterID   string `json:"matter_id"`
+	BotUID     string `json:"bot_uid"`
+	ClaimToken string `json:"claim_token"`
 }
 
 func (c *Client) Heartbeat(ctx context.Context, runtimeID int64) (*HeartbeatResponse, error) {
@@ -101,6 +130,31 @@ func (c *Client) ReportPing(ctx context.Context, pingID string) error {
 func (c *Client) ReportUpgrade(ctx context.Context, taskID, status, errMsg string) error {
 	return c.postJSON(ctx, "/v1/daemon/upgrade/"+taskID, map[string]string{
 		"status": status, "error": errMsg,
+	}, nil)
+}
+
+// AckManagedAgent reports the result of an agent.create command back to the
+// server. The claim_token must match what the server set when dispatching, or
+// the server will reject as stale (HTTP 409).
+func (c *Client) AckManagedAgent(ctx context.Context, id int64, claimToken, status, errMsg string) error {
+	path := fmt.Sprintf("/v1/daemon/managed-agents/%d/ack", id)
+	return c.postJSON(ctx, path, map[string]string{
+		"claim_token": claimToken,
+		"status":      status,
+		"error_msg":   errMsg,
+	}, nil)
+}
+
+// AckBotTask reports the outcome of a matter-driven agent task. status must
+// be "succeeded" or "failed"; on success, result_summary holds the agent
+// reply (truncated for storage); on failure, error_msg explains why.
+func (c *Client) AckBotTask(ctx context.Context, id int64, claimToken, status, resultSummary, errMsg string) error {
+	path := fmt.Sprintf("/v1/daemon/bot-tasks/%d/ack", id)
+	return c.postJSON(ctx, path, map[string]string{
+		"claim_token":    claimToken,
+		"status":         status,
+		"result_summary": resultSummary,
+		"error_msg":      errMsg,
 	}, nil)
 }
 

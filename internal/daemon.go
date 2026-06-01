@@ -357,6 +357,17 @@ func (d *Daemon) sendHeartbeats(ctx context.Context) {
 		if resp.PendingUpgrade != nil {
 			go d.handleUpgrade(ctx, resp.PendingUpgrade)
 		}
+		// Handle pending managed-agent provisioning command from server.
+		// Off-loaded to a goroutine so the heartbeat loop is not blocked by
+		// openclaw CLI subprocess time (can take ~5s for agents add).
+		if resp.PendingCommand != nil {
+			go d.handleManagedAgentCommand(ctx, resp.PendingCommand)
+		}
+		// Same off-loading pattern for matter-driven bot tasks. These can
+		// take much longer (openclaw agent runs are minutes, not seconds).
+		if resp.PendingTask != nil {
+			go d.handleBotTask(ctx, resp.PendingTask)
+		}
 	}
 
 	if needReRegister {
