@@ -1,0 +1,895 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Octo Agent Runtime · Architecture</title>
+<style>
+  /* ─────────────────────── Tokens ─────────────────────── */
+  :root {
+    /* Neutral scale (slate) */
+    --slate-50:  #f8fafc;
+    --slate-100: #f1f5f9;
+    --slate-200: #e2e8f0;
+    --slate-300: #cbd5e1;
+    --slate-400: #94a3b8;
+    --slate-500: #64748b;
+    --slate-600: #475569;
+    --slate-700: #334155;
+    --slate-800: #1e293b;
+    --slate-900: #0f172a;
+
+    /* Service accents (single hue per service, tonal pairs) */
+    --c-server:        #2563eb;
+    --c-server-soft:   #dbeafe;
+    --c-server-ink:    #1e40af;
+
+    --c-matter:        #9333ea;
+    --c-matter-soft:   #f3e8ff;
+    --c-matter-ink:    #6b21a8;
+
+    --c-runtime:       #ea580c;
+    --c-runtime-soft:  #ffedd5;
+    --c-runtime-ink:   #9a3412;
+
+    --c-daemon:        #16a34a;
+    --c-daemon-soft:   #dcfce7;
+    --c-daemon-ink:    #14532d;
+
+    --c-web:           #475569;
+    --c-web-soft:      #f1f5f9;
+
+    --c-openclaw:      #0284c7;
+    --c-openclaw-soft: #e0f2fe;
+
+    /* Semantic */
+    --bg:        #fbfbfc;
+    --surface:   #ffffff;
+    --border:    #e6e8eb;
+    --border-strong: #d1d5db;
+
+    --text-1:    #0f172a;
+    --text-2:    #475569;
+    --text-3:    #64748b;
+    --text-4:    #94a3b8;
+
+    /* Elevation */
+    --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.04), 0 1px 1px rgba(15, 23, 42, 0.03);
+    --shadow-md: 0 2px 4px rgba(15, 23, 42, 0.04), 0 4px 12px rgba(15, 23, 42, 0.05);
+    --shadow-lg: 0 4px 8px rgba(15, 23, 42, 0.05), 0 12px 32px rgba(15, 23, 42, 0.08);
+
+    /* Radius / spacing */
+    --r-sm: 4px;
+    --r-md: 8px;
+    --r-lg: 12px;
+    --r-xl: 16px;
+
+    /* Type */
+    --font-sans: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Inter", "PingFang SC", "Helvetica Neue", "Segoe UI", Arial, sans-serif;
+    --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, "JetBrains Mono", Consolas, monospace;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    /* Light only for now — design doc is read in light by default */
+  }
+
+  /* ─────────────────────── Reset ─────────────────────── */
+  *, *::before, *::after { box-sizing: border-box; }
+  html { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; text-rendering: optimizeLegibility; }
+  body {
+    margin: 0;
+    font-family: var(--font-sans);
+    font-size: 15px;
+    line-height: 1.65;
+    color: var(--text-1);
+    background: var(--bg);
+    font-feature-settings: "ss01", "cv11", "cv02";
+  }
+
+  /* ─────────────────────── Layout ─────────────────────── */
+  .wrap {
+    max-width: 1180px;
+    margin: 0 auto;
+    padding: 56px 32px 96px;
+  }
+  @media (max-width: 768px) {
+    .wrap { padding: 32px 20px 64px; }
+  }
+
+  /* ─────────────────────── Header ─────────────────────── */
+  .hero {
+    margin-bottom: 40px;
+    padding-bottom: 32px;
+    border-bottom: 1px solid var(--border);
+  }
+  .hero__eyebrow {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    background: var(--c-runtime-soft);
+    color: var(--c-runtime-ink);
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    margin-bottom: 14px;
+  }
+  .hero__eyebrow::before {
+    content: "";
+    width: 6px;
+    height: 6px;
+    background: var(--c-runtime);
+    border-radius: 50%;
+  }
+  h1 {
+    font-size: 32px;
+    line-height: 1.2;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    margin: 0 0 8px;
+    color: var(--text-1);
+  }
+  .hero__sub {
+    font-size: 15px;
+    color: var(--text-2);
+    margin: 0 0 24px;
+  }
+
+  /* ─────────────────────── Legend ─────────────────────── */
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 12px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--r-lg);
+    box-shadow: var(--shadow-sm);
+  }
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    background: var(--slate-50);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    font-size: 12px;
+    color: var(--text-2);
+    transition: background 0.12s ease;
+  }
+  .chip:hover { background: var(--slate-100); }
+  .chip .dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+  }
+
+  /* ─────────────────────── Section headings ─────────────────────── */
+  section { margin-top: 64px; }
+  h2 {
+    font-size: 22px;
+    font-weight: 700;
+    letter-spacing: -0.012em;
+    margin: 0 0 4px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  h2 .num {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    background: var(--slate-100);
+    color: var(--text-2);
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
+  h2 .h2-sub {
+    font-size: 13px;
+    color: var(--text-3);
+    font-weight: 400;
+    letter-spacing: 0;
+  }
+  h3 {
+    font-size: 15px;
+    font-weight: 600;
+    margin: 24px 0 12px;
+    color: var(--text-1);
+  }
+
+  /* ─────────────────────── Cards / panels ─────────────────────── */
+  .panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--r-xl);
+    box-shadow: var(--shadow-sm);
+    overflow: hidden;
+  }
+  .panel--diagram { padding: 16px; margin-top: 20px; }
+  .panel svg { display: block; width: 100%; height: auto; }
+
+  /* ─────────────────────── Tables ─────────────────────── */
+  .table-wrap {
+    margin-top: 16px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--r-xl);
+    box-shadow: var(--shadow-sm);
+    overflow: hidden;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 14px;
+  }
+  thead th {
+    background: var(--slate-50);
+    color: var(--text-3);
+    font-weight: 600;
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    padding: 12px 16px;
+    text-align: left;
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+  }
+  tbody th, tbody td {
+    padding: 14px 16px;
+    vertical-align: top;
+    border-bottom: 1px solid var(--border);
+    color: var(--text-1);
+  }
+  tbody th {
+    font-weight: 600;
+    color: var(--text-2);
+    background: var(--slate-50);
+    width: 18%;
+  }
+  tbody tr:last-child th, tbody tr:last-child td { border-bottom: none; }
+  tbody tr { transition: background 0.12s ease; }
+  tbody tr:hover { background: rgba(241, 245, 249, 0.5); }
+
+  /* ─────────────────────── Inline elements ─────────────────────── */
+  code {
+    font-family: var(--font-mono);
+    font-size: 12.5px;
+    padding: 2px 6px;
+    background: var(--slate-100);
+    color: var(--slate-800);
+    border-radius: var(--r-sm);
+    white-space: nowrap;
+  }
+  pre {
+    margin: 0;
+    padding: 14px 16px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--r-lg);
+    font-family: var(--font-mono);
+    font-size: 12.5px;
+    line-height: 1.7;
+    color: var(--slate-800);
+    overflow-x: auto;
+  }
+  pre code {
+    padding: 0; background: transparent; font-size: inherit;
+  }
+
+  /* status pills */
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 11.5px;
+    font-weight: 600;
+    line-height: 1.4;
+    font-variant-numeric: tabular-nums;
+  }
+  .pill--ok   { background: var(--c-daemon-soft);  color: var(--c-daemon-ink); }
+  .pill--no   { background: #fee2e2;               color: #991b1b; }
+  .pill--warn { background: #fef3c7;               color: #92400e; }
+
+  /* ─────────────────────── Note callout ─────────────────────── */
+  .note {
+    margin: 16px 0;
+    padding: 12px 16px 12px 14px;
+    background: var(--slate-50);
+    border-left: 3px solid var(--slate-400);
+    border-radius: 0 var(--r-md) var(--r-md) 0;
+    font-size: 13.5px;
+    color: var(--text-2);
+  }
+  .note--accent {
+    background: var(--c-runtime-soft);
+    border-left-color: var(--c-runtime);
+    color: var(--c-runtime-ink);
+  }
+  .note strong { color: var(--text-1); }
+  .note--accent strong { color: var(--c-runtime-ink); }
+
+  /* ─────────────────────── Two-column ─────────────────────── */
+  .row2 {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+    margin-top: 16px;
+  }
+  @media (max-width: 880px) { .row2 { grid-template-columns: 1fr; } }
+  .row2 > div { display: flex; flex-direction: column; gap: 8px; }
+  .row2 h3 { margin: 0; }
+
+  /* ─────────────────────── Footer ─────────────────────── */
+  footer {
+    margin-top: 80px;
+    padding-top: 24px;
+    border-top: 1px solid var(--border);
+    color: var(--text-4);
+    font-size: 12px;
+    text-align: center;
+    letter-spacing: 0.01em;
+  }
+
+  /* ─────────────────────── Decision list ─────────────────────── */
+  ol.decisions {
+    margin: 16px 0 0;
+    padding: 0;
+    list-style: none;
+    counter-reset: dec;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  ol.decisions li {
+    counter-increment: dec;
+    padding: 12px 14px 12px 50px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--r-md);
+    position: relative;
+    font-size: 14px;
+    color: var(--text-1);
+    line-height: 1.6;
+  }
+  ol.decisions li::before {
+    content: counter(dec);
+    position: absolute;
+    left: 14px;
+    top: 11px;
+    width: 24px;
+    height: 24px;
+    background: var(--slate-100);
+    color: var(--text-2);
+    border-radius: 6px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
+  ol.decisions code {
+    font-size: 12px;
+  }
+
+  /* ─────────────────────── SVG styles ─────────────────────── */
+  .svg-defs text { font-family: var(--font-sans); }
+  .svc-card { filter: drop-shadow(0 1px 2px rgba(15,23,42,0.05)) drop-shadow(0 4px 8px rgba(15,23,42,0.06)); }
+  .svc-title { font-size: 16px; font-weight: 700; letter-spacing: -0.01em; }
+  .svc-port { font-size: 11px; font-weight: 500; }
+  .svc-desc { font-size: 12px; font-weight: 400; }
+  .svc-tag { font-size: 10.5px; font-style: italic; }
+  .seq-actor { font-size: 12.5px; font-weight: 600; }
+  .seq-label { font-size: 11.5px; }
+  .seq-meta  { font-size: 10.5px; font-style: italic; }
+  .arrow-label-bg {
+    fill: rgba(255,255,255,0.95);
+    stroke: var(--border);
+    stroke-width: 0.6;
+    rx: 3; ry: 3;
+  }
+</style>
+</head>
+
+<body>
+<main class="wrap">
+
+<!-- ────────────────── HERO ────────────────── -->
+<header class="hero">
+  <span class="hero__eyebrow"><span>定稿</span></span>
+  <h1>Octo Agent Runtime · 系统架构</h1>
+  <p class="hero__sub">独立 3 服务平级 · 服务间最少调用 · daemon 单点协调</p>
+
+  <div class="legend" role="list" aria-label="服务图例">
+    <span class="chip" role="listitem"><span class="dot" style="background:var(--c-server)"></span>octo-server · user / bot / auth</span>
+    <span class="chip" role="listitem"><span class="dot" style="background:var(--c-matter)"></span>octo-matter · issue / timeline</span>
+    <span class="chip" role="listitem"><span class="dot" style="background:var(--c-runtime)"></span>octo-fleet · daemon / bot 映射</span>
+    <span class="chip" role="listitem"><span class="dot" style="background:var(--c-daemon)"></span>octo-daemon · 本地 CLI</span>
+    <span class="chip" role="listitem"><span class="dot" style="background:var(--c-web)"></span>octo-web · 浏览器</span>
+    <span class="chip" role="listitem"><span class="dot" style="background:var(--c-openclaw)"></span>openclaw / claude · 本地 agent</span>
+  </div>
+</header>
+
+<!-- ────────────────── 1. TOPOLOGY ────────────────── -->
+<section>
+  <h2><span class="num">1</span>系统拓扑<span class="h2-sub">谁住在哪 · 谁能调谁</span></h2>
+
+  <div class="panel panel--diagram">
+    <svg viewBox="0 0 1120 600" preserveAspectRatio="xMidYMid meet" aria-label="系统拓扑图">
+      <defs class="svg-defs">
+        <marker id="ah-slate"  viewBox="0 -5 10 10" refX="9" refY="0" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,-5L10,0L0,5" fill="#64748b"/></marker>
+        <marker id="ah-purple" viewBox="0 -5 10 10" refX="9" refY="0" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,-5L10,0L0,5" fill="#9333ea"/></marker>
+        <marker id="ah-orange" viewBox="0 -5 10 10" refX="9" refY="0" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,-5L10,0L0,5" fill="#ea580c"/></marker>
+        <marker id="ah-blue"   viewBox="0 -5 10 10" refX="9" refY="0" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,-5L10,0L0,5" fill="#0284c7"/></marker>
+      </defs>
+
+      <!-- web (top center) -->
+      <g class="svc-card" transform="translate(460,20)">
+        <rect width="200" height="60" rx="10" fill="#fff" stroke="#cbd5e1" stroke-width="1.2"/>
+        <text x="100" y="28" text-anchor="middle" class="svc-title" fill="#334155">octo-web</text>
+        <text x="100" y="48" text-anchor="middle" class="svc-desc" fill="#64748b">浏览器 · 用户入口</text>
+      </g>
+
+      <!-- 3 backend services -->
+      <g class="svc-card" transform="translate(60,180)">
+        <rect width="240" height="120" rx="14" fill="#fff" stroke="#dbeafe" stroke-width="2"/>
+        <rect x="0" y="0" width="240" height="4" rx="2" fill="#2563eb"/>
+        <text x="120" y="32" text-anchor="middle" class="svc-title" fill="#2563eb">octo-server</text>
+        <text x="120" y="50" text-anchor="middle" class="svc-port" fill="#64748b">:8090</text>
+        <line x1="20" y1="62" x2="220" y2="62" stroke="#e2e8f0"/>
+        <text x="120" y="80" text-anchor="middle" class="svc-desc" fill="#1e40af">user · bot · IM</text>
+        <text x="120" y="96" text-anchor="middle" class="svc-desc" fill="#1e40af">space · auth · api-key</text>
+        <text x="120" y="112" text-anchor="middle" class="svc-tag" fill="#64748b">source of truth · user</text>
+      </g>
+
+      <g class="svc-card" transform="translate(440,180)">
+        <rect width="240" height="120" rx="14" fill="#fff" stroke="#f3e8ff" stroke-width="2"/>
+        <rect x="0" y="0" width="240" height="4" rx="2" fill="#9333ea"/>
+        <text x="120" y="32" text-anchor="middle" class="svc-title" fill="#9333ea">octo-matter</text>
+        <text x="120" y="50" text-anchor="middle" class="svc-port" fill="#64748b">:8080</text>
+        <line x1="20" y1="62" x2="220" y2="62" stroke="#e2e8f0"/>
+        <text x="120" y="80" text-anchor="middle" class="svc-desc" fill="#6b21a8">matter · timeline</text>
+        <text x="120" y="96" text-anchor="middle" class="svc-desc" fill="#6b21a8">activity · outputs · bot_task</text>
+        <text x="120" y="112" text-anchor="middle" class="svc-tag" fill="#64748b">source of truth · 事项</text>
+      </g>
+
+      <g class="svc-card" transform="translate(820,180)">
+        <rect width="240" height="120" rx="14" fill="#fff" stroke="#ffedd5" stroke-width="2"/>
+        <rect x="0" y="0" width="240" height="4" rx="2" fill="#ea580c"/>
+        <text x="120" y="32" text-anchor="middle" class="svc-title" fill="#ea580c">octo-fleet</text>
+        <text x="120" y="50" text-anchor="middle" class="svc-port" fill="#64748b">:8092</text>
+        <line x1="20" y1="62" x2="220" y2="62" stroke="#e2e8f0"/>
+        <text x="120" y="80" text-anchor="middle" class="svc-desc" fill="#9a3412">daemon register · heartbeat</text>
+        <text x="120" y="96" text-anchor="middle" class="svc-desc" fill="#9a3412">bot ↔ agent 映射 · 健康度</text>
+        <text x="120" y="112" text-anchor="middle" class="svc-tag" fill="#64748b">source of truth · 机器 / bot</text>
+      </g>
+
+      <!-- daemon -->
+      <g class="svc-card" transform="translate(625,400)">
+        <rect width="220" height="80" rx="14" fill="#fff" stroke="#dcfce7" stroke-width="2"/>
+        <rect x="0" y="0" width="220" height="4" rx="2" fill="#16a34a"/>
+        <text x="110" y="32" text-anchor="middle" class="svc-title" fill="#16a34a">octo-daemon</text>
+        <text x="110" y="50" text-anchor="middle" class="svc-desc" fill="#64748b">本地 CLI · 协调者</text>
+        <text x="110" y="66" text-anchor="middle" class="svc-tag" fill="#14532d">同时调 matter + runtime</text>
+      </g>
+
+      <!-- openclaw -->
+      <g class="svc-card" transform="translate(900,400)">
+        <rect width="180" height="80" rx="14" fill="#fff" stroke="#e0f2fe" stroke-width="2"/>
+        <rect x="0" y="0" width="180" height="4" rx="2" fill="#0284c7"/>
+        <text x="90" y="32" text-anchor="middle" class="svc-title" fill="#0284c7" style="font-size:14px">openclaw / claude</text>
+        <text x="90" y="50" text-anchor="middle" class="svc-desc" fill="#64748b">本地 agent CLI</text>
+        <text x="90" y="66" text-anchor="middle" class="svc-tag" fill="#075985">daemon spawn</text>
+      </g>
+
+      <!-- ─── arrows: web → 3 services ─── -->
+      <path d="M 510 80 Q 380 130 220 178" fill="none" stroke="#94a3b8" stroke-width="1.3" marker-end="url(#ah-slate)"/>
+      <g transform="translate(308,128)">
+        <rect x="-58" y="-9" width="116" height="18" class="arrow-label-bg"/>
+        <text x="0" y="3" text-anchor="middle" class="seq-label" fill="#475569">user/bot · login</text>
+      </g>
+
+      <line x1="560" y1="80" x2="560" y2="178" stroke="#94a3b8" stroke-width="1.3" marker-end="url(#ah-slate)"/>
+      <g transform="translate(560,128)">
+        <rect x="-58" y="-9" width="116" height="18" class="arrow-label-bg"/>
+        <text x="0" y="3" text-anchor="middle" class="seq-label" fill="#475569">matter · timeline</text>
+      </g>
+
+      <path d="M 610 80 Q 740 130 900 178" fill="none" stroke="#94a3b8" stroke-width="1.3" marker-end="url(#ah-slate)"/>
+      <g transform="translate(755,128)">
+        <rect x="-66" y="-9" width="132" height="18" class="arrow-label-bg"/>
+        <text x="0" y="3" text-anchor="middle" class="seq-label" fill="#475569">daemon list · bot create</text>
+      </g>
+
+      <!-- ─── runtime → server (only inter-service call) ─── -->
+      <path d="M 820 248 L 300 248" fill="none" stroke="#ea580c" stroke-width="1.6" stroke-dasharray="7,3" marker-end="url(#ah-orange)"/>
+      <g transform="translate(560,234)">
+        <rect x="-138" y="-10" width="276" height="20" class="arrow-label-bg" stroke="#fdba74"/>
+        <text x="0" y="4" text-anchor="middle" class="seq-label" fill="#9a3412" font-weight="600">runtime → server · mint bot OBO + verify</text>
+      </g>
+      <text x="560" y="270" text-anchor="middle" class="seq-meta" fill="#9a3412">唯一不可避免的服务间调用 · X-Internal-Token</text>
+
+      <!-- ─── daemon → matter ─── -->
+      <path d="M 670 405 Q 590 360 555 305" fill="none" stroke="#9333ea" stroke-width="1.6" marker-end="url(#ah-purple)"/>
+      <g transform="translate(505,360)">
+        <rect x="-60" y="-22" width="120" height="36" class="arrow-label-bg"/>
+        <text x="0" y="-8" text-anchor="middle" class="seq-label" fill="#6b21a8" font-weight="600">GET tasks?bot=X</text>
+        <text x="0" y="8" text-anchor="middle" class="seq-label" fill="#6b21a8">POST timeline · activity</text>
+      </g>
+
+      <!-- ─── daemon → runtime ─── -->
+      <path d="M 800 410 Q 870 360 905 305" fill="none" stroke="#ea580c" stroke-width="1.6" marker-end="url(#ah-orange)"/>
+      <g transform="translate(845,360)">
+        <rect x="-58" y="-22" width="116" height="36" class="arrow-label-bg"/>
+        <text x="0" y="-8" text-anchor="middle" class="seq-label" fill="#9a3412" font-weight="600">register · heartbeat</text>
+        <text x="0" y="8" text-anchor="middle" class="seq-label" fill="#9a3412">ack bot.provision</text>
+      </g>
+
+      <!-- runtime → daemon (push) -->
+      <path d="M 925 305 Q 880 360 825 408" fill="none" stroke="#ea580c" stroke-width="1" stroke-dasharray="3,3" marker-end="url(#ah-orange)" opacity="0.7"/>
+      <text x="920" y="345" class="seq-meta" fill="#9a3412">pending_command (创建 bot)</text>
+
+      <!-- daemon → openclaw -->
+      <path d="M 845 450 L 895 450" stroke="#0284c7" stroke-width="1.6" marker-end="url(#ah-blue)"/>
+      <text x="868" y="442" text-anchor="middle" class="seq-meta" fill="#0369a1">spawn</text>
+
+      <!-- bottom legend bar -->
+      <g transform="translate(60,560)" font-family="var(--font-sans)">
+        <line x1="0" y1="0" x2="32" y2="0" stroke="#94a3b8" stroke-width="1.3" marker-end="url(#ah-slate)"/>
+        <text x="40" y="3" font-size="11" fill="#475569">web → 后端 (Bearer session)</text>
+
+        <line x1="248" y1="0" x2="280" y2="0" stroke="#ea580c" stroke-width="1.6" stroke-dasharray="7,3" marker-end="url(#ah-orange)"/>
+        <text x="288" y="3" font-size="11" fill="#475569">服务 → 服务 (X-Internal-Token · 唯一保留)</text>
+
+        <line x1="608" y1="0" x2="640" y2="0" stroke="#9333ea" stroke-width="1.6" marker-end="url(#ah-purple)"/>
+        <text x="648" y="3" font-size="11" fill="#475569">daemon → 后端 (Bearer runtime token)</text>
+      </g>
+    </svg>
+  </div>
+
+  <div class="note note--accent">
+    <strong>核心边界纪律 ·</strong> matter ↔ runtime <strong>互不知道对方存在</strong>。无 outbox、无 webhook、无 HMAC 回写。它们被 daemon 这一个进程顺序调用粘起来。
+  </div>
+</section>
+
+<!-- ────────────────── 2. CALL MATRIX ────────────────── -->
+<section>
+  <h2><span class="num">2</span>调用关系矩阵<span class="h2-sub">谁能调谁 · 调哪些 endpoint</span></h2>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>主调方 ↓ \ 被调方 →</th>
+          <th>octo-server</th>
+          <th>octo-matter</th>
+          <th>octo-fleet</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <th>web · 浏览器</th>
+          <td><span class="pill pill--ok">✓</span> user/bot CRUD · login · im</td>
+          <td><span class="pill pill--ok">✓</span> matter / timeline / activity</td>
+          <td><span class="pill pill--ok">✓</span> daemon list · bot create</td>
+        </tr>
+        <tr>
+          <th>octo-server</th>
+          <td>—</td>
+          <td><span class="pill pill--no">✗</span> 不调</td>
+          <td><span class="pill pill--no">✗</span> 不调</td>
+        </tr>
+        <tr>
+          <th>octo-matter</th>
+          <td><span class="pill pill--no">✗</span> 不调</td>
+          <td>—</td>
+          <td><span class="pill pill--no">✗</span> 不调</td>
+        </tr>
+        <tr>
+          <th>octo-fleet</th>
+          <td>
+            <span class="pill pill--warn">唯一保留</span>
+            <div style="margin-top:6px;line-height:2;">
+              <code>POST /v1/internal/bot/mint-obo</code><br/>
+              <code>POST /v1/internal/auth/api-key/verify</code>
+            </div>
+          </td>
+          <td><span class="pill pill--no">✗</span> 不调</td>
+          <td>—</td>
+        </tr>
+        <tr>
+          <th>octo-daemon</th>
+          <td><span class="pill pill--no">✗</span> 不调 (鉴权走 runtime token)</td>
+          <td>
+            <span class="pill pill--ok">✓</span>
+            <div style="margin-top:6px;line-height:2;">
+              <code>GET /matters/internal/tasks?bot_uid=X</code><br/>
+              <code>POST /matters/:id/timeline</code><br/>
+              <code>POST /matters/:id/activities</code>
+            </div>
+          </td>
+          <td>
+            <span class="pill pill--ok">✓</span>
+            <div style="margin-top:6px;line-height:2;">
+              <code>POST /v1/daemon/register</code><br/>
+              <code>POST /v1/daemon/heartbeat</code><br/>
+              <code>POST /v1/daemon/bots/:id/ack</code>
+            </div>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ────────────────── 3. SEQUENCE ────────────────── -->
+<section>
+  <h2><span class="num">3</span>关键时序<span class="h2-sub">两条主链路的端到端流程</span></h2>
+
+  <h3>3.1 · 用户在 matter 评论里 @bot</h3>
+  <div class="panel panel--diagram">
+    <svg viewBox="0 0 1120 540" preserveAspectRatio="xMidYMid meet" aria-label="时序：用户 @bot">
+      <defs class="svg-defs">
+        <marker id="s-slate"  viewBox="0 -5 10 10" refX="9" refY="0" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,-5L10,0L0,5" fill="#64748b"/></marker>
+        <marker id="s-purple" viewBox="0 -5 10 10" refX="9" refY="0" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,-5L10,0L0,5" fill="#9333ea"/></marker>
+        <marker id="s-orange" viewBox="0 -5 10 10" refX="9" refY="0" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,-5L10,0L0,5" fill="#ea580c"/></marker>
+        <marker id="s-blue"   viewBox="0 -5 10 10" refX="9" refY="0" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,-5L10,0L0,5" fill="#0284c7"/></marker>
+      </defs>
+
+      <!-- actors -->
+      <g>
+        <rect x="50"  y="14" width="60"  height="22" rx="11" fill="#f1f5f9"/>
+        <text x="80"  y="29" text-anchor="middle" class="seq-actor" fill="#475569">user</text>
+        <rect x="190" y="14" width="60"  height="22" rx="11" fill="#f1f5f9"/>
+        <text x="220" y="29" text-anchor="middle" class="seq-actor" fill="#475569">web</text>
+        <rect x="350" y="14" width="60"  height="22" rx="11" fill="#f3e8ff"/>
+        <text x="380" y="29" text-anchor="middle" class="seq-actor" fill="#9333ea">matter</text>
+        <rect x="530" y="14" width="60"  height="22" rx="11" fill="#dcfce7"/>
+        <text x="560" y="29" text-anchor="middle" class="seq-actor" fill="#16a34a">daemon</text>
+        <rect x="710" y="14" width="60"  height="22" rx="11" fill="#ffedd5"/>
+        <text x="740" y="29" text-anchor="middle" class="seq-actor" fill="#ea580c">runtime</text>
+        <rect x="870" y="14" width="60"  height="22" rx="11" fill="#e0f2fe"/>
+        <text x="900" y="29" text-anchor="middle" class="seq-actor" fill="#0284c7">openclaw</text>
+      </g>
+
+      <!-- lifelines -->
+      <g stroke="#e2e8f0" stroke-dasharray="2,4">
+        <line x1="80" y1="42" x2="80" y2="510"/>
+        <line x1="220" y1="42" x2="220" y2="510"/>
+        <line x1="380" y1="42" x2="380" y2="510"/>
+        <line x1="560" y1="42" x2="560" y2="510"/>
+        <line x1="740" y1="42" x2="740" y2="510"/>
+        <line x1="900" y1="42" x2="900" y2="510"/>
+      </g>
+
+      <!-- 1. user → web -->
+      <line x1="80" y1="68" x2="216" y2="68" stroke="#64748b" stroke-width="1.3" marker-end="url(#s-slate)"/>
+      <g transform="translate(148,60)"><rect x="-60" y="-9" width="120" height="18" class="arrow-label-bg"/><text x="0" y="3" text-anchor="middle" class="seq-label" fill="#475569">"@bot 这里改下"</text></g>
+
+      <!-- 2. web → matter -->
+      <line x1="220" y1="102" x2="376" y2="102" stroke="#9333ea" stroke-width="1.3" marker-end="url(#s-purple)"/>
+      <g transform="translate(298,94)"><rect x="-66" y="-9" width="132" height="18" class="arrow-label-bg"/><text x="0" y="3" text-anchor="middle" class="seq-label" fill="#6b21a8">POST /timeline {content}</text></g>
+
+      <!-- 3. matter activation -->
+      <rect x="372" y="116" width="16" height="50" rx="2" fill="#f3e8ff" stroke="#d8b4fe"/>
+      <g transform="translate(398,128)" text-anchor="start">
+        <text class="seq-meta" fill="#6b21a8">parse mention →</text>
+        <text y="14" class="seq-meta" fill="#6b21a8">写 bot_task (queued)</text>
+      </g>
+
+      <!-- 4. response -->
+      <line x1="376" y1="178" x2="220" y2="178" stroke="#9333ea" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#s-purple)" opacity="0.8"/>
+      <g transform="translate(298,170)"><rect x="-58" y="-9" width="116" height="18" class="arrow-label-bg"/><text x="0" y="3" text-anchor="middle" class="seq-meta" fill="#6b21a8">201 (评论已存)</text></g>
+
+      <!-- 5. heartbeat -->
+      <line x1="560" y1="220" x2="736" y2="220" stroke="#ea580c" stroke-width="1.3" marker-end="url(#s-orange)"/>
+      <g transform="translate(648,212)"><rect x="-44" y="-9" width="88" height="18" class="arrow-label-bg"/><text x="0" y="3" text-anchor="middle" class="seq-label" fill="#9a3412">heartbeat</text></g>
+      <line x1="740" y1="248" x2="564" y2="248" stroke="#ea580c" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#s-orange)" opacity="0.8"/>
+      <g transform="translate(652,240)"><rect x="-50" y="-9" width="100" height="18" class="arrow-label-bg"/><text x="0" y="3" text-anchor="middle" class="seq-meta" fill="#9a3412">{} 空响应</text></g>
+
+      <!-- 6. daemon → matter pull -->
+      <line x1="560" y1="290" x2="384" y2="290" stroke="#9333ea" stroke-width="1.3" marker-end="url(#s-purple)"/>
+      <g transform="translate(472,282)"><rect x="-110" y="-9" width="220" height="18" class="arrow-label-bg"/><text x="0" y="3" text-anchor="middle" class="seq-label" fill="#6b21a8">GET /internal/tasks?bot_uid=X</text></g>
+      <text x="472" y="306" text-anchor="middle" class="seq-meta" fill="#6b21a8">Bearer runtime_token · JWK 本地验签</text>
+
+      <line x1="376" y1="334" x2="560" y2="334" stroke="#9333ea" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#s-purple)" opacity="0.8"/>
+      <g transform="translate(468,326)"><rect x="-122" y="-9" width="244" height="18" class="arrow-label-bg"/><text x="0" y="3" text-anchor="middle" class="seq-label" fill="#6b21a8">[{task_id, matter_id, prompt, …}]</text></g>
+
+      <!-- 7. spawn -->
+      <line x1="560" y1="368" x2="896" y2="368" stroke="#0284c7" stroke-width="1.3" marker-end="url(#s-blue)"/>
+      <g transform="translate(728,360)"><rect x="-84" y="-9" width="168" height="18" class="arrow-label-bg"/><text x="0" y="3" text-anchor="middle" class="seq-label" fill="#0369a1">spawn openclaw agent …</text></g>
+
+      <rect x="892" y="378" width="16" height="40" rx="2" fill="#e0f2fe" stroke="#7dd3fc"/>
+      <text x="916" y="398" class="seq-meta" fill="#0369a1">agent 运行</text>
+
+      <line x1="896" y1="426" x2="564" y2="426" stroke="#0284c7" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#s-blue)" opacity="0.8"/>
+      <g transform="translate(728,418)"><rect x="-26" y="-9" width="52" height="18" class="arrow-label-bg"/><text x="0" y="3" text-anchor="middle" class="seq-label" fill="#0369a1">reply</text></g>
+
+      <!-- 8. writeback -->
+      <line x1="560" y1="458" x2="384" y2="458" stroke="#9333ea" stroke-width="1.3" marker-end="url(#s-purple)"/>
+      <g transform="translate(472,450)"><rect x="-94" y="-9" width="188" height="18" class="arrow-label-bg"/><text x="0" y="3" text-anchor="middle" class="seq-label" fill="#6b21a8">POST /timeline (bot reply)</text></g>
+
+      <line x1="560" y1="486" x2="384" y2="486" stroke="#9333ea" stroke-width="1.3" marker-end="url(#s-purple)"/>
+      <g transform="translate(472,478)"><rect x="-100" y="-9" width="200" height="18" class="arrow-label-bg"/><text x="0" y="3" text-anchor="middle" class="seq-label" fill="#6b21a8">POST /activities (succeeded)</text></g>
+
+      <!-- 9. polling -->
+      <line x1="220" y1="510" x2="376" y2="510" stroke="#9333ea" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#s-purple)" opacity="0.8"/>
+      <text x="298" y="504" text-anchor="middle" class="seq-meta" fill="#6b21a8">3s polling → 看到 bot 回复</text>
+    </svg>
+  </div>
+
+  <h3>3.2 · 用户在「智能体」tab 创建新 bot</h3>
+  <div class="panel panel--diagram">
+    <svg viewBox="0 0 1120 360" preserveAspectRatio="xMidYMid meet" aria-label="时序：创建新 bot">
+      <defs class="svg-defs">
+        <marker id="c-slate"  viewBox="0 -5 10 10" refX="9" refY="0" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,-5L10,0L0,5" fill="#64748b"/></marker>
+        <marker id="c-orange" viewBox="0 -5 10 10" refX="9" refY="0" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,-5L10,0L0,5" fill="#ea580c"/></marker>
+      </defs>
+
+      <g>
+        <rect x="70"  y="14" width="60"  height="22" rx="11" fill="#f1f5f9"/>
+        <text x="100" y="29" text-anchor="middle" class="seq-actor" fill="#475569">user</text>
+        <rect x="230" y="14" width="60"  height="22" rx="11" fill="#f1f5f9"/>
+        <text x="260" y="29" text-anchor="middle" class="seq-actor" fill="#475569">web</text>
+        <rect x="420" y="14" width="60"  height="22" rx="11" fill="#ffedd5"/>
+        <text x="450" y="29" text-anchor="middle" class="seq-actor" fill="#ea580c">runtime</text>
+        <rect x="620" y="14" width="60"  height="22" rx="11" fill="#dbeafe"/>
+        <text x="650" y="29" text-anchor="middle" class="seq-actor" fill="#2563eb">server</text>
+        <rect x="830" y="14" width="60"  height="22" rx="11" fill="#dcfce7"/>
+        <text x="860" y="29" text-anchor="middle" class="seq-actor" fill="#16a34a">daemon</text>
+      </g>
+      <g stroke="#e2e8f0" stroke-dasharray="2,4">
+        <line x1="100" y1="42" x2="100" y2="330"/>
+        <line x1="260" y1="42" x2="260" y2="330"/>
+        <line x1="450" y1="42" x2="450" y2="330"/>
+        <line x1="650" y1="42" x2="650" y2="330"/>
+        <line x1="860" y1="42" x2="860" y2="330"/>
+      </g>
+
+      <!-- user → web -->
+      <line x1="100" y1="68" x2="256" y2="68" stroke="#64748b" stroke-width="1.3" marker-end="url(#c-slate)"/>
+      <g transform="translate(178,60)"><rect x="-100" y="-9" width="200" height="18" class="arrow-label-bg"/><text x="0" y="3" text-anchor="middle" class="seq-label" fill="#475569">填名字 + 选 runtime · 点创建</text></g>
+
+      <!-- web → runtime -->
+      <line x1="260" y1="102" x2="446" y2="102" stroke="#ea580c" stroke-width="1.3" marker-end="url(#c-orange)"/>
+      <g transform="translate(353,94)"><rect x="-128" y="-9" width="256" height="18" class="arrow-label-bg"/><text x="0" y="3" text-anchor="middle" class="seq-label" fill="#9a3412">POST /runtimes/bots {name, runtime_id}</text></g>
+
+      <rect x="442" y="116" width="16" height="36" rx="2" fill="#ffedd5" stroke="#fdba74"/>
+      <text x="466" y="138" class="seq-meta" fill="#9a3412">insert bot 行 (status=minting)</text>
+
+      <!-- runtime → server (inter-service) -->
+      <line x1="450" y1="172" x2="646" y2="172" stroke="#ea580c" stroke-width="1.6" stroke-dasharray="7,3" marker-end="url(#c-orange)"/>
+      <g transform="translate(548,164)"><rect x="-114" y="-9" width="228" height="18" class="arrow-label-bg" stroke="#fdba74"/><text x="0" y="3" text-anchor="middle" class="seq-label" fill="#9a3412" font-weight="600">POST /internal/bot/mint-obo</text></g>
+      <text x="548" y="190" text-anchor="middle" class="seq-meta" fill="#9a3412">X-Internal-Token · 唯一保留的服务间调用</text>
+
+      <line x1="646" y1="216" x2="454" y2="216" stroke="#ea580c" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#c-orange)" opacity="0.8"/>
+      <g transform="translate(548,208)"><rect x="-70" y="-9" width="140" height="18" class="arrow-label-bg"/><text x="0" y="3" text-anchor="middle" class="seq-meta" fill="#9a3412">{bot_uid, bot_token}</text></g>
+
+      <rect x="442" y="226" width="16" height="36" rx="2" fill="#ffedd5" stroke="#fdba74"/>
+      <text x="466" y="248" class="seq-meta" fill="#9a3412">写 bot.bot_uid (status=bot_minted)</text>
+
+      <line x1="446" y1="278" x2="260" y2="278" stroke="#ea580c" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#c-orange)" opacity="0.8"/>
+      <g transform="translate(353,270)"><rect x="-126" y="-9" width="252" height="18" class="arrow-label-bg"/><text x="0" y="3" text-anchor="middle" class="seq-meta" fill="#9a3412">201 (待 daemon 物理 provision)</text></g>
+
+      <!-- daemon pull pending_command -->
+      <line x1="860" y1="312" x2="454" y2="312" stroke="#ea580c" stroke-width="1.3" marker-end="url(#c-orange)"/>
+      <g transform="translate(657,304)"><rect x="-46" y="-9" width="92" height="18" class="arrow-label-bg"/><text x="0" y="3" text-anchor="middle" class="seq-label" fill="#9a3412">heartbeat</text></g>
+
+      <line x1="450" y1="340" x2="856" y2="340" stroke="#ea580c" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#c-orange)" opacity="0.8"/>
+      <g transform="translate(653,332)"><rect x="-188" y="-9" width="376" height="18" class="arrow-label-bg"/><text x="0" y="3" text-anchor="middle" class="seq-meta" fill="#9a3412">{pending_command: bot.provision (workspace + bind)}</text></g>
+    </svg>
+  </div>
+</section>
+
+<!-- ────────────────── 4. AUTH ────────────────── -->
+<section>
+  <h2><span class="num">4</span>信任链 · Auth<span class="h2-sub">谁颁发 · 谁验签</span></h2>
+  <div class="row2">
+    <div>
+      <h3>Web 用户视角</h3>
+      <pre><code>浏览器登录 server → session token
+
+⇒ web 调 server: Bearer session_token ✓
+⇒ web 调 matter: Bearer session_token
+            ↳ matter 共享 JWK 本地验签
+              (不调 server, 避免 N+1)
+⇒ web 调 runtime: Bearer session_token
+            ↳ runtime 同上</code></pre>
+    </div>
+    <div>
+      <h3>Daemon 视角</h3>
+      <pre><code>daemon 启动 → 用 api-key register runtime
+                          │
+runtime → server: verify api-key ✓
+                  (X-Internal-Token)
+                          │
+runtime 颁发 runtime_token (JWT)
+  scope: daemon_id + space_id
+  signed by 共享私钥
+
+⇒ daemon 调 matter: Bearer runtime_token
+            ↳ matter 用共享公钥本地验签 ✓
+⇒ daemon 调 runtime: Bearer runtime_token ✓</code></pre>
+    </div>
+  </div>
+  <div class="note">
+    <strong>JWK 共享的代价 ·</strong> runtime 是唯一 issuer · server / matter 是 verifier。3 个服务共享一个 public key（pem 文件或 KMS 路径）。<strong>零额外网络调用</strong>。代价是 key rotation 需要协调 — PoC 期可接受。
+  </div>
+</section>
+
+<!-- ────────────────── 5. SOURCE OF TRUTH ────────────────── -->
+<section>
+  <h2><span class="num">5</span>数据所有权<span class="h2-sub">Source of Truth</span></h2>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th style="width:22%">数据</th><th style="width:20%">在哪个服务</th><th>其他服务怎么用</th></tr>
+      </thead>
+      <tbody>
+        <tr><th>user · IM bot 账户</th><td>octo-server</td><td>通过 <code>uid</code> 引用 · 不反查 (信任 web 传入)</td></tr>
+        <tr><th>space membership</th><td>octo-server</td><td>header <code>X-Space-Id</code> 信任 · 必要时 JWK 验 token claim</td></tr>
+        <tr><th>matter · timeline · activity · outputs</th><td>octo-matter</td><td>通过 <code>matter_id</code> 引用 + Bearer 调 matter API</td></tr>
+        <tr><th><strong>bot_task</strong> (派给 bot 的任务队列)</th><td><strong>octo-matter</strong> <span class="pill pill--ok" style="margin-left:6px">建议</span></td><td>matter 加 <code>bot_task</code> 表 · 写 timeline 同事务入队 · daemon pull</td></tr>
+        <tr><th>daemon 注册 · runtime 健康度</th><td>octo-fleet</td><td>web 直接查 runtime API</td></tr>
+        <tr><th><code>bot_uid ↔ openclaw agent_id</code> 映射</th><td>octo-fleet · <code>bot</code> 表</td><td>daemon pull task 时附带 <code>agent_id</code> · matter 不知道 agent 这层</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="note">
+    <strong>关于 bot_task 表归谁 ·</strong> 倾向 matter — (1) 写 timeline 同事务入队最干净 · 零丢失 (2) daemon 一次 pull 拿到 task + 上下文 (3) 跟 "matter 是事项 SoT" 的语义对齐。runtime 只关心 "bot 能干"，不关心 "bot 干啥"。
+  </div>
+</section>
+
+<!-- ────────────────── 6. 替代设计对比 ────────────────── -->
+<section>
+  <h2><span class="num">6</span>替代设计对比<span class="h2-sub">push / outbox 方案为什么没选</span></h2>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th style="width:22%">维度</th><th>替代方案 · push / outbox</th><th>本 plan · daemon pull</th></tr>
+      </thead>
+      <tbody>
+        <tr><th>触发模式</th><td>matter outbox → runtime push</td><td>daemon 主动 pull from matter</td></tr>
+        <tr><th>matter → runtime 调用</th><td>有 (outbox webhook)</td><td><span class="pill pill--ok">砍掉</span></td></tr>
+        <tr><th>runtime → matter 调用</th><td>有 (HMAC writeback)</td><td><span class="pill pill--ok">砍掉</span></td></tr>
+        <tr><th>runtime → server 调用</th><td>有 (mint bot OBO + verify api-key)</td><td><span class="pill pill--warn">保留 · 不可避免</span></td></tr>
+        <tr><th>matter 复杂度</th><td>+ outbox 表 + outbox worker + HMAC 验签</td><td>+ <code>bot_task</code> 表 + 1 个 internal endpoint</td></tr>
+        <tr><th>runtime 复杂度</th><td>高 (outbox · HMAC · writeback worker)</td><td>低 (daemon mgr · bot mapping)</td></tr>
+        <tr><th>daemon 复杂度</th><td>中 (被推)</td><td>中高 (主动 pull · 协调两端)</td></tr>
+        <tr><th>失败爆炸半径</th><td>matter outbox 卡死 → 全停</td><td>daemon 挂 → 单机停 · 域更小</td></tr>
+        <tr><th>时延</th><td>push 即时</td><td>pull 间隔 3-10s</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ────────────────── 7. DECISIONS ────────────────── -->
+<section>
+  <h2><span class="num">7</span>决策记录<span class="h2-sub">已拍板的 5 项</span></h2>
+  <ol class="decisions">
+    <li><strong>整体拓扑</strong> · 三服务平级 · daemon 单点协调 matter 与 fleet · runtime → server mint OBO 唯一保留 · <span class="pill pill--ok" style="margin-left:6px">✓ 确认</span></li>
+    <li><strong>服务改名</strong> · <code>octo-runtime</code> → <code>octo-fleet</code>（端口仍 :8092；env <code>FLEET_*</code>） · <span class="pill pill--ok" style="margin-left:6px">✓ 确认</span></li>
+    <li><strong>bot_task 队列归 matter</strong> · 写 timeline 同事务入队 · daemon 直接 pull · matter 不知道 fleet · <span class="pill pill--ok" style="margin-left:6px">✓ 确认</span></li>
+    <li><strong>跨服务鉴权</strong> · PoC 期 matter/fleet 调 server <code>POST /v1/auth/verify</code>；GA 切共享 JWK 本地验签 · <span class="pill pill--warn" style="margin-left:6px">分阶段</span></li>
+    <li><strong>lease 续约 · 并发 claim contract test</strong> · PoC 不做（10min lease 够用 + atomic UPDATE 自带并发保护）；GA blocker · <span class="pill pill--warn" style="margin-left:6px">GA 加</span></li>
+  </ol>
+  <div class="note" style="margin-top:16px">
+    <strong>后续讨论项</strong>（暂不阻塞 cutover）· crash recovery 流式 checkpoint · 单 daemon 多 bot 并行资源限额（openclaw scope upgrade 撞车） · fleet JWT key rotation 协调
+  </div>
+</section>
+
+<footer>
+  定稿 · 2026-06-01 · 3 服务平级 · daemon 协调 · 1 个不可避免的服务间调用
+</footer>
+
+</main>
+</body>
+</html>

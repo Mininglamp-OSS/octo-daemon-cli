@@ -26,9 +26,31 @@ func (d *Daemon) handleBotProvision(ctx context.Context, cmd *PendingAgentComman
 	log.Printf("[INFO] [bot.provision] received id=%d workspace=%s bot=%s",
 		cmd.ID, cmd.WorkspaceID, cmd.BotUID)
 
-	if cmd.WorkspaceID == "" || cmd.BotUID == "" || cmd.BotToken == "" || cmd.APIURL == "" {
-		d.ackBotProvision(ctx, cmd, "failed", "missing workspace_id/bot_uid/bot_token/api_url")
+	if cmd.WorkspaceID == "" || cmd.BotUID == "" {
+		d.ackBotProvision(ctx, cmd, "failed", "missing workspace_id/bot_uid")
 		return
+	}
+
+	// PR-A.2: fleet no longer carries bot_token in the heartbeat payload
+	// — it lives only in server's robot table. Daemon fetches it here
+	// using its daemon-scope JWT (server validates JWT.sub matches
+	// robot.creator_uid). Same for api_url: if fleet didn't fill it,
+	// fall back to daemon's configured OCTO_SERVER_URL.
+	if cmd.BotToken == "" {
+		tokCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		tok, err := d.client.GetBotToken(tokCtx, cmd.BotUID)
+		cancel()
+		if err != nil {
+			d.ackBotProvision(ctx, cmd, "failed", fmt.Sprintf("fetch bot_token: %v", err))
+			return
+		}
+		cmd.BotToken = tok
+	}
+	if cmd.APIURL == "" {
+		cmd.APIURL = os.Getenv("OCTO_SERVER_URL")
+		if cmd.APIURL == "" {
+			cmd.APIURL = d.cfg.APIURL
+		}
 	}
 
 	if err := addOpenclawWorkspace(ctx, cmd); err != nil {
