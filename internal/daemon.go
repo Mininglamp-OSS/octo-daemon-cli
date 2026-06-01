@@ -361,7 +361,14 @@ func (d *Daemon) sendHeartbeats(ctx context.Context) {
 		// Off-loaded to a goroutine so the heartbeat loop is not blocked by
 		// openclaw CLI subprocess time (can take ~5s for agents add).
 		if resp.PendingCommand != nil {
-			go d.handleManagedAgentCommand(ctx, resp.PendingCommand)
+			// PoC4: server only emits "bot.provision" now; the old
+			// "agent.create" and "bot.add" actions are gone.
+			if resp.PendingCommand.Action == "bot.provision" {
+				go d.handleBotProvision(ctx, resp.PendingCommand)
+			} else {
+				log.Printf("[WARN] unknown pending command action=%q id=%d — ignoring",
+					resp.PendingCommand.Action, resp.PendingCommand.ID)
+			}
 		}
 		// Same off-loading pattern for matter-driven bot tasks. These can
 		// take much longer (openclaw agent runs are minutes, not seconds).

@@ -79,14 +79,14 @@ type PendingUpgrade struct {
 	Metadata      string `json:"metadata"` // 预留字段，插件升级未使用
 }
 
-// PendingAgentCommand is the server's pull-mode dispatch for a managed agent
-// provisioning task. Returned in heartbeat response when there's work to do.
-// The daemon must run the side-effects and then POST back via AckManagedAgent
-// with the matching ClaimToken.
+// PendingAgentCommand is the heartbeat-pull dispatch envelope.
+// PoC4 introduces a new action "bot.provision" that combines workspace
+// creation + bot binding in one daemon step; the old "agent.create" and
+// "bot.add" actions are removed.
 type PendingAgentCommand struct {
 	ID          int64  `json:"id"`
-	Action      string `json:"action"` // "agent.create" for now
-	AgentID     string `json:"agent_id"`
+	Action      string `json:"action"` // "bot.provision"
+	WorkspaceID string `json:"workspace_id"`
 	DisplayName string `json:"display_name"`
 	BotUID      string `json:"bot_uid"`
 	BotToken    string `json:"bot_token"`
@@ -133,11 +133,10 @@ func (c *Client) ReportUpgrade(ctx context.Context, taskID, status, errMsg strin
 	}, nil)
 }
 
-// AckManagedAgent reports the result of an agent.create command back to the
-// server. The claim_token must match what the server set when dispatching, or
-// the server will reject as stale (HTTP 409).
-func (c *Client) AckManagedAgent(ctx context.Context, id int64, claimToken, status, errMsg string) error {
-	path := fmt.Sprintf("/v1/daemon/managed-agents/%d/ack", id)
+// AckBot acknowledges completion (or failure) of a bot.provision command.
+// Path mirrors server's daemon route group.
+func (c *Client) AckBot(ctx context.Context, id int64, claimToken, status, errMsg string) error {
+	path := fmt.Sprintf("/v1/daemon/bots/%d/ack", id)
 	return c.postJSON(ctx, path, map[string]string{
 		"claim_token": claimToken,
 		"status":      status,
