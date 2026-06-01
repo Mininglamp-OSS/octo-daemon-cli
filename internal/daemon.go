@@ -40,7 +40,30 @@ func NewDaemon(cfg Config) (*Daemon, error) {
 		return nil, fmt.Errorf("ensure daemon id: %w", err)
 	}
 
-	client := NewClient(cfg.APIURL, cfg.APIKey, cfg.CLIVersion)
+	// PR-A.2 URL routing:
+	//   OCTO_FLEET_URL  — runtime/bot endpoints (defaults to APIURL, so
+	//                     existing deployments still work pre-fleet-cutover)
+	//   OCTO_SERVER_URL — auth + bot_token endpoints (defaults to APIURL)
+	// When both env vars are set, the client uses JWT for fleet calls;
+	// otherwise it stays on the legacy api_key path so daemon binaries
+	// pointed at an old server still function.
+	fleetURL := os.Getenv("OCTO_FLEET_URL")
+	if fleetURL == "" {
+		fleetURL = cfg.APIURL
+	}
+	serverURL := os.Getenv("OCTO_SERVER_URL")
+	if serverURL == "" {
+		serverURL = cfg.APIURL
+	}
+	client := NewClient(fleetURL, cfg.APIKey, cfg.CLIVersion)
+	client.SetServerURL(serverURL)
+	// Enable JWT only when we have a distinct fleet URL (i.e., a real
+	// PR-A.2 cutover). Otherwise the same baseURL means we're talking to
+	// the old in-server runtime endpoints which still expect api_key.
+	if os.Getenv("OCTO_FLEET_URL") != "" {
+		client.EnableJWT(daemonID)
+		log.Printf("[INFO] daemon JWT mode enabled (fleet=%s server=%s)", fleetURL, serverURL)
+	}
 
 	return &Daemon{
 		cfg:      cfg,

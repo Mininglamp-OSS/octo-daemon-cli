@@ -27,13 +27,23 @@ type Client struct {
 	cliVersion string
 	httpClient *http.Client
 
-	// PR-A.1: JWT fields — populated by EnsureJWT when serverURL is set.
-	// Until daemon callers actually swap to UseJWT mode (PR-A.2), these
-	// stay zero and postJSON keeps sending api-key in Authorization.
-	serverURL  string
-	jwtMu      sync.Mutex
-	jwtToken   string
-	jwtExpiry  time.Time
+	// PR-A.2: fleet/server split.
+	//   baseURL  — fleet base (default :8092). All /v1/daemon and
+	//              /v1/runtimes routes live here now.
+	//   serverURL — server base (default :8090). Only used for
+	//              /v1/auth/token (api_key → JWT) and
+	//              /v1/bot/:uid/token (daemon JWT → bot_token).
+	// useJWT — when true, postJSON sends Authorization: Bearer <JWT>
+	//          (auto-refreshed via EnsureJWT). When false, sends the
+	//          old Authorization: Bearer <api_key>. Tests / staged
+	//          rollouts can flip per Client.
+	serverURL string
+	useJWT    bool
+	daemonID  string
+
+	jwtMu     sync.Mutex
+	jwtToken  string
+	jwtExpiry time.Time
 }
 
 func NewClient(apiURL, apiKey, cliVersion string) *Client {
@@ -46,10 +56,52 @@ func NewClient(apiURL, apiKey, cliVersion string) *Client {
 	}
 }
 
-// SetServerURL points the JWT exchange at octo-server. Once set, EnsureJWT
-// works; future PR-A.2 routes will swap Authorization to "Bearer <jwt>".
+// SetServerURL points the JWT exchange + bot_token fetch at octo-server.
+// Once set, EnsureJWT and GetBotToken work.
 func (c *Client) SetServerURL(serverURL string) {
 	c.serverURL = strings.TrimRight(serverURL, "/")
+}
+
+// EnableJWT switches postJSON to use Bearer <JWT> instead of Bearer
+// <api_key>. Must be called after SetServerURL so the client can
+// actually fetch a JWT. daemonID is embedded into the JWT scope.
+func (c *Client) EnableJWT(daemonID string) {
+	c.useJWT = true
+	c.daemonID = daemonID
+}
+
+// GetBotToken fetches the bot_token for the given bot_uid from
+// octo-server. Requires SetServerURL + a working api_key.
+func (c *Client) GetBotToken(ctx context.Context, botUID string) (string, error) {
+	if c.serverURL == "" {
+		return "", fmt.Errorf("server URL not set")
+	}
+	jwtTok, err := c.EnsureJWT(ctx, c.daemonID)
+	if err != nil {
+		return "", err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		c.serverURL+"/v1/bot/"+botUID+"/token", nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+jwtTok)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", fmt.Errorf("GetBotToken %d: %s", resp.StatusCode, string(body))
+	}
+	var r struct {
+		BotToken string `json:"bot_token"`
+	}
+	if err := json.Unmarshal(body, &r); err != nil {
+		return "", err
+	}
+	return r.BotToken, nil
 }
 
 type tokenExchangeReq struct {
@@ -245,7 +297,15 @@ func (c *Client) postJSON(ctx context.Context, path string, body any, result any
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	authToken := c.apiKey
+	if c.useJWT {
+		jwtTok, jerr := c.EnsureJWT(ctx, c.daemonID)
+		if jerr != nil {
+			return fmt.Errorf("ensure jwt: %w", jerr)
+		}
+		authToken = jwtTok
+	}
+	req.Header.Set("Authorization", "Bearer "+authToken)
 	req.Header.Set("X-Client-Platform", "daemon")
 	req.Header.Set("X-Client-Version", c.cliVersion)
 	req.Header.Set("X-Client-OS", normalizeOS())
