@@ -10,3 +10,8 @@ dist/
 .idea/
 .vscode/
 .DS_Store
+
+# Local binary builds — never commit these
+octo-daemon
+octo-daemon-old*
+octo-daemon-pre-*
