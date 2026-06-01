@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -25,6 +26,14 @@ type Client struct {
 	apiKey     string
 	cliVersion string
 	httpClient *http.Client
+
+	// PR-A.1: JWT fields — populated by EnsureJWT when serverURL is set.
+	// Until daemon callers actually swap to UseJWT mode (PR-A.2), these
+	// stay zero and postJSON keeps sending api-key in Authorization.
+	serverURL  string
+	jwtMu      sync.Mutex
+	jwtToken   string
+	jwtExpiry  time.Time
 }
 
 func NewClient(apiURL, apiKey, cliVersion string) *Client {
@@ -35,6 +44,63 @@ func NewClient(apiURL, apiKey, cliVersion string) *Client {
 		cliVersion: cliVersion,
 		httpClient: &http.Client{Timeout: 30 * time.Second},
 	}
+}
+
+// SetServerURL points the JWT exchange at octo-server. Once set, EnsureJWT
+// works; future PR-A.2 routes will swap Authorization to "Bearer <jwt>".
+func (c *Client) SetServerURL(serverURL string) {
+	c.serverURL = strings.TrimRight(serverURL, "/")
+}
+
+type tokenExchangeReq struct {
+	APIKey   string `json:"api_key"`
+	DaemonID string `json:"daemon_id,omitempty"`
+}
+
+type tokenExchangeResp struct {
+	Token     string `json:"token"`
+	ExpiresIn int    `json:"expires_in"`
+	Scope     string `json:"scope"`
+}
+
+// EnsureJWT fetches (or refreshes if within 5min of expiry) a daemon-scope
+// JWT from octo-server using the configured api-key. Safe for concurrent
+// callers via jwtMu. Returns the bearer token string.
+func (c *Client) EnsureJWT(ctx context.Context, daemonID string) (string, error) {
+	if c.serverURL == "" {
+		return "", fmt.Errorf("server URL not set — call SetServerURL first")
+	}
+	c.jwtMu.Lock()
+	defer c.jwtMu.Unlock()
+	if c.jwtToken != "" && time.Until(c.jwtExpiry) > 5*time.Minute {
+		return c.jwtToken, nil
+	}
+	body, err := json.Marshal(tokenExchangeReq{APIKey: c.apiKey, DaemonID: daemonID})
+	if err != nil {
+		return "", err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		c.serverURL+"/v1/auth/token", bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("token exchange: %w", err)
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", fmt.Errorf("token exchange %d: %s", resp.StatusCode, string(respBody))
+	}
+	var r tokenExchangeResp
+	if err := json.Unmarshal(respBody, &r); err != nil {
+		return "", fmt.Errorf("parse token response: %w", err)
+	}
+	c.jwtToken = r.Token
+	c.jwtExpiry = time.Now().Add(time.Duration(r.ExpiresIn) * time.Second)
+	return r.Token, nil
 }
 
 type RegisterRequest struct {
