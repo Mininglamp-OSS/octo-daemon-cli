@@ -29,7 +29,8 @@
 
 ```text
 matter 评论里 @bot
-  -> matter 同事务写 matter_bot_task (status=queued)
+  -> matter 写 timeline 行（事务 1，commit）
+  -> matter worker goroutine 异步 INSERT matter_bot_task (status=queued)  ← best-effort, 见 §13 polish
   -> daemon 心跳后从 fleet 拿 managed_bots 列表
   -> daemon GET matter /api/v1/internal/bot-tasks?bot_uid=X (Bearer daemon JWT)
   -> daemon spawn openclaw agent (本地)
@@ -65,7 +66,7 @@ matter 评论里 @bot
 ### octo-matter
 
 - 原有：matter / timeline / activity / outputs
-- **新增 `matter_bot_task` 表**（PR-B.1）：matter 评论 @bot 时**同事务**入队
+- **新增 `matter_bot_task` 表**（PR-B.1）：matter 评论 @bot 时**异步 best-effort 入队**（timeline 事务 commit 后，由 worker goroutine 单独插入 — 不是同事务；存在 timeline-commit 与 worker-execute 之间的 crash 丢窗口，GA 阶段加 outbox 闭环，见 §13）
 - **新增 daemon endpoints**（JWT auth）：`GET /api/v1/internal/bot-tasks` + `POST /api/v1/internal/bot-tasks/:id/ack`
 - 现有 `POST /api/v1/internal/matters/:id/timeline` + `/activities` daemon 用于 writeback —— **DualAuth 中间件**接受 daemon JWT 或 X-Internal-Token 任一；daemon 走 JWT，老调用方走 token，互不影响
 - `internal/auth/jwt.go` 同 fleet 一样拉 server JWKS
@@ -282,7 +283,7 @@ POST /api/v1/matters  (或 POST .../assignees)
          INSERT matter_bot_task (status='queued', trigger_kind='assignee_added')
 ```
 
-> **核心不变量**：评论/事项的持久化和 bot_task 入队 **要么走同事务，要么走同一 worker 不会丢的异步**。messaging 损失靠 sweeper（§8）兜底。
+> **当前实现（PoC，已知 trade-off）**：评论/事项 commit 后，由 matter 的 worker goroutine 异步 INSERT matter_bot_task —— **不是同事务**，timeline-commit 与 worker-execute 之间 server crash 会丢 task（sweeper 救不了，sweeper 只 reclaim 表里已有的过期行）。**GA polish 要补 outbox 表 + 同事务 INSERT outbox + 独立 worker poll outbox**，达到"评论 commit 即 task 入队不丢"语义。见 §13。
 
 ### Daemon pull 协议
 
@@ -653,7 +654,7 @@ PR 拆分按服务边界做：
 - [x] **0 通信架构**：server / fleet / matter 三者之间 0 HTTP 互调；唯一例外 fleet→matter 的 bot feed proxy 是 polish 项
 - [x] **server 作为 JWT issuer**：直接走最终态 RS256 + JWKS，跳过 PoC 期"调 server /v1/auth/verify"中间方案
 - [x] **bot_token 留 server**：daemon 用自己的 daemon-scope JWT 拉，never 经过浏览器/fleet
-- [x] **bot_task 归 matter**：写 timeline 同事务入队，daemon pull from matter，fleet 不再持有
+- [x] **bot_task 归 matter**：写 timeline + bot_task INSERT 当前是异步 best-effort（不是同事务，存在 crash 丢窗口；GA polish 加 outbox 闭环 — §13），daemon pull from matter，fleet 不再持有
 - [x] **lease 续约**：PoC 不做（10min lease 覆盖大部分 agent run）；GA 加 `POST /api/v1/internal/bot-tasks/:id/heartbeat` refresh lease
 - [x] **多 daemon 并发**：matter `ClaimNextForBot` 用 `UPDATE...WHERE status='queued' ORDER BY ... LIMIT N` 原子 claim；contract test 列入 GA blocker
 - [x] **server runtime 删 vs 留**：PR-C 真删，rollback 路径靠 `LEGACY_RUNTIME_ROUTES=true` env（实际上代码已删，env 不再生效；要 rollback 需 git revert）
@@ -668,4 +669,5 @@ PR 拆分按服务边界做：
 - JWT key rotation 协调机制（PoC 无所谓）
 - bot feed proxy 改成浏览器直接调 matter（彻底 0 fleet→matter，顺带把 fleet 的 X-Internal-Token 也撤掉）
 - bot table 字段瘦身（bot_token 死字段删除；fleet `bot.claim_token` rename `provision_token` 消歧 §4 注）
+- **matter @bot 入队 outbox 化**：当前 `timeline_handler.dispatchMentionedAgents` 是 fire-and-forget worker.Submit（不在 timeline 事务里），matter 在 timeline-commit 后到 worker-execute 之间 crash → bot_task 丢失 + sweeper 救不了（sweeper 只 reclaim 表里已有的过期行）。GA 加 outbox 表 + 同事务 INSERT outbox + 独立 worker poll outbox → 真正"评论 commit 即 task 入队不丢"语义。reviewer 第 N 次提的。
 - 单元测试补齐（auth_jwt / JWTVerifier / BotTaskRepo / DualAuth — 当前覆盖 0%）

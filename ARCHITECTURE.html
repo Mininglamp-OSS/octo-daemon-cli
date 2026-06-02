@@ -904,7 +904,7 @@ unknown kid 自动触发 JWKS refresh (10s floor)</code></pre>
         <tr><th><strong>bot_token</strong>（bot 凭据）</th><td><strong>octo-server</strong> · <code>robot.bot_token</code></td><td>永不外发；daemon 用 <code>GET /v1/bot/:uid/token</code> + daemon JWT 拉</td></tr>
         <tr><th>space membership</th><td>octo-server</td><td>JWT 颁发时校验（server #1 fix 后真正校验; AU3 真正成立）· matter task pull 加 space_id 过滤 (AU6)</td></tr>
         <tr><th>matter · timeline · activity · outputs</th><td>octo-matter</td><td>通过 <code>matter_id</code> 引用 · daemon writeback 走 JWT (DualAuth)，老调用方 X-Internal-Token fallback</td></tr>
-        <tr><th><strong>matter_bot_task</strong>（bot 任务队列）</th><td><strong>octo-matter</strong> <span class="pill pill--ok" style="margin-left:6px">已落地 PR-B</span></td><td>matter 评论 @bot 同事务入队 · daemon JWT pull · ack 用 claim_token · writeback 4-invariant binding (AU5)</td></tr>
+        <tr><th><strong>matter_bot_task</strong>（bot 任务队列）</th><td><strong>octo-matter</strong> <span class="pill pill--ok" style="margin-left:6px">已落地 PR-B</span></td><td>matter 评论 @bot 异步 best-effort 入队（timeline-commit 后 worker INSERT，<strong>不是同事务</strong>；存 crash 丢窗口，GA 加 outbox） · daemon JWT pull · ack 用 claim_token · writeback 4-invariant binding (AU5)</td></tr>
         <tr><th>JWT 私钥 + JWKS</th><td>octo-server · <code>modules/auth_jwt</code></td><td>fleet/matter 启动拉 <code>/.well-known/jwks.json</code> 缓存 · unknown kid 触发 refresh</td></tr>
         <tr><th>daemon 注册 · runtime 健康度</th><td>octo-fleet · <code>agent_runtime</code> 表</td><td>web 直调 fleet · daemon heartbeat 维护</td></tr>
         <tr><th><code>bot_uid ↔ workspace_id</code> 映射</th><td>octo-fleet · <code>bot</code> 表</td><td>heartbeat 响应吐 <code>managed_bots</code> 给 daemon · matter 不知道 workspace 这层</td></tr>
@@ -947,7 +947,7 @@ unknown kid 自动触发 JWKS refresh (10s floor)</code></pre>
   <ol class="decisions">
     <li><strong>整体拓扑</strong> · server / fleet / matter 三服务 0 HTTP 互调 · daemon 协调一切 · <span class="pill pill--ok" style="margin-left:6px">✓ 已落地</span></li>
     <li><strong>服务命名</strong> · <code>octo-fleet</code>（不是 octo-runtime），端口 :8092，独立 GitHub repo (private) · <span class="pill pill--ok" style="margin-left:6px">✓ 已落地</span></li>
-    <li><strong>bot_task 队列归 matter</strong> · matter 评论 @bot 同事务入队 · daemon JWT pull · ack claim_token 校验 · writeback 4-invariant binding (AU5) · <span class="pill pill--ok" style="margin-left:6px">✓ PR-B + PR-D</span></li>
+    <li><strong>bot_task 队列归 matter</strong> · matter 评论 @bot 异步 best-effort 入队（worker fire-and-forget，<strong>非同事务</strong>，GA 加 outbox 闭环） · daemon JWT pull · ack claim_token 校验 · writeback 4-invariant binding (AU5) · <span class="pill pill--ok" style="margin-left:6px">✓ PR-B + PR-D</span></li>
     <li><strong>跨服务鉴权</strong> · server 是唯一 JWT issuer · fleet/matter 拉 JWKS 本地验签 · daemon 用 api_key 换 JWT 调三端 · <span class="pill pill--ok" style="margin-left:6px">✓ PR-A.1</span></li>
     <li><strong>bot_token 不出 server</strong> · 浏览器 step2 调 server mint 只拿 bot_uid · daemon 用 daemon-scope JWT 拉 token 喂 openclaw · <span class="pill pill--ok" style="margin-left:6px">✓ PR-A.3</span></li>
     <li><strong>server runtime 模块删除</strong> · PR-C 真删（27 文件 · 3819 行）· rollback 走 git revert · <span class="pill pill--ok" style="margin-left:6px">✓ PR-C</span></li>
