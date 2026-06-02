@@ -138,6 +138,7 @@ daemon → server GET  /v1/bot/:uid/token (Bearer JWT) ← 拉 bot_token 喂给 
 - **AU3**：fleet/matter 拿到的 JWT.space_id 直接信任（issuer 已校验成员关系），不再查 space_member 表
 - **AU4 (修订)**：daemon 必须直连 server（拿 JWT + 拉 bot_token）。fleet/matter 在**业务路径**上仍不调 server（启动期拉 JWKS 是公钥分发，不在此约束内）
 - **AU5 (writeback context binding)**：matter `/timeline` + `/activities` 在 daemon JWT 分支下，要求 body 带 `task_id + claim_token` + 4 项 invariants 全过（bot_uid / space_id / claimed_by / claim_token+dispatched 状态），任一不通过 → 403 `WRITEBACK_FORBIDDEN`。X-Internal-Token 分支 short-circuit 不查 — 老调用方零改动。详见 §7。
+- **AU6 (space-boundary enforcement)**：cross-space 提权 / 劫持闭环 — server `/v1/auth/token` 在颁发 web JWT 前必须 SELECT space_member 校验 caller ∈ space；server `/v1/bot/mint` 在调 MintBotOBO 前同样校验 caller ∈ target space；matter task pull (`ListBotTasksForDaemon`) 把 SQL 加上 `space_id=JWT.space_id` 过滤，跨 space bot 的 task 拉不到也 claim 不到。这三处一起把 "**任意 logged-in 用户能跨 space 读写**" 的旧契约（plan 早期写"下游再 check"实际两边互相甩锅）收口。
 
 ### 为什么两种协议并存 (Why two protocols)
 
@@ -632,6 +633,7 @@ PR 拆分按服务边界做：
 | **PR-B.4.5** | assignee 路径补走本地 DB（之前漏改）| matter | ✅ |
 | **PR-C** | server 删 modules/runtime（27 文件 / 3819 行） | server | ✅ |
 | **PR-D** | matter DualAuth + daemon JWT writeback + actor_uid binding (security fix) | matter, daemon, server | ✅ |
+| **PR-D.1** | space-boundary enforcement (AU6) — 闭环 3 个 cross-space 提权/劫持漏洞 | server, matter | ✅ |
 
 各 repo 分支：
 
@@ -657,6 +659,7 @@ PR 拆分按服务边界做：
 - [x] **server runtime 删 vs 留**：PR-C 真删，rollback 路径靠 `LEGACY_RUNTIME_ROUTES=true` env（实际上代码已删，env 不再生效；要 rollback 需 git revert）
 - [x] **writeback 端点 DualAuth**：timeline / activities 接受 daemon JWT 或 X-Internal-Token 任一；daemon 一律走 JWT，**用户机器上 0 shared secret**（NOTIFY_INTERNAL_TOKEN 从 BotFather /daemon 安装命令移除）
 - [x] **writeback context binding (AU5)**：reviewer 指出 DualAuth-JWT 开放后 actor_uid 无 JWT subject 绑定 = 任意 daemon 能伪造任意 bot；修法采用 `task_id + claim_token` 4-invariant 校验（而非 JWT bots claim），claim_token 天然带 revocation + JWT schema 0 改动 + sweeper 回收即失效
+- [x] **space-boundary enforcement (AU6)**：自查时发现 plan AU3 "fleet/matter 信 JWT.space_id" 跟 server 端 "downstream re-checks" 互相甩锅，实际谁都没查 → 3 个 cross-space 攻击 (JWT mint / bot mint / task pull)；修法在 server `/v1/auth/token` + `/v1/bot/mint` 加 `SELECT space_member` 校验 caller ∈ space，让 AU3 真正成立；matter ClaimNextForBot SQL 加 `space_id=?` 闭环 cross-space task 劫持。3 个 fix 均加法 / 不改契约 / 不影响 X-Internal-Token 路径 / 不影响 daemon api_key 路径（resolveAPIKey 之前就有同样的 SQL）
 
 ### 后续讨论项（暂不阻塞 GA）
 

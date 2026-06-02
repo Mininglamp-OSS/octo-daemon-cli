@@ -902,7 +902,7 @@ unknown kid 自动触发 JWKS refresh (10s floor)</code></pre>
       <tbody>
         <tr><th>user · IM bot 账户</th><td>octo-server</td><td>通过 <code>uid</code> 引用 · 不反查（信任 JWT.sub 已校验）</td></tr>
         <tr><th><strong>bot_token</strong>（bot 凭据）</th><td><strong>octo-server</strong> · <code>robot.bot_token</code></td><td>永不外发；daemon 用 <code>GET /v1/bot/:uid/token</code> + daemon JWT 拉</td></tr>
-        <tr><th>space membership</th><td>octo-server</td><td>JWT 颁发时校验；fleet/matter 直接信 JWT.space_id（不再查 space_member）</td></tr>
+        <tr><th>space membership</th><td>octo-server</td><td>JWT 颁发时校验（server #1 fix 后真正校验; AU3 真正成立）· matter task pull 加 space_id 过滤 (AU6)</td></tr>
         <tr><th>matter · timeline · activity · outputs</th><td>octo-matter</td><td>通过 <code>matter_id</code> 引用 · daemon writeback 走 JWT (DualAuth)，老调用方 X-Internal-Token fallback</td></tr>
         <tr><th><strong>matter_bot_task</strong>（bot 任务队列）</th><td><strong>octo-matter</strong> <span class="pill pill--ok" style="margin-left:6px">已落地 PR-B</span></td><td>matter 评论 @bot 同事务入队 · daemon JWT pull · ack 用 claim_token · writeback 4-invariant binding (AU5)</td></tr>
         <tr><th>JWT 私钥 + JWKS</th><td>octo-server · <code>modules/auth_jwt</code></td><td>fleet/matter 启动拉 <code>/.well-known/jwks.json</code> 缓存 · unknown kid 触发 refresh</td></tr>
