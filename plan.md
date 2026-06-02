@@ -477,6 +477,38 @@ daemon 一律走 JWT — 用户机器上**零 shared secret**（BotFather 安装
 
 新增文件：`octo-matter/internal/auth/dual_auth.go`（~15 行）。daemon 端 `matterInternalPost` 改用 `EnsureJWT` 拼 Bearer header。
 
+### Writeback context binding（防 actor_uid 伪造）
+
+DualAuth 把 timeline / activity 端点向 daemon JWT 开放后，"任何持有合法 JWT 的 daemon 都能在任意 bot 名下写"的风险曾出现 — 因为老 X-Internal-Token 路径默认 caller 是 trusted server，body 里的 `actor_uid` 当真。修正:
+
+- 请求体新增 `task_id` + `claim_token` 字段
+- DaemonJWTMiddleware 把 `daemon_id` claim 注入 `gin.Context`
+- handler 检测到 `daemon_id` 时（即走 JWT 分支），调用 `BotTaskRepo.LoadDispatchedForWriteback(task_id, claim_token)` 拿到关联的 `matter_bot_task` 行
+- 强制 4 项 invariants — 任意一项不通过返 **403 WRITEBACK_FORBIDDEN**:
+
+| invariant | 防的攻击 |
+|---|---|
+| `row.bot_uid == body.actor_uid` | daemon 在别人 bot 名下伪造写入 |
+| `row.space_id == body.space_id` (若 body 带) | 跨 space 写入 |
+| `row.claimed_by == JWT.daemon_id` | daemon B 抢 daemon A 的 task 写入 |
+| `claim_token == row.claim_token AND status='dispatched'` | task 已被 sweeper 回收 / 已 ack 后仍想写 |
+
+X-Internal-Token 路径**不受影响** — 没 `daemon_id` claim，校验函数直接 return nil。
+
+> **已知行为 (非 bug)**: `LoadDispatchedForWriteback` 返回 task 行之后到 `CreateInternalEntry` 之间存在小 race window — sweeper 此刻 reclaim 这条 task，timeline insert 仍会成功（insert 不绑 task status）。后果: lease 过期 + sibling daemon 已重跑 → 两条回复都 append 到 timeline，actor 仍合法 bot。可接受 — writeback 不保证幂等是设计约束，由 daemon 端 lease 续约 / sweeper 阈值控制概率。
+
+### 升级顺序约束（重要 — DualAuth 唯一 cutover 风险）
+
+DualAuth 对**老调用方 (fleet bot-feed proxy / 任何还用 X-Internal-Token 的服务) 0 cutover**，但**新链路** (daemon JWT writeback) 有强升级顺序:
+
+1. **server** 升级 (拿 v2 session fix + JWKS 已就绪) — 否则 web 用户拿不到 JWT，进不去 Runtimes 页
+2. **matter** 升级 + 配 `OCTO_SERVER_JWKS_URL` env (DualAuth 中间件就绪)
+3. **daemon** 升级 (切 JWT writeback)
+
+反过来不行：daemon 先升级 → matter 还没 DualAuth → daemon Bearer JWT 请求**全 401** → bot 回复永远不到 matter，timeline / activity 全丢。
+
+部署 runbook 必须按上面顺序；rollback 反方向 (daemon → matter → server)。
+
 > 唯一例外：fleet 的 `GET /v1/runtimes/bots/:id/feed` 是 proxy 到 matter `GET /api/v1/internal/bots/:bot_uid/feed`（X-Internal-Token），matter URL 从 `OCTO_MATTER_URL` env 兜底。这条违反 0 通信，未来改成浏览器直接调 matter。
 
 ---

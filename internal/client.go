@@ -198,23 +198,34 @@ func (c *Client) AckMatterBotTask(ctx context.Context, taskID, claimToken, statu
 // JWT or X-Internal-Token (DualAuth); we always use JWT so the daemon
 // never needs the shared NOTIFY_INTERNAL_TOKEN secret on the user's
 // machine.
-func (c *Client) WriteMatterTimeline(ctx context.Context, matterID, actorUID, spaceID, content string) error {
+//
+// taskID + claimToken bind this writeback to the in-flight bot_task
+// daemon just claimed; matter cross-checks them against matter_bot_task
+// to enforce "you can only write under bots whose tasks you currently
+// hold" (closes the actor_uid spoofing gap on the JWT path).
+func (c *Client) WriteMatterTimeline(ctx context.Context, matterID, actorUID, spaceID, content, taskID, claimToken string) error {
 	return c.matterInternalPost(ctx, fmt.Sprintf("/api/v1/internal/matters/%s/timeline", matterID),
 		map[string]any{
-			"actor_uid": actorUID,
-			"space_id":  spaceID,
-			"content":   content,
+			"actor_uid":   actorUID,
+			"space_id":    spaceID,
+			"content":     content,
+			"task_id":     taskID,
+			"claim_token": claimToken,
 		})
 }
 
 // WriteMatterActivity posts an agent_task_* activity to matter via the
-// daemon JWT path (same DualAuth endpoint as timeline).
-func (c *Client) WriteMatterActivity(ctx context.Context, matterID, actorUID, action string, detail map[string]any) error {
+// daemon JWT path (same DualAuth endpoint as timeline). taskID + claimToken
+// serve the same writeback-context binding role as in WriteMatterTimeline.
+func (c *Client) WriteMatterActivity(ctx context.Context, matterID, actorUID, action string, detail map[string]any, spaceID, taskID, claimToken string) error {
 	return c.matterInternalPost(ctx, fmt.Sprintf("/api/v1/internal/matters/%s/activities", matterID),
 		map[string]any{
-			"actor_uid": actorUID,
-			"action":    action,
-			"detail":    detail,
+			"actor_uid":   actorUID,
+			"action":      action,
+			"detail":      detail,
+			"space_id":    spaceID,
+			"task_id":     taskID,
+			"claim_token": claimToken,
 		})
 }
 

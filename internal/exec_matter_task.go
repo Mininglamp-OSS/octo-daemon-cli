@@ -45,7 +45,10 @@ func (d *Daemon) handleMatterBotTask(parent context.Context, workspaceID string,
 func (d *Daemon) matterWriteReplyAndActivity(parent context.Context, task MatterBotTask, reply string, elapsedMs int64) error {
 	ctx, cancel := context.WithTimeout(parent, 10*time.Second)
 	defer cancel()
-	if err := d.client.WriteMatterTimeline(ctx, task.MatterID, task.BotUID, task.SpaceID, reply); err != nil {
+	// task.ID + task.ClaimToken let matter bind this writeback to the in-flight
+	// bot_task we just claimed — without them matter 403s on the JWT path
+	// (writeback context check). They're a no-op on legacy X-Internal-Token.
+	if err := d.client.WriteMatterTimeline(ctx, task.MatterID, task.BotUID, task.SpaceID, reply, task.ID, task.ClaimToken); err != nil {
 		return err
 	}
 	return d.client.WriteMatterActivity(ctx, task.MatterID, task.BotUID, "agent_task_completed",
@@ -54,7 +57,7 @@ func (d *Daemon) matterWriteReplyAndActivity(parent context.Context, task Matter
 			"task_id":    task.ID,
 			"elapsed_ms": elapsedMs,
 			"bytes":      len(reply),
-		})
+		}, task.SpaceID, task.ID, task.ClaimToken)
 }
 
 func (d *Daemon) matterWriteFailedActivity(parent context.Context, task MatterBotTask, errMsg string, elapsedMs int64) {
@@ -66,7 +69,7 @@ func (d *Daemon) matterWriteFailedActivity(parent context.Context, task MatterBo
 			"task_id":    task.ID,
 			"elapsed_ms": elapsedMs,
 			"error":      errMsg,
-		})
+		}, task.SpaceID, task.ID, task.ClaimToken)
 }
 
 func (d *Daemon) ackMatterTask(parent context.Context, task MatterBotTask, status, resultSummary, errMsg string) {
