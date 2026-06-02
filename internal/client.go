@@ -32,12 +32,6 @@ type Client struct {
 	useJWT    bool
 	daemonID  string
 
-	// internalToken — shared X-Internal-Token used for matter writeback
-	// endpoints (timeline/activity). PR-B doesn't migrate those to JWT
-	// to keep the route surface minimal; daemon supplies the same
-	// NOTIFY_INTERNAL_TOKEN env that octo-server already shares.
-	internalToken string
-
 	jwtMu     sync.Mutex
 	jwtToken  string
 	jwtExpiry time.Time
@@ -63,13 +57,6 @@ func (c *Client) SetServerURL(serverURL string) {
 // octo-matter. PR-B: daemon talks to matter directly for tasks.
 func (c *Client) SetMatterURL(matterURL string) {
 	c.matterURL = strings.TrimRight(matterURL, "/")
-}
-
-// SetInternalToken stores the shared X-Internal-Token used for matter
-// writeback endpoints (POST /api/v1/internal/matters/:id/timeline,
-// /activities). The same secret octo-server uses for /v1/internal/notify.
-func (c *Client) SetInternalToken(tok string) {
-	c.internalToken = tok
 }
 
 // EnableJWT switches postJSON to use Bearer <JWT> instead of Bearer
@@ -206,9 +193,11 @@ func (c *Client) AckMatterBotTask(ctx context.Context, taskID, claimToken, statu
 	return nil
 }
 
-// WriteMatterTimeline posts a bot reply to matter timeline via the
-// X-Internal-Token endpoint. The endpoint pre-dates PR-B; daemon
-// reuses it for writebacks to minimize matter's route surface.
+// WriteMatterTimeline posts a bot reply to matter timeline. Uses the
+// daemon's own JWT — matter's writeback endpoints accept either daemon
+// JWT or X-Internal-Token (DualAuth); we always use JWT so the daemon
+// never needs the shared NOTIFY_INTERNAL_TOKEN secret on the user's
+// machine.
 func (c *Client) WriteMatterTimeline(ctx context.Context, matterID, actorUID, spaceID, content string) error {
 	return c.matterInternalPost(ctx, fmt.Sprintf("/api/v1/internal/matters/%s/timeline", matterID),
 		map[string]any{
@@ -219,7 +208,7 @@ func (c *Client) WriteMatterTimeline(ctx context.Context, matterID, actorUID, sp
 }
 
 // WriteMatterActivity posts an agent_task_* activity to matter via the
-// X-Internal-Token endpoint.
+// daemon JWT path (same DualAuth endpoint as timeline).
 func (c *Client) WriteMatterActivity(ctx context.Context, matterID, actorUID, action string, detail map[string]any) error {
 	return c.matterInternalPost(ctx, fmt.Sprintf("/api/v1/internal/matters/%s/activities", matterID),
 		map[string]any{
@@ -233,8 +222,9 @@ func (c *Client) matterInternalPost(ctx context.Context, path string, payload ma
 	if c.matterURL == "" {
 		return fmt.Errorf("matter URL not set")
 	}
-	if c.internalToken == "" {
-		return fmt.Errorf("internal token not set (NOTIFY_INTERNAL_TOKEN)")
+	jwtTok, err := c.EnsureJWT(ctx, c.daemonID)
+	if err != nil {
+		return fmt.Errorf("ensure jwt: %w", err)
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -245,7 +235,7 @@ func (c *Client) matterInternalPost(ctx context.Context, path string, payload ma
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Internal-Token", c.internalToken)
+	req.Header.Set("Authorization", "Bearer "+jwtTok)
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("matter post: %w", err)

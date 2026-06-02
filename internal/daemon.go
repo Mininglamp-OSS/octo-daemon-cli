@@ -56,14 +56,10 @@ func NewDaemon(cfg Config) (*Daemon, error) {
 		serverURL = cfg.APIURL
 	}
 	matterURL := os.Getenv("OCTO_MATTER_URL")
-	internalToken := os.Getenv("NOTIFY_INTERNAL_TOKEN")
 	client := NewClient(fleetURL, cfg.APIKey, cfg.CLIVersion)
 	client.SetServerURL(serverURL)
 	if matterURL != "" {
 		client.SetMatterURL(matterURL)
-	}
-	if internalToken != "" {
-		client.SetInternalToken(internalToken)
 	}
 	// Enable JWT only when we have a distinct fleet URL (i.e., a real
 	// PR-A.2 cutover). Otherwise the same baseURL means we're talking to

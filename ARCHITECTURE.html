@@ -633,8 +633,8 @@
             <div style="margin-top:6px;line-height:2;">
               <code>GET /api/v1/internal/bot-tasks?bot_uid=X</code> (JWT)<br/>
               <code>POST /api/v1/internal/bot-tasks/:id/ack</code> (JWT)<br/>
-              <code>POST /api/v1/internal/matters/:id/timeline</code> (X-Internal-Token)<br/>
-              <code>POST /api/v1/internal/matters/:id/activities</code> (X-Internal-Token)
+              <code>POST /api/v1/internal/matters/:id/timeline</code> (JWT, DualAuth)<br/>
+              <code>POST /api/v1/internal/matters/:id/activities</code> (JWT, DualAuth)
             </div>
           </td>
           <td>
@@ -735,6 +735,7 @@
       <g transform="translate(728,418)"><rect x="-26" y="-9" width="52" height="18" class="arrow-label-bg"/><text x="0" y="3" text-anchor="middle" class="seq-label" fill="#0369a1">reply</text></g>
 
       <!-- 8. writeback (3 calls: timeline + activity + ack) -->
+      <text x="472" y="442" text-anchor="middle" class="seq-meta" fill="#6b21a8">Bearer daemon JWT · timeline+activity 走 DualAuth · ack 走纯 JWT group</text>
       <line x1="560" y1="458" x2="384" y2="458" stroke="#9333ea" stroke-width="1.3" marker-end="url(#s-purple)"/>
       <g transform="translate(472,450)"><rect x="-122" y="-9" width="244" height="18" class="arrow-label-bg"/><text x="0" y="3" text-anchor="middle" class="seq-label" fill="#6b21a8">POST /internal/matters/:id/timeline</text></g>
 
@@ -788,6 +789,9 @@
       <!-- 0. user 填表 -->
       <line x1="90" y1="68" x2="226" y2="68" stroke="#64748b" stroke-width="1.3" marker-end="url(#c-slate)"/>
       <g transform="translate(158,60)"><rect x="-94" y="-9" width="188" height="18" class="arrow-label-bg"/><text x="0" y="3" text-anchor="middle" class="seq-label" fill="#475569">填名字 + 选 runtime · 提交</text></g>
+
+      <!-- 0a. 前置: web 已经用 session 换好 30min web JWT (省略图示) -->
+      <text x="320" y="86" text-anchor="middle" class="seq-meta" fill="#475569" font-style="italic">前置 (未画)：web 此前已 POST server /v1/auth/token (session) → web JWT (30min)，下面 ① ② ③ 隐式带 Bearer JWT</text>
 
       <!-- ─── Step 1: web → fleet draft ─── -->
       <line x1="230" y1="102" x2="406" y2="102" stroke="#ea580c" stroke-width="1.3" marker-end="url(#c-orange)"/>
@@ -899,7 +903,7 @@ unknown kid 自动触发 JWKS refresh (10s floor)</code></pre>
         <tr><th>user · IM bot 账户</th><td>octo-server</td><td>通过 <code>uid</code> 引用 · 不反查（信任 JWT.sub 已校验）</td></tr>
         <tr><th><strong>bot_token</strong>（bot 凭据）</th><td><strong>octo-server</strong> · <code>robot.bot_token</code></td><td>永不外发；daemon 用 <code>GET /v1/bot/:uid/token</code> + daemon JWT 拉</td></tr>
         <tr><th>space membership</th><td>octo-server</td><td>JWT 颁发时校验；fleet/matter 直接信 JWT.space_id（不再查 space_member）</td></tr>
-        <tr><th>matter · timeline · activity · outputs</th><td>octo-matter</td><td>通过 <code>matter_id</code> 引用 + JWT/X-Internal-Token 调 matter API</td></tr>
+        <tr><th>matter · timeline · activity · outputs</th><td>octo-matter</td><td>通过 <code>matter_id</code> 引用 · daemon writeback 走 JWT (DualAuth)，老调用方 X-Internal-Token fallback</td></tr>
         <tr><th><strong>matter_bot_task</strong>（bot 任务队列）</th><td><strong>octo-matter</strong> <span class="pill pill--ok" style="margin-left:6px">已落地 PR-B</span></td><td>matter 评论 @bot 同事务入队 · daemon JWT pull · ack claim_token 校验</td></tr>
         <tr><th>JWT 私钥 + JWKS</th><td>octo-server · <code>modules/auth_jwt</code></td><td>fleet/matter 启动拉 <code>/.well-known/jwks.json</code> 缓存 · unknown kid 触发 refresh</td></tr>
         <tr><th>daemon 注册 · runtime 健康度</th><td>octo-fleet · <code>agent_runtime</code> 表</td><td>web 直调 fleet · daemon heartbeat 维护</td></tr>
@@ -950,7 +954,7 @@ unknown kid 自动触发 JWKS refresh (10s floor)</code></pre>
     <li><strong>lease 续约</strong> · PoC 不做（10min lease 覆盖大多数 agent run） · GA blocker · <span class="pill pill--warn" style="margin-left:6px">GA 加</span></li>
   </ol>
   <div class="note" style="margin-top:16px">
-    <strong>后续讨论项</strong>（暂不阻塞 GA）· crash recovery 流式 checkpoint · 单 daemon 多 bot 并行资源限额（openclaw scope upgrade 撞车） · JWT key rotation · bot feed proxy 改浏览器直调 matter · writeback 端点全切 JWT · 单元测试补齐
+    <strong>后续讨论项</strong>（暂不阻塞 GA）· crash recovery 流式 checkpoint · 单 daemon 多 bot 并行资源限额（openclaw scope upgrade 撞车） · JWT key rotation · bot feed proxy 改浏览器直调 matter（顺带撤掉 fleet 的 X-Internal-Token） · 单元测试补齐（含 DualAuth）
   </div>
 </section>
 
