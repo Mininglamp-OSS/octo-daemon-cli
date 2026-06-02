@@ -404,9 +404,9 @@
 
 <!-- ────────────────── HERO ────────────────── -->
 <header class="hero">
-  <span class="hero__eyebrow"><span>定稿</span></span>
+  <span class="hero__eyebrow"><span>已落地 · 2026-06-02</span></span>
   <h1>Octo Agent Runtime · 系统架构</h1>
-  <p class="hero__sub">独立 3 服务平级 · 服务间最少调用 · daemon 单点协调</p>
+  <p class="hero__sub">3 后端服务 · <strong>0 互调</strong> · server 是唯一 JWT issuer · daemon 协调一切</p>
 
   <div class="legend" role="list" aria-label="服务图例">
     <span class="chip" role="listitem"><span class="dot" style="background:var(--c-server)"></span>octo-server · user / bot / auth</span>
@@ -509,20 +509,32 @@
         <text x="0" y="3" text-anchor="middle" class="seq-label" fill="#475569">daemon list · bot create</text>
       </g>
 
-      <!-- ─── runtime → server (only inter-service call) ─── -->
-      <path d="M 820 248 L 300 248" fill="none" stroke="#ea580c" stroke-width="1.6" stroke-dasharray="7,3" marker-end="url(#ah-orange)"/>
-      <g transform="translate(560,234)">
-        <rect x="-138" y="-10" width="276" height="20" class="arrow-label-bg" stroke="#fdba74"/>
-        <text x="0" y="4" text-anchor="middle" class="seq-label" fill="#9a3412" font-weight="600">runtime → server · mint bot OBO + verify</text>
+      <!-- ─── fleet → matter (bot feed proxy, polish 项要拆) ─── -->
+      <path d="M 820 248 L 680 248" fill="none" stroke="#ea580c" stroke-width="1" stroke-dasharray="3,3" marker-end="url(#ah-orange)" opacity="0.6"/>
+      <g transform="translate(750,234)">
+        <rect x="-66" y="-9" width="132" height="18" class="arrow-label-bg" stroke="#fdba74"/>
+        <text x="0" y="3" text-anchor="middle" class="seq-label" fill="#9a3412">bot feed proxy (polish 项)</text>
       </g>
-      <text x="560" y="270" text-anchor="middle" class="seq-meta" fill="#9a3412">唯一不可避免的服务间调用 · X-Internal-Token</text>
+
+      <!-- ─── JWKS pulls: server → fleet / matter (公钥分发) ─── -->
+      <path d="M 300 230 Q 370 260 440 230" fill="none" stroke="#0284c7" stroke-width="1" stroke-dasharray="2,3" marker-end="url(#ah-blue)" opacity="0.7"/>
+      <text x="370" y="278" text-anchor="middle" class="seq-meta" fill="#0369a1">JWKS pull</text>
+      <path d="M 300 218 Q 560 270 820 218" fill="none" stroke="#0284c7" stroke-width="1" stroke-dasharray="2,3" marker-end="url(#ah-blue)" opacity="0.7"/>
+
+      <!-- ─── daemon → server (token exchange + bot_token fetch) ─── -->
+      <path d="M 670 440 Q 460 380 250 305" fill="none" stroke="#16a34a" stroke-width="1.4" marker-end="url(#ah-slate)"/>
+      <g transform="translate(440,388)">
+        <rect x="-92" y="-22" width="184" height="36" class="arrow-label-bg"/>
+        <text x="0" y="-8" text-anchor="middle" class="seq-label" fill="#14532d" font-weight="600">POST /v1/auth/token (api_key→JWT)</text>
+        <text x="0" y="8" text-anchor="middle" class="seq-label" fill="#14532d">GET /v1/bot/:uid/token</text>
+      </g>
 
       <!-- ─── daemon → matter ─── -->
       <path d="M 670 405 Q 590 360 555 305" fill="none" stroke="#9333ea" stroke-width="1.6" marker-end="url(#ah-purple)"/>
       <g transform="translate(505,360)">
         <rect x="-60" y="-22" width="120" height="36" class="arrow-label-bg"/>
-        <text x="0" y="-8" text-anchor="middle" class="seq-label" fill="#6b21a8" font-weight="600">GET tasks?bot=X</text>
-        <text x="0" y="8" text-anchor="middle" class="seq-label" fill="#6b21a8">POST timeline · activity</text>
+        <text x="0" y="-8" text-anchor="middle" class="seq-label" fill="#6b21a8" font-weight="600">GET bot-tasks</text>
+        <text x="0" y="8" text-anchor="middle" class="seq-label" fill="#6b21a8">POST timeline · ack</text>
       </g>
 
       <!-- ─── daemon → runtime ─── -->
@@ -544,19 +556,22 @@
       <!-- bottom legend bar -->
       <g transform="translate(60,560)" font-family="var(--font-sans)">
         <line x1="0" y1="0" x2="32" y2="0" stroke="#94a3b8" stroke-width="1.3" marker-end="url(#ah-slate)"/>
-        <text x="40" y="3" font-size="11" fill="#475569">web → 后端 (Bearer session)</text>
+        <text x="40" y="3" font-size="11" fill="#475569">web → 后端 (Bearer JWT · 30min)</text>
 
-        <line x1="248" y1="0" x2="280" y2="0" stroke="#ea580c" stroke-width="1.6" stroke-dasharray="7,3" marker-end="url(#ah-orange)"/>
-        <text x="288" y="3" font-size="11" fill="#475569">服务 → 服务 (X-Internal-Token · 唯一保留)</text>
+        <line x1="248" y1="0" x2="280" y2="0" stroke="#0284c7" stroke-width="1" stroke-dasharray="2,3" marker-end="url(#ah-blue)"/>
+        <text x="288" y="3" font-size="11" fill="#475569">JWKS pull (验签公钥 · 缓存)</text>
 
-        <line x1="608" y1="0" x2="640" y2="0" stroke="#9333ea" stroke-width="1.6" marker-end="url(#ah-purple)"/>
-        <text x="648" y="3" font-size="11" fill="#475569">daemon → 后端 (Bearer runtime token)</text>
+        <line x1="488" y1="0" x2="520" y2="0" stroke="#9333ea" stroke-width="1.6" marker-end="url(#ah-purple)"/>
+        <text x="528" y="3" font-size="11" fill="#475569">daemon → matter (Bearer JWT)</text>
+
+        <line x1="728" y1="0" x2="760" y2="0" stroke="#16a34a" stroke-width="1.4" marker-end="url(#ah-slate)"/>
+        <text x="768" y="3" font-size="11" fill="#475569">daemon → server (JWT + token fetch)</text>
       </g>
     </svg>
   </div>
 
   <div class="note note--accent">
-    <strong>核心边界纪律 ·</strong> matter ↔ runtime <strong>互不知道对方存在</strong>。无 outbox、无 webhook、无 HMAC 回写。它们被 daemon 这一个进程顺序调用粘起来。
+    <strong>0 通信纪律 ·</strong> server / fleet / matter 三者 <strong>0 HTTP 互调</strong>。所有信任通过 server JWKS 本地验签传递。<strong>唯一例外</strong>：fleet bot feed proxy 到 matter（X-Internal-Token，将来移除）。
   </div>
 </section>
 
@@ -594,25 +609,32 @@
         </tr>
         <tr>
           <th>octo-fleet</th>
+          <td><span class="pill pill--no">✗</span> 不调</td>
           <td>
-            <span class="pill pill--warn">唯一保留</span>
+            <span class="pill pill--warn">仅 bot feed proxy</span>
             <div style="margin-top:6px;line-height:2;">
-              <code>POST /v1/internal/bot/mint-obo</code><br/>
-              <code>POST /v1/internal/auth/api-key/verify</code>
+              <code>GET /api/v1/internal/bots/:bot_uid/feed</code><br/>
+              <span class="seq-meta">(polish 项要拆掉，改浏览器直调 matter)</span>
             </div>
           </td>
-          <td><span class="pill pill--no">✗</span> 不调</td>
           <td>—</td>
         </tr>
         <tr>
           <th>octo-daemon</th>
-          <td><span class="pill pill--no">✗</span> 不调 (鉴权走 runtime token)</td>
           <td>
             <span class="pill pill--ok">✓</span>
             <div style="margin-top:6px;line-height:2;">
-              <code>GET /matters/internal/tasks?bot_uid=X</code><br/>
-              <code>POST /matters/:id/timeline</code><br/>
-              <code>POST /matters/:id/activities</code>
+              <code>POST /v1/auth/token</code> (api_key→JWT)<br/>
+              <code>GET /v1/bot/:uid/token</code> (Bearer daemon JWT)
+            </div>
+          </td>
+          <td>
+            <span class="pill pill--ok">✓</span>
+            <div style="margin-top:6px;line-height:2;">
+              <code>GET /api/v1/internal/bot-tasks?bot_uid=X</code> (JWT)<br/>
+              <code>POST /api/v1/internal/bot-tasks/:id/ack</code> (JWT)<br/>
+              <code>POST /api/v1/internal/matters/:id/timeline</code> (X-Internal-Token)<br/>
+              <code>POST /api/v1/internal/matters/:id/activities</code> (X-Internal-Token)
             </div>
           </td>
           <td>
@@ -725,66 +747,98 @@
     </svg>
   </div>
 
-  <h3>3.2 · 用户在「智能体」tab 创建新 bot</h3>
+  <h3>3.2 · 用户在「智能体」tab 创建新 bot（3-step 浏览器编排，0 服务间调用）</h3>
   <div class="panel panel--diagram">
-    <svg viewBox="0 0 1120 360" preserveAspectRatio="xMidYMid meet" aria-label="时序：创建新 bot">
+    <svg viewBox="0 0 1120 540" preserveAspectRatio="xMidYMid meet" aria-label="时序：创建新 bot">
       <defs class="svg-defs">
         <marker id="c-slate"  viewBox="0 -5 10 10" refX="9" refY="0" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,-5L10,0L0,5" fill="#64748b"/></marker>
         <marker id="c-orange" viewBox="0 -5 10 10" refX="9" refY="0" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,-5L10,0L0,5" fill="#ea580c"/></marker>
+        <marker id="c-blue"   viewBox="0 -5 10 10" refX="9" refY="0" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,-5L10,0L0,5" fill="#2563eb"/></marker>
+        <marker id="c-green"  viewBox="0 -5 10 10" refX="9" refY="0" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,-5L10,0L0,5" fill="#16a34a"/></marker>
       </defs>
 
+      <!-- actors -->
       <g>
-        <rect x="70"  y="14" width="60"  height="22" rx="11" fill="#f1f5f9"/>
-        <text x="100" y="29" text-anchor="middle" class="seq-actor" fill="#475569">user</text>
-        <rect x="230" y="14" width="60"  height="22" rx="11" fill="#f1f5f9"/>
-        <text x="260" y="29" text-anchor="middle" class="seq-actor" fill="#475569">web</text>
-        <rect x="420" y="14" width="60"  height="22" rx="11" fill="#ffedd5"/>
-        <text x="450" y="29" text-anchor="middle" class="seq-actor" fill="#ea580c">runtime</text>
-        <rect x="620" y="14" width="60"  height="22" rx="11" fill="#dbeafe"/>
-        <text x="650" y="29" text-anchor="middle" class="seq-actor" fill="#2563eb">server</text>
-        <rect x="830" y="14" width="60"  height="22" rx="11" fill="#dcfce7"/>
-        <text x="860" y="29" text-anchor="middle" class="seq-actor" fill="#16a34a">daemon</text>
+        <rect x="60"  y="14" width="60"  height="22" rx="11" fill="#f1f5f9"/>
+        <text x="90"  y="29" text-anchor="middle" class="seq-actor" fill="#475569">user</text>
+        <rect x="200" y="14" width="60"  height="22" rx="11" fill="#f1f5f9"/>
+        <text x="230" y="29" text-anchor="middle" class="seq-actor" fill="#475569">web</text>
+        <rect x="380" y="14" width="60"  height="22" rx="11" fill="#ffedd5"/>
+        <text x="410" y="29" text-anchor="middle" class="seq-actor" fill="#ea580c">fleet</text>
+        <rect x="570" y="14" width="60"  height="22" rx="11" fill="#dbeafe"/>
+        <text x="600" y="29" text-anchor="middle" class="seq-actor" fill="#2563eb">server</text>
+        <rect x="750" y="14" width="60"  height="22" rx="11" fill="#dcfce7"/>
+        <text x="780" y="29" text-anchor="middle" class="seq-actor" fill="#16a34a">daemon</text>
+        <rect x="920" y="14" width="60"  height="22" rx="11" fill="#e0f2fe"/>
+        <text x="950" y="29" text-anchor="middle" class="seq-actor" fill="#0284c7">openclaw</text>
       </g>
       <g stroke="#e2e8f0" stroke-dasharray="2,4">
-        <line x1="100" y1="42" x2="100" y2="330"/>
-        <line x1="260" y1="42" x2="260" y2="330"/>
-        <line x1="450" y1="42" x2="450" y2="330"/>
-        <line x1="650" y1="42" x2="650" y2="330"/>
-        <line x1="860" y1="42" x2="860" y2="330"/>
+        <line x1="90" y1="42" x2="90" y2="510"/>
+        <line x1="230" y1="42" x2="230" y2="510"/>
+        <line x1="410" y1="42" x2="410" y2="510"/>
+        <line x1="600" y1="42" x2="600" y2="510"/>
+        <line x1="780" y1="42" x2="780" y2="510"/>
+        <line x1="950" y1="42" x2="950" y2="510"/>
       </g>
 
-      <!-- user → web -->
-      <line x1="100" y1="68" x2="256" y2="68" stroke="#64748b" stroke-width="1.3" marker-end="url(#c-slate)"/>
-      <g transform="translate(178,60)"><rect x="-100" y="-9" width="200" height="18" class="arrow-label-bg"/><text x="0" y="3" text-anchor="middle" class="seq-label" fill="#475569">填名字 + 选 runtime · 点创建</text></g>
+      <!-- 0. user 填表 -->
+      <line x1="90" y1="68" x2="226" y2="68" stroke="#64748b" stroke-width="1.3" marker-end="url(#c-slate)"/>
+      <g transform="translate(158,60)"><rect x="-94" y="-9" width="188" height="18" class="arrow-label-bg"/><text x="0" y="3" text-anchor="middle" class="seq-label" fill="#475569">填名字 + 选 runtime · 提交</text></g>
 
-      <!-- web → runtime -->
-      <line x1="260" y1="102" x2="446" y2="102" stroke="#ea580c" stroke-width="1.3" marker-end="url(#c-orange)"/>
-      <g transform="translate(353,94)"><rect x="-128" y="-9" width="256" height="18" class="arrow-label-bg"/><text x="0" y="3" text-anchor="middle" class="seq-label" fill="#9a3412">POST /runtimes/bots {name, runtime_id}</text></g>
+      <!-- ─── Step 1: web → fleet draft ─── -->
+      <line x1="230" y1="102" x2="406" y2="102" stroke="#ea580c" stroke-width="1.3" marker-end="url(#c-orange)"/>
+      <g transform="translate(318,94)"><rect x="-104" y="-9" width="208" height="18" class="arrow-label-bg"/><text x="0" y="3" text-anchor="middle" class="seq-label" fill="#9a3412">① POST /runtimes/bots {name, runtime_id}</text></g>
 
-      <rect x="442" y="116" width="16" height="36" rx="2" fill="#ffedd5" stroke="#fdba74"/>
-      <text x="466" y="138" class="seq-meta" fill="#9a3412">insert bot 行 (status=minting)</text>
+      <rect x="402" y="116" width="16" height="24" rx="2" fill="#ffedd5" stroke="#fdba74"/>
+      <text x="426" y="132" class="seq-meta" fill="#9a3412">insert bot 行 (status=draft)</text>
 
-      <!-- runtime → server (inter-service) -->
-      <line x1="450" y1="172" x2="646" y2="172" stroke="#ea580c" stroke-width="1.6" stroke-dasharray="7,3" marker-end="url(#c-orange)"/>
-      <g transform="translate(548,164)"><rect x="-114" y="-9" width="228" height="18" class="arrow-label-bg" stroke="#fdba74"/><text x="0" y="3" text-anchor="middle" class="seq-label" fill="#9a3412" font-weight="600">POST /internal/bot/mint-obo</text></g>
-      <text x="548" y="190" text-anchor="middle" class="seq-meta" fill="#9a3412">X-Internal-Token · 唯一保留的服务间调用</text>
+      <line x1="406" y1="158" x2="234" y2="158" stroke="#ea580c" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#c-orange)" opacity="0.8"/>
+      <g transform="translate(320,150)"><rect x="-46" y="-9" width="92" height="18" class="arrow-label-bg"/><text x="0" y="3" text-anchor="middle" class="seq-meta" fill="#9a3412">{id: 42}</text></g>
 
-      <line x1="646" y1="216" x2="454" y2="216" stroke="#ea580c" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#c-orange)" opacity="0.8"/>
-      <g transform="translate(548,208)"><rect x="-70" y="-9" width="140" height="18" class="arrow-label-bg"/><text x="0" y="3" text-anchor="middle" class="seq-meta" fill="#9a3412">{bot_uid, bot_token}</text></g>
+      <!-- ─── Step 2: web → server mint ─── -->
+      <line x1="230" y1="192" x2="596" y2="192" stroke="#2563eb" stroke-width="1.3" marker-end="url(#c-blue)"/>
+      <g transform="translate(413,184)"><rect x="-122" y="-9" width="244" height="18" class="arrow-label-bg"/><text x="0" y="3" text-anchor="middle" class="seq-label" fill="#1e40af">② POST /v1/bot/mint {display_name, space_id}</text></g>
 
-      <rect x="442" y="226" width="16" height="36" rx="2" fill="#ffedd5" stroke="#fdba74"/>
-      <text x="466" y="248" class="seq-meta" fill="#9a3412">写 bot.bot_uid (status=bot_minted)</text>
+      <rect x="592" y="206" width="16" height="40" rx="2" fill="#dbeafe" stroke="#93c5fd"/>
+      <g transform="translate(616,218)"><text class="seq-meta" fill="#1e40af">botfather.MintBotOBO()</text>
+      <text y="14" class="seq-meta" fill="#1e40af">↳ 写 robot.bot_token (留 server)</text></g>
 
-      <line x1="446" y1="278" x2="260" y2="278" stroke="#ea580c" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#c-orange)" opacity="0.8"/>
-      <g transform="translate(353,270)"><rect x="-126" y="-9" width="252" height="18" class="arrow-label-bg"/><text x="0" y="3" text-anchor="middle" class="seq-meta" fill="#9a3412">201 (待 daemon 物理 provision)</text></g>
+      <line x1="596" y1="260" x2="234" y2="260" stroke="#2563eb" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#c-blue)" opacity="0.8"/>
+      <g transform="translate(415,252)"><rect x="-82" y="-9" width="164" height="18" class="arrow-label-bg"/><text x="0" y="3" text-anchor="middle" class="seq-meta" fill="#1e40af">{bot_uid} · 不返 bot_token</text></g>
 
-      <!-- daemon pull pending_command -->
-      <line x1="860" y1="312" x2="454" y2="312" stroke="#ea580c" stroke-width="1.3" marker-end="url(#c-orange)"/>
-      <g transform="translate(657,304)"><rect x="-46" y="-9" width="92" height="18" class="arrow-label-bg"/><text x="0" y="3" text-anchor="middle" class="seq-label" fill="#9a3412">heartbeat</text></g>
+      <!-- ─── Step 3: web → fleet patch ─── -->
+      <line x1="230" y1="294" x2="406" y2="294" stroke="#ea580c" stroke-width="1.3" marker-end="url(#c-orange)"/>
+      <g transform="translate(318,286)"><rect x="-122" y="-9" width="244" height="18" class="arrow-label-bg"/><text x="0" y="3" text-anchor="middle" class="seq-label" fill="#9a3412">③ POST /runtimes/bots/42/mint {bot_uid}</text></g>
 
-      <line x1="450" y1="340" x2="856" y2="340" stroke="#ea580c" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#c-orange)" opacity="0.8"/>
-      <g transform="translate(653,332)"><rect x="-188" y="-9" width="376" height="18" class="arrow-label-bg"/><text x="0" y="3" text-anchor="middle" class="seq-meta" fill="#9a3412">{pending_command: bot.provision (workspace + bind)}</text></g>
+      <rect x="402" y="308" width="16" height="32" rx="2" fill="#ffedd5" stroke="#fdba74"/>
+      <g transform="translate(426,316)"><text class="seq-meta" fill="#9a3412">UPDATE bot SET bot_uid=?,</text>
+      <text y="14" class="seq-meta" fill="#9a3412">status='bot_minted'</text></g>
+
+      <line x1="406" y1="350" x2="234" y2="350" stroke="#ea580c" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#c-orange)" opacity="0.8"/>
+      <g transform="translate(320,342)"><rect x="-94" y="-9" width="188" height="18" class="arrow-label-bg"/><text x="0" y="3" text-anchor="middle" class="seq-meta" fill="#9a3412">200 (等 daemon 心跳取)</text></g>
+
+      <!-- ─── daemon heartbeat → fleet 拿 pending_command ─── -->
+      <line x1="780" y1="392" x2="414" y2="392" stroke="#ea580c" stroke-width="1.3" marker-end="url(#c-orange)"/>
+      <g transform="translate(597,384)"><rect x="-58" y="-9" width="116" height="18" class="arrow-label-bg"/><text x="0" y="3" text-anchor="middle" class="seq-label" fill="#9a3412">POST /heartbeat</text></g>
+
+      <line x1="410" y1="416" x2="776" y2="416" stroke="#ea580c" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#c-orange)" opacity="0.8"/>
+      <g transform="translate(593,408)"><rect x="-148" y="-9" width="296" height="18" class="arrow-label-bg"/><text x="0" y="3" text-anchor="middle" class="seq-meta" fill="#9a3412">{pending_command: bot.provision (无 bot_token)}</text></g>
+
+      <!-- ─── daemon → server 拉 bot_token ─── -->
+      <line x1="780" y1="448" x2="606" y2="448" stroke="#16a34a" stroke-width="1.3" marker-end="url(#c-green)"/>
+      <g transform="translate(693,440)"><rect x="-122" y="-9" width="244" height="18" class="arrow-label-bg"/><text x="0" y="3" text-anchor="middle" class="seq-label" fill="#14532d">GET /v1/bot/:uid/token (Bearer daemon JWT)</text></g>
+
+      <line x1="600" y1="472" x2="776" y2="472" stroke="#16a34a" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#c-green)" opacity="0.8"/>
+      <g transform="translate(688,464)"><rect x="-60" y="-9" width="120" height="18" class="arrow-label-bg"/><text x="0" y="3" text-anchor="middle" class="seq-meta" fill="#14532d">{bot_token}</text></g>
+
+      <!-- ─── daemon → openclaw provision ─── -->
+      <line x1="780" y1="498" x2="946" y2="498" stroke="#0284c7" stroke-width="1.3" marker-end="url(#c-blue)"/>
+      <g transform="translate(863,490)"><rect x="-90" y="-9" width="180" height="18" class="arrow-label-bg"/><text x="0" y="3" text-anchor="middle" class="seq-label" fill="#0369a1">agents add + config patch + bind</text></g>
     </svg>
+  </div>
+  <div class="note">
+    <strong>3 步编排关键 ·</strong> bot_token 全程不进浏览器、不进 fleet —— server 写完留在 <code>robot.bot_token</code>，daemon 用自己的 daemon-scope JWT 主动拉。<br/>
+    <strong>失败模式 ·</strong> 任一步失败留下半成品状态，浏览器可重试（每步幂等）；后续 sweeper 清残留 draft 行。
   </div>
 </section>
 
@@ -794,33 +848,38 @@
   <div class="row2">
     <div>
       <h3>Web 用户视角</h3>
-      <pre><code>浏览器登录 server → session token
+      <pre><code>浏览器登录 server → session token (旧机制)
 
-⇒ web 调 server: Bearer session_token ✓
-⇒ web 调 matter: Bearer session_token
-            ↳ matter 共享 JWK 本地验签
-              (不调 server, 避免 N+1)
-⇒ web 调 runtime: Bearer session_token
-            ↳ runtime 同上</code></pre>
+⇒ web 调 server: token header (业务路由 + 取 JWT)
+⇒ web 调 server: POST /v1/auth/token (session) → JWT (web · 30min)
+⇒ web 调 matter: Bearer JWT
+            ↳ matter 用 server JWKS 公钥本地验签
+⇒ web 调 fleet : Bearer JWT
+            ↳ fleet 同上
+
+JWT 在内存缓存 60s 余量自动 refresh
+APIClient.ts interceptor 按 URL 模式自动注入</code></pre>
     </div>
     <div>
       <h3>Daemon 视角</h3>
-      <pre><code>daemon 启动 → 用 api-key register runtime
-                          │
-runtime → server: verify api-key ✓
-                  (X-Internal-Token)
-                          │
-runtime 颁发 runtime_token (JWT)
-  scope: daemon_id + space_id
-  signed by 共享私钥
+      <pre><code>daemon 启动 → 持 api_key
+                  │
+daemon → server: POST /v1/auth/token (api_key)
+                 ↳ 返回 JWT (daemon · 30 天)
+                  │
+⇒ daemon 调 fleet : Bearer JWT
+            ↳ fleet 用 server JWKS 本地验签 ✓
+⇒ daemon 调 matter: Bearer JWT
+            ↳ matter 同上 ✓
+⇒ daemon 调 server: GET /v1/bot/:uid/token (Bearer JWT)
+            ↳ server 验签 + 校验 robot.creator_uid==JWT.sub
+            ↳ 返回 bot_token 喂 openclaw
 
-⇒ daemon 调 matter: Bearer runtime_token
-            ↳ matter 用共享公钥本地验签 ✓
-⇒ daemon 调 runtime: Bearer runtime_token ✓</code></pre>
+unknown kid 自动触发 JWKS refresh (10s floor)</code></pre>
     </div>
   </div>
   <div class="note">
-    <strong>JWK 共享的代价 ·</strong> runtime 是唯一 issuer · server / matter 是 verifier。3 个服务共享一个 public key（pem 文件或 KMS 路径）。<strong>零额外网络调用</strong>。代价是 key rotation 需要协调 — PoC 期可接受。
+    <strong>server 是唯一 JWT issuer ·</strong> RS256 · kid 跨重启稳定（hash of modulus）· fleet/matter 启动时拉一次 <code>/.well-known/jwks.json</code> 缓存。<strong>零互调</strong>，3 服务之间不发 HTTP。
   </div>
 </section>
 
@@ -833,18 +892,20 @@ runtime 颁发 runtime_token (JWT)
         <tr><th style="width:22%">数据</th><th style="width:20%">在哪个服务</th><th>其他服务怎么用</th></tr>
       </thead>
       <tbody>
-        <tr><th>user · IM bot 账户</th><td>octo-server</td><td>通过 <code>uid</code> 引用 · 不反查 (信任 web 传入)</td></tr>
-        <tr><th>space membership</th><td>octo-server</td><td>header <code>X-Space-Id</code> 信任 · 必要时 JWK 验 token claim</td></tr>
-        <tr><th>matter · timeline · activity · outputs</th><td>octo-matter</td><td>通过 <code>matter_id</code> 引用 + Bearer 调 matter API</td></tr>
-        <tr><th><strong>bot_task</strong> (派给 bot 的任务队列)</th><td><strong>octo-matter</strong> <span class="pill pill--ok" style="margin-left:6px">建议</span></td><td>matter 加 <code>bot_task</code> 表 · 写 timeline 同事务入队 · daemon pull</td></tr>
-        <tr><th>daemon 注册 · runtime 健康度</th><td>octo-fleet</td><td>web 直接查 runtime API</td></tr>
-        <tr><th><code>bot_uid ↔ openclaw agent_id</code> 映射</th><td>octo-fleet · <code>bot</code> 表</td><td>daemon pull task 时附带 <code>agent_id</code> · matter 不知道 agent 这层</td></tr>
+        <tr><th>user · IM bot 账户</th><td>octo-server</td><td>通过 <code>uid</code> 引用 · 不反查（信任 JWT.sub 已校验）</td></tr>
+        <tr><th><strong>bot_token</strong>（bot 凭据）</th><td><strong>octo-server</strong> · <code>robot.bot_token</code></td><td>永不外发；daemon 用 <code>GET /v1/bot/:uid/token</code> + daemon JWT 拉</td></tr>
+        <tr><th>space membership</th><td>octo-server</td><td>JWT 颁发时校验；fleet/matter 直接信 JWT.space_id（不再查 space_member）</td></tr>
+        <tr><th>matter · timeline · activity · outputs</th><td>octo-matter</td><td>通过 <code>matter_id</code> 引用 + JWT/X-Internal-Token 调 matter API</td></tr>
+        <tr><th><strong>matter_bot_task</strong>（bot 任务队列）</th><td><strong>octo-matter</strong> <span class="pill pill--ok" style="margin-left:6px">已落地 PR-B</span></td><td>matter 评论 @bot 同事务入队 · daemon JWT pull · ack claim_token 校验</td></tr>
+        <tr><th>JWT 私钥 + JWKS</th><td>octo-server · <code>modules/auth_jwt</code></td><td>fleet/matter 启动拉 <code>/.well-known/jwks.json</code> 缓存 · unknown kid 触发 refresh</td></tr>
+        <tr><th>daemon 注册 · runtime 健康度</th><td>octo-fleet · <code>agent_runtime</code> 表</td><td>web 直调 fleet · daemon heartbeat 维护</td></tr>
+        <tr><th><code>bot_uid ↔ workspace_id</code> 映射</th><td>octo-fleet · <code>bot</code> 表</td><td>heartbeat 响应吐 <code>managed_bots</code> 给 daemon · matter 不知道 workspace 这层</td></tr>
       </tbody>
     </table>
   </div>
 
   <div class="note">
-    <strong>关于 bot_task 表归谁 ·</strong> 倾向 matter — (1) 写 timeline 同事务入队最干净 · 零丢失 (2) daemon 一次 pull 拿到 task + 上下文 (3) 跟 "matter 是事项 SoT" 的语义对齐。runtime 只关心 "bot 能干"，不关心 "bot 干啥"。
+    <strong>bot_token 的分发链 ·</strong> server 持原本 → daemon 用 daemon-scope JWT 主动拉 → daemon 直接写 openclaw 配置。<strong>不流经浏览器、不流经 fleet</strong>。 PR-A.3 + PR-B.1 已落地。
   </div>
 </section>
 
@@ -857,15 +918,16 @@ runtime 颁发 runtime_token (JWT)
         <tr><th style="width:22%">维度</th><th>替代方案 · push / outbox</th><th>本 plan · daemon pull</th></tr>
       </thead>
       <tbody>
-        <tr><th>触发模式</th><td>matter outbox → runtime push</td><td>daemon 主动 pull from matter</td></tr>
-        <tr><th>matter → runtime 调用</th><td>有 (outbox webhook)</td><td><span class="pill pill--ok">砍掉</span></td></tr>
-        <tr><th>runtime → matter 调用</th><td>有 (HMAC writeback)</td><td><span class="pill pill--ok">砍掉</span></td></tr>
-        <tr><th>runtime → server 调用</th><td>有 (mint bot OBO + verify api-key)</td><td><span class="pill pill--warn">保留 · 不可避免</span></td></tr>
-        <tr><th>matter 复杂度</th><td>+ outbox 表 + outbox worker + HMAC 验签</td><td>+ <code>bot_task</code> 表 + 1 个 internal endpoint</td></tr>
-        <tr><th>runtime 复杂度</th><td>高 (outbox · HMAC · writeback worker)</td><td>低 (daemon mgr · bot mapping)</td></tr>
-        <tr><th>daemon 复杂度</th><td>中 (被推)</td><td>中高 (主动 pull · 协调两端)</td></tr>
+        <tr><th>触发模式</th><td>matter outbox → fleet push</td><td>daemon 主动 pull from matter / fleet</td></tr>
+        <tr><th>matter → fleet 调用</th><td>有（outbox webhook）</td><td><span class="pill pill--ok">砍掉</span></td></tr>
+        <tr><th>fleet → matter 调用</th><td>有（HMAC writeback）</td><td><span class="pill pill--warn">仅 bot feed proxy</span>（polish 项要拆）</td></tr>
+        <tr><th>fleet → server 调用</th><td>有（mint OBO + verify api-key）</td><td><span class="pill pill--ok">砍掉</span> · 浏览器编排 mint</td></tr>
+        <tr><th>daemon → server 调用</th><td>无</td><td>有 · <code>POST /v1/auth/token</code> + <code>GET /v1/bot/:uid/token</code></td></tr>
+        <tr><th>matter 复杂度</th><td>+ outbox 表 + outbox worker + HMAC 验签</td><td>+ <code>matter_bot_task</code> 表 + sweeper + 2 个 daemon endpoint</td></tr>
+        <tr><th>fleet 复杂度</th><td>高（outbox · HMAC · writeback worker）</td><td>中（runtime 管理 + bot 编排元数据）</td></tr>
+        <tr><th>daemon 复杂度</th><td>中（被推）</td><td>中高（主动 pull · 协调三端）</td></tr>
         <tr><th>失败爆炸半径</th><td>matter outbox 卡死 → 全停</td><td>daemon 挂 → 单机停 · 域更小</td></tr>
-        <tr><th>时延</th><td>push 即时</td><td>pull 间隔 3-10s</td></tr>
+        <tr><th>时延</th><td>push 即时</td><td>pull 间隔 15s</td></tr>
       </tbody>
     </table>
   </div>
@@ -873,21 +935,23 @@ runtime 颁发 runtime_token (JWT)
 
 <!-- ────────────────── 7. DECISIONS ────────────────── -->
 <section>
-  <h2><span class="num">7</span>决策记录<span class="h2-sub">已拍板的 5 项</span></h2>
+  <h2><span class="num">7</span>决策记录<span class="h2-sub">已落地 + 后续</span></h2>
   <ol class="decisions">
-    <li><strong>整体拓扑</strong> · 三服务平级 · daemon 单点协调 matter 与 fleet · runtime → server mint OBO 唯一保留 · <span class="pill pill--ok" style="margin-left:6px">✓ 确认</span></li>
-    <li><strong>服务改名</strong> · <code>octo-runtime</code> → <code>octo-fleet</code>（端口仍 :8092；env <code>FLEET_*</code>） · <span class="pill pill--ok" style="margin-left:6px">✓ 确认</span></li>
-    <li><strong>bot_task 队列归 matter</strong> · 写 timeline 同事务入队 · daemon 直接 pull · matter 不知道 fleet · <span class="pill pill--ok" style="margin-left:6px">✓ 确认</span></li>
-    <li><strong>跨服务鉴权</strong> · PoC 期 matter/fleet 调 server <code>POST /v1/auth/verify</code>；GA 切共享 JWK 本地验签 · <span class="pill pill--warn" style="margin-left:6px">分阶段</span></li>
-    <li><strong>lease 续约 · 并发 claim contract test</strong> · PoC 不做（10min lease 够用 + atomic UPDATE 自带并发保护）；GA blocker · <span class="pill pill--warn" style="margin-left:6px">GA 加</span></li>
+    <li><strong>整体拓扑</strong> · server / fleet / matter 三服务 0 HTTP 互调 · daemon 协调一切 · <span class="pill pill--ok" style="margin-left:6px">✓ 已落地</span></li>
+    <li><strong>服务命名</strong> · <code>octo-fleet</code>（不是 octo-runtime），端口 :8092，独立 GitHub repo (private) · <span class="pill pill--ok" style="margin-left:6px">✓ 已落地</span></li>
+    <li><strong>bot_task 队列归 matter</strong> · matter 评论 @bot 同事务入队 · daemon JWT pull · ack claim_token 校验 · <span class="pill pill--ok" style="margin-left:6px">✓ PR-B</span></li>
+    <li><strong>跨服务鉴权</strong> · server 是唯一 JWT issuer · fleet/matter 拉 JWKS 本地验签 · daemon 用 api_key 换 JWT 调三端 · <span class="pill pill--ok" style="margin-left:6px">✓ PR-A.1</span></li>
+    <li><strong>bot_token 不出 server</strong> · 浏览器 step2 调 server mint 只拿 bot_uid · daemon 用 daemon-scope JWT 拉 token 喂 openclaw · <span class="pill pill--ok" style="margin-left:6px">✓ PR-A.3</span></li>
+    <li><strong>server runtime 模块删除</strong> · PR-C 真删（27 文件 · 3819 行）· rollback 走 git revert · <span class="pill pill--ok" style="margin-left:6px">✓ PR-C</span></li>
+    <li><strong>lease 续约</strong> · PoC 不做（10min lease 覆盖大多数 agent run） · GA blocker · <span class="pill pill--warn" style="margin-left:6px">GA 加</span></li>
   </ol>
   <div class="note" style="margin-top:16px">
-    <strong>后续讨论项</strong>（暂不阻塞 cutover）· crash recovery 流式 checkpoint · 单 daemon 多 bot 并行资源限额（openclaw scope upgrade 撞车） · fleet JWT key rotation 协调
+    <strong>后续讨论项</strong>（暂不阻塞 GA）· crash recovery 流式 checkpoint · 单 daemon 多 bot 并行资源限额（openclaw scope upgrade 撞车） · JWT key rotation · bot feed proxy 改浏览器直调 matter · writeback 端点全切 JWT · 单元测试补齐
   </div>
 </section>
 
 <footer>
-  定稿 · 2026-06-01 · 3 服务平级 · daemon 协调 · 1 个不可避免的服务间调用
+  已落地 · 2026-06-02 · 3 后端服务 0 互调 · server 是唯一 JWT issuer · 完整 e2e 跑通
 </footer>
 
 </main>

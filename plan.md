@@ -1,220 +1,260 @@
 # Octo Agent Runtime — Plan
 
-> 状态：定稿 · 作者：Q-daemon + Q-daemon-R · 日期：2026-06-01
+> 状态：已落地 · 最近更新：2026-06-02
 > 配套架构图：[`ARCHITECTURE.html`](./ARCHITECTURE.html)
 >
 > 本文是**唯一 plan**：所有跨服务契约、状态机、JWT canonical、guardrail 数值以本文为准；与代码冲突时以本文优先，先改 plan 再改代码。
+>
+> 实施进度：PR-A.1 / A.2 / A.3 / B / C 全部 e2e 通过（2026-06-01 ~ 06-02）。各 repo HEAD 见 §12。
 
 ---
 
-## 0. 设计原则 — 为什么 daemon pull 而不是 service push
+## 0. 设计原则 — 为什么 daemon pull · 为什么 0 通信
 
-草稿阶段曾把 octo-fleet 设计成 push 网关：matter → outbox → fleet → daemon。复杂度过高：
+最初方案曾把 octo-fleet 设计成 push 网关：matter → outbox → fleet → daemon。复杂度过高：
 
 - matter 要写 `runtime_event_outbox` 表 + outbox worker + 重试 / 去重 / DLQ
 - fleet 要做 HMAC attestation 回写 matter timeline
 - matter 要做本地 HMAC 验签 + idempotency 去重
 - 失败爆炸半径大：outbox 卡死 = 全停
 
-定稿方案把 octo-fleet 降级为「daemon 注册中心 + bot↔agent 映射表」：
+定稿方案把 octo-fleet 降级为「daemon 注册中心 + bot 编排元数据表」：
 
-- matter ↔ fleet **互不知道对方存在**（无 outbox · 无 webhook · 无 HMAC）
-- daemon 是唯一协调者：**主动 pull** matter 任务 + 直接 POST writeback
-- fleet 唯一保留的服务间调用是 `fleet → server` mint bot OBO（绕不开）
-- 跨服务信任：fleet 颁发 JWT · matter 共享公钥本地验签
+- **3 个后端服务（server / fleet / matter）零 HTTP 互调**
+- daemon 是唯一协调者：**主动 pull** matter 任务 + 直接 POST writeback；同时直接调 server 拿 JWT / bot_token
+- 跨服务信任：**server 是唯一 JWT issuer**，fleet/matter 各自拉 server 的 `/.well-known/jwks.json` 缓存公钥，本地验签
+- bot_token 永不离开 server DB（不流经浏览器、不流经 fleet）
 
 **一句话链路**：
 
 ```text
 matter 评论里 @bot
-  -> matter 同事务写 bot_task 表 (status=queued)
-  -> daemon 心跳间隙 pull GET /matters/internal/tasks?bot_uid=X
+  -> matter 同事务写 matter_bot_task (status=queued)
+  -> daemon 心跳后从 fleet 拿 managed_bots 列表
+  -> daemon GET matter /api/v1/internal/bot-tasks?bot_uid=X (Bearer daemon JWT)
   -> daemon spawn openclaw agent (本地)
-  -> daemon POST /matters/:id/timeline 写回 bot 回复
-  -> daemon POST /matters/:id/activities 写 agent_task_completed
+  -> daemon POST matter /api/v1/internal/matters/:id/timeline 写回 bot 回复
+  -> daemon POST matter /api/v1/internal/matters/:id/activities 写 agent_task_completed
+  -> daemon POST matter /api/v1/internal/bot-tasks/:id/ack (claim_token guard)
 ```
-
-PoC 期（当前代码）走的是「server 内嵌路径」（bot_task 表在 server 里），cutover 时按本 plan 拆出 fleet + 把 bot_task 表搬到 matter。
 
 ---
 
 ## 1. 服务边界
 
-### octo-matter 负责
+### octo-server（瘦身后）
 
-- matter / timeline / activity / outputs 的存储 + API
-- **`bot_task` 表**：新增。matter 评论里 @bot 时**同事务**入队
-- `GET /matters/internal/tasks?bot_uid=X` 给 daemon pull
-- `POST /matters/:id/timeline` / `POST /matters/:id/activities` 给 daemon writeback
-- mention 解析 / continuation prompt 构造
-
-### octo-fleet 负责
-
-- daemon register / heartbeat / runtime token 颁发
-- `bot` 表：bot_uid ↔ openclaw agent_id 映射
-- Web 端「智能体」tab 的 CRUD（建 bot / 改名 / 归档）
-- daemon 在 heartbeat 拉 `pending_command`（bot.provision 之类的物理操作）
-- 调 server mint bot OBO（唯一服务间调用）
-
-### octo-server 负责（保持不变）
-
-- user / bot / IM 账户
+- user / IM 账户 / bot 凭据（**bot_token 留 `robot.bot_token` 列，永不外发**）
 - space membership / auth / api-key
-- `/v1/internal/bot/mint-obo` 给 runtime 调
-- `/v1/internal/auth/api-key/verify` 给 runtime 调
+- **新增 `modules/auth_jwt`**：
+  - `POST /v1/auth/token`：用 session 或 api_key 换 RS256 JWT
+  - `GET /.well-known/jwks.json`：暴露公钥
+  - `POST /v1/bot/mint`：web session 调，OBO 创建 IM bot，**返回 `bot_uid`（不返回 bot_token）**
+  - `GET /v1/bot/:uid/token`：daemon JWT 调，校验 `robot.creator_uid == JWT.sub` 后返回 `bot_token`
+- **删除 `modules/runtime/`**（PR-C 完成）；schema migration 残留行可手动 `DELETE FROM gorp_migrations WHERE id LIKE 'runtime-%'`
+
+### octo-fleet（新仓库）
+
+- 端口 :8092，独立 MySQL schema (`octo_fleet`)
+- `agent_runtime` / `bot` / `bot_task`(deprecated) 等表
+- daemon endpoints：register / heartbeat / deregister / ping / upgrade / bot-ack
+- web endpoints：runtime/bot CRUD + 3-step bot 创建的 fleet 部分（`POST /v1/runtimes/bots`、`POST /v1/runtimes/bots/:id/mint`）
+- heartbeat 响应包含 `managed_bots` 列表 + 可选 `pending_command` (bot.provision)
+- `internal/auth` 拉 server JWKS 缓存 + 本地验签 middleware
+
+### octo-matter
+
+- 原有：matter / timeline / activity / outputs
+- **新增 `matter_bot_task` 表**（PR-B.1）：matter 评论 @bot 时**同事务**入队
+- **新增 daemon endpoints**（JWT auth）：`GET /api/v1/internal/bot-tasks` + `POST /api/v1/internal/bot-tasks/:id/ack`
+- 现有 `POST /api/v1/internal/matters/:id/timeline` + `/activities`（X-Internal-Token）daemon 用于 writeback
+- `internal/auth/jwt.go` 同 fleet 一样拉 server JWKS
 
 ### 谁不做什么
 
-- **matter 不知道 runtime 存在** — 不调 runtime，不存 daemon 信息
-- **runtime 不知道 matter 存在** — 不调 matter，不存 task 队列
-- **daemon 不直接调 server** — 鉴权链走 runtime token，避免 daemon 依赖 server
-- 三个服务**都不直接读其他服务的 DB**
+- **server 不知道 fleet 存在**：只暴露 mint / token / token-exchange 端点等被动 endpoint
+- **fleet 不调 server / matter**（唯一例外：feed proxy，§7）
+- **matter 不调 fleet / server**：只被 daemon pull / push
+- **daemon 直接调 3 个后端**：自己持 api_key → 换 JWT → 同一 JWT 调 fleet/matter
+- 3 个后端**都不读对方 DB**
 
 ### 模块边界纪律
 
-- matter / runtime 之间只通过 daemon 间接耦合；任何想"加 matter → runtime webhook"的需求 → 改成 daemon pull
-- runtime 不持有 task / writeback 逻辑；它的世界里 bot 只是个"能 provision 的标识符"
-- server 不知道 runtime 存在；只暴露 OBO / verify internal API，调用方用 `X-Internal-Token` 验证
+- matter / fleet 任何想加"matter→fleet webhook" / "fleet→matter HTTP" 的需求 → 改成 daemon pull
+- fleet 不持有 task / writeback 逻辑；它的世界里 bot 只是个"能 provision 的标识符"
+- server 不感知 fleet：只暴露 web/daemon 直接调的 endpoint，不需要 X-Internal-Token
 
 ---
 
 ## 2. 信任链 / Auth
 
-### Web 用户 session（不变）
+**核心**：server 是唯一 JWT issuer（RS256），所有其他服务拉 JWKS 本地验签。**0 服务间 HTTP 调用**。
+
+### Web 用户流程
 
 ```text
-浏览器 → server: POST /v1/user/login → session token
-浏览器 → server / matter / runtime: 都用 session token
+浏览器 → server POST /v1/user/login → session token (旧机制，不变)
+浏览器 → server POST /v1/auth/token (body={session_token, space_id}) → JWT (web 作用域, 30min)
+浏览器 → fleet  : Bearer <JWT>  (fleet 拉 JWKS 本地验签, 缓存 kid)
+浏览器 → matter : Bearer <JWT>  (matter 同上)
+浏览器 → server : session token (server 自己的内部业务仍用 session)
 ```
 
-server 是 session 的 issuer。matter / runtime 验证 session 的两种方式：
+octo-web 的 `APIClient.ts` 加了 async interceptor：URL 匹配 `/runtimes` 或 `/daemon` 时自动注入 `Authorization: Bearer <JWT>`，JWT 在内存中按 60s 余量自动刷新。
 
-| 方案 | 性能 | 实现 |
+### Daemon 流程
+
+```text
+daemon 启动 (持 api_key)
+daemon → server POST /v1/auth/token (body={api_key, daemon_id}) → JWT (daemon 作用域, 30 天)
+daemon → fleet  POST /v1/daemon/register (Bearer JWT)
+daemon → fleet  POST /v1/daemon/heartbeat (Bearer JWT, 每 15s)
+                 ↳ 响应含 managed_bots + 可选 pending_command(bot.provision)
+daemon → matter GET  /api/v1/internal/bot-tasks?bot_uid=X (Bearer JWT)
+daemon → matter POST /api/v1/internal/bot-tasks/:id/ack    (Bearer JWT)
+daemon → matter POST /api/v1/internal/matters/:id/timeline  (X-Internal-Token 兼容旧 endpoint)
+daemon → matter POST /api/v1/internal/matters/:id/activities (X-Internal-Token)
+daemon → server GET  /v1/bot/:uid/token (Bearer JWT) ← 拉 bot_token 喂给 openclaw
+```
+
+### JWT claims
+
+```json
+{
+  "iss": "octo-server",
+  "sub": "<uid>",
+  "iat": 1780317312,
+  "exp": 1780319112,
+  "scope": "web" | "daemon",
+  "space_id": "<space uuid>",
+  "daemon_id": "<daemon uuid, 仅 daemon scope>"
+}
+```
+
+### Auth 不变量
+
+- **AU1**：JWT 过期 / kid 未知 / 签名失败 → 401，daemon 收到 401 后自动刷新 JWT 重试
+- **AU2**：unknown kid 触发一次 JWKS refresh（10s floor 防 issuer DoS），仍失败 → 401
+- **AU3**：fleet/matter 拿到的 JWT.space_id 直接信任（issuer 已校验成员关系），不再查 space_member 表
+- **AU4 (调整)**：daemon 必须直连 server（拿 JWT + 拉 bot_token）。fleet/matter 仍**不**调 server
+
+---
+
+## 3. Bot 创建：3-step web 编排（无服务间调用）
+
+mint OBO 流程**不走 fleet → server**，而是浏览器编排 3 步，bot_token 全程不进浏览器。
+
+```text
+1. 浏览器 → fleet  POST /v1/runtimes/bots {runtime_id, name, runtime_kind}
+                    ↳ fleet 落 bot 行 (status='draft', bot_uid 暂空)
+                    ↳ 返回 {id: <fleet bot.id>}
+
+2. 浏览器 → server POST /v1/bot/mint {display_name, space_id}
+                    ↳ server 调 botfather.MintBotOBO 内部函数
+                    ↳ 创建 IM user + 写 robot.bot_token + space_member + 互相 friend
+                    ↳ 返回 {bot_uid}  ← bot_token 留 server DB
+
+3. 浏览器 → fleet  POST /v1/runtimes/bots/:id/mint {bot_uid}
+                    ↳ fleet UPDATE bot SET bot_uid=?, status='bot_minted'
+                    ↳ 触发 bot.provision pending command (留待下次 heartbeat 派发)
+                    ↳ 返回更新后的 bot 元数据
+
+4. daemon 心跳收到 pending_command
+                    ↳ 看到 bot_token 为空 (fleet 不存 token)
+                    ↳ daemon → server GET /v1/bot/:bot_uid/token (Bearer daemon JWT)
+                                       ↳ server 校验 robot.creator_uid == JWT.sub → 返回 bot_token
+                    ↳ daemon openclaw agents add + config patch + agents bind
+                    ↳ daemon → fleet POST /v1/daemon/bots/:id/ack {claim_token, status='active'}
+```
+
+### Failure modes
+
+| 阶段失败 | 状态 | 影响 |
 |---|---|---|
-| **A · 共享 JWK 本地验签** | 快（无网络） | server 签 session 时用 JWT + 公钥；matter / runtime 持有同一公钥 |
-| **B · 调 server verify** | 每次 +1 跳 | matter / runtime → `POST /v1/auth/verify` |
-
-**PoC 期选 B**（实现简单，可用 server 已有的 `/v1/auth/verify`）；**GA 切 A**（少一跳，对 matter/fleet 解耦）。
-
-### Daemon 鉴权
-
-```text
-daemon 启动 → 持 api-key
-daemon → runtime: POST /v1/daemon/register {api-key}
-runtime → server: POST /v1/internal/auth/api-key/verify (X-Internal-Token)
-              ↳ {uid, space_id, active}
-runtime 颁发 runtime_token (JWT, 30 天)
-  scope: daemon_id + space_id + runtime_id
-  signed by 共享私钥 (runtime issuer)
-
-daemon → matter: Bearer runtime_token
-              ↳ matter 用同一共享公钥本地验签
-              ↳ 检查 token.scope.space_id == matter 查到的 matter.space_id
-daemon → runtime: Bearer runtime_token
-              ↳ runtime 本地验签
-```
-
-#### Auth 不变量（必须有自动 test 覆盖）
-
-- **AU1**：runtime_token 在 revoke / rotate / 超期 / scope mismatch 四种 case 下必须被 matter / runtime 中间件拒绝
-- **AU2**：revoke 后该 token 的现有连接在下一次请求被拒绝；daemon 收到 401/403 三次后 exit 78（沿用现有行为）
-- **AU3**：matter 用共享公钥验签失败时 → 401，不 fallback 调 runtime（避免 N+1）
-- **AU4**：daemon 永远不直接调 server（除了 binary upgrade 这类后续可独立的场景）
+| Step 1 fleet 落表失败 | fleet 无行 | 用户重试，幂等（name 不唯一也能再来） |
+| Step 2 server mint 失败 | fleet 有 draft 行，server 无 IM 账户 | 用户 retry 或 sweeper 清 draft |
+| Step 3 fleet patch 失败 | server 有 IM 账户，fleet 行未升级 | 用户 retry（PATCH 幂等）|
+| Step 4 daemon 拉 bot_token 失败 | fleet 已派 pending，daemon 重试 | 自动恢复 |
+| Step 4 daemon openclaw 失败 | fleet 行 status='failed' | UI 显示，用户归档重建 |
 
 ---
 
-## 3. Bot mint OBO 契约（唯一保留的服务间调用）
+## 4. matter 端 `matter_bot_task` 表
 
-`fleet → server` 是唯一保留的服务间调用，因为 IM bot 只能由 server 创建（涉及 IM channel / space_member / friend 关系，fleet 没法绕）。
-
-### Server 暴露的 internal API
-
-```text
-POST /v1/internal/bot/mint-obo
-Header: X-Internal-Token: <NOTIFY_INTERNAL_TOKEN>
-Body: {
-  owner_uid:    string,   # 用户 uid (调用方代理的"on behalf of"主体)
-  space_id:     string,
-  display_name: string,
-  bot_token:    string,   # caller-supplied bf_xxx token (复用 IM /newbot 体系)
-}
-Resp: {
-  bot_uid:     string,
-  bot_token:   string,    # echoed back; future-proof if server overrides
-  created_at:  string,
-}
-```
-
-调用方：当前 PoC 阶段是 octo-server 自己内部调用（复用 `botfather.MintBotOBO`）；cutover 后由 octo-fleet 调。
-
-### Server schema 策略
-
-- bot 创建时打 `origin='fleet'` 标记
-- bot 不能被 web BotFather UI 编辑（避免漂移）
-- bot 仍是普通 IM user（`robot=1`），不需要新表
-
----
-
-## 4. matter 端 `bot_task` 表（取代 outbox）
-
-### Schema
+### Schema (`octo-matter/migrations/008_bot_task.sql`)
 
 ```sql
 CREATE TABLE matter_bot_task (
-  id              char(36)    NOT NULL,           -- uuid
-  matter_id       char(36)    NOT NULL,
-  space_id        varchar(64) NOT NULL,
-  bot_uid         varchar(64) NOT NULL,           -- 目标 bot
-  trigger_kind    varchar(32) NOT NULL,           -- 'mention' | 'assignee_added' | 'created'
-  trigger_entry_id char(36)   NULL,               -- timeline entry / activity 触发源
-  prompt          text        NOT NULL,           -- continuation prompt (已包含 history)
-  status          varchar(16) NOT NULL,           -- 'queued' | 'dispatched' | 'succeeded' | 'failed' | 'cancelled'
-  claim_token     varchar(64) NULL,               -- daemon 取走时 issue 的幂等 token
-  claimed_by      varchar(64) NULL,               -- daemon_id
-  claimed_at      datetime(3) NULL,
-  lease_until     datetime(3) NULL,               -- 取走后租约到期时间
-  attempt         int         NOT NULL DEFAULT 0,
-  max_attempts    int         NOT NULL DEFAULT 3,
-  error_msg       text        NULL,
-  result_summary  text        NULL,               -- 完成后的简短 summary（详情在 timeline）
-  elapsed_ms      bigint      NULL,
-  created_at      datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
-  updated_at      datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  id                CHAR(36)     NOT NULL,
+  matter_id         CHAR(36)     NOT NULL,
+  space_id          VARCHAR(64)  NOT NULL,
+  bot_uid           VARCHAR(64)  NOT NULL,
+  trigger_kind      VARCHAR(32)  NOT NULL DEFAULT 'mention',   -- 'mention' | 'assignee_added'
+  trigger_entry_id  CHAR(36)     NULL,                          -- timeline entry id
+  prompt            MEDIUMTEXT   NOT NULL,
+  matter_title      VARCHAR(255) NOT NULL DEFAULT '',
+  status            VARCHAR(16)  NOT NULL DEFAULT 'queued',     -- queued/dispatched/succeeded/failed
+  claim_token       VARCHAR(64)  NULL,
+  claimed_by        VARCHAR(64)  NULL,
+  claimed_at        DATETIME(3)  NULL,
+  lease_until       DATETIME(3)  NULL,
+  attempt           INT          NOT NULL DEFAULT 0,
+  max_attempts      INT          NOT NULL DEFAULT 3,
+  error_msg         TEXT         NULL,
+  result_summary    TEXT         NULL,
+  elapsed_ms        BIGINT       NULL,
+  created_at        DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at        DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
   PRIMARY KEY (id),
   KEY idx_bot_status (bot_uid, status, created_at),
   KEY idx_matter (matter_id),
-  KEY idx_claim (status, lease_until)
+  KEY idx_claim_lease (status, lease_until),
+  -- 同一 (matter, bot, trigger) 只入队一次；NULL trigger_entry_id 允许多次（assignee 反复添加）
+  UNIQUE KEY uk_trigger (matter_id, bot_uid, trigger_entry_id)
 );
 ```
 
-### 写入路径（matter 评论 handler）
+### 写入路径（matter timeline_handler + matter_handler）
+
+**@mention 路径**（`timeline_handler.dispatchMentionedAgents`）：
 
 ```text
 POST /api/v1/matters/:id/timeline
-  ↓
-service.TimelineService.Create (Tx)
-  ├─ INSERT matter_timelines
-  ├─ INSERT matter_activities (kind='comment')
-  └─ FOR EACH @bot mention in content:
-       INSERT matter_bot_task (status='queued', prompt=BuildContinuationPrompt())
-  COMMIT  ← 单事务，要么全成要么全不
+  ↓ TimelineService.Create (Tx)
+    ├─ INSERT matter_timelines
+    ├─ INSERT matter_activities (kind='comment')
+    COMMIT
+  ↓ 异步 worker
+    └─ FOR EACH [@bot](mention://agent/<bot_uid>) in content:
+         build continuation prompt
+         INSERT matter_bot_task (status='queued')   ← uk_trigger 触发幂等
 ```
 
-**核心不变量**：评论持久化和 bot_task 入队**同事务**，杜绝消息丢失的可能。这是 push/outbox 设计要解决的核心问题，本 plan 用 matter 自己事务直接解决。
+**assignee 路径**（`matter_handler.dispatchOneBotAssignee`，PR-B.4.5 修复）：
+
+```text
+POST /api/v1/matters  (或 POST .../assignees)
+  ↓ 异步 worker
+    └─ FOR EACH assignee with `_bot` suffix:
+         build minimal "you've been assigned" prompt
+         INSERT matter_bot_task (status='queued', trigger_kind='assignee_added')
+```
+
+> **核心不变量**：评论/事项的持久化和 bot_task 入队 **要么走同事务，要么走同一 worker 不会丢的异步**。messaging 损失靠 sweeper（§8）兜底。
 
 ### Daemon pull 协议
 
 ```text
-GET /matters/internal/tasks?bot_uid=<X>&limit=10
-Header: Authorization: Bearer <runtime_token>
-       (matter 用 JWK 本地验签)
+GET /api/v1/internal/bot-tasks?bot_uid=<X>&limit=10
+Header: Authorization: Bearer <daemon JWT>
 
 Resp (200): {
   tasks: [
     {
-      id, matter_id, prompt,
-      claim_token,            # daemon 必须在 writeback 时回传
-      lease_until,            # daemon 必须在此时间前完成
+      id, matter_id, space_id, bot_uid,
+      prompt, matter_title,
+      claim_token,           # daemon 必须在 writeback 时回传
+      lease_until,           # daemon 必须在此时间前完成 (默认 10min)
     },
     ...
   ]
@@ -224,56 +264,42 @@ Resp (200): {
 #### Atomic claim（matter 端 SQL）
 
 ```sql
--- 一条 SQL 原子 claim 一批
+-- 一条 SQL 原子 claim
 UPDATE matter_bot_task
-SET status      = 'dispatched',
-    claim_token = UUID(),
-    claimed_by  = ?,
-    claimed_at  = NOW(3),
-    lease_until = DATE_ADD(NOW(3), INTERVAL 10 MINUTE)
-WHERE bot_uid = ?
-  AND status  = 'queued'
-ORDER BY created_at ASC
-LIMIT 10;
--- 然后 SELECT 出 status='dispatched' AND claim_token=<刚生成的批次 token>
+   SET status='dispatched', claim_token=?, claimed_by=?, claimed_at=NOW(3), lease_until=?
+ WHERE bot_uid=? AND status='queued'
+ ORDER BY created_at ASC
+ LIMIT ?;
+-- 然后 SELECT status='dispatched' AND claim_token=<刚生成的批次 token>
 ```
 
-### Writeback 协议
+### Writeback + Ack 协议
 
 ```text
 # 成功
-POST /matters/:id/timeline
-  Body: {
-    actor_uid:  <bot_uid>,
-    content:    <agent reply>,
-  }
-POST /matters/:id/activities
-  Body: {
-    actor_uid:  <bot_uid>,
-    kind:       'agent_task_completed',
-    detail:     {bot_uid, task_id, agent_id, elapsed_ms, bytes},
-  }
-POST /matters/internal/tasks/<task_id>/ack
-  Body: {
-    claim_token: <匹配 task 的 claim_token>,
-    status:      'succeeded',
-    result_summary: <≤500 chars>,
-    elapsed_ms:  <int>,
-  }
+POST /api/v1/internal/matters/:id/timeline   (X-Internal-Token)
+  Body: { actor_uid: <bot_uid>, space_id, content: <agent reply> }
+POST /api/v1/internal/matters/:id/activities (X-Internal-Token)
+  Body: { actor_uid: <bot_uid>, action: 'agent_task_completed',
+          detail: { bot_uid, task_id, elapsed_ms, bytes } }
+POST /api/v1/internal/bot-tasks/:id/ack       (Bearer daemon JWT)
+  Body: { claim_token, status: 'succeeded', result_summary, elapsed_ms }
 
 # 失败
-POST /matters/internal/tasks/<task_id>/ack
-  Body: { claim_token, status:'failed', error_msg, elapsed_ms }
-POST /matters/:id/activities
-  Body: { actor_uid:bot_uid, kind:'agent_task_failed', detail:{error,...} }
+POST /api/v1/internal/matters/:id/activities (X-Internal-Token)
+  Body: { actor_uid: <bot_uid>, action: 'agent_task_failed', detail: {...} }
+POST /api/v1/internal/bot-tasks/:id/ack       (Bearer daemon JWT)
+  Body: { claim_token, status: 'failed', error_msg, elapsed_ms }
 ```
+
+> 为什么 writeback 走 X-Internal-Token 而非 JWT：matter 路由表里 timeline / activities 老 endpoint 已经存在并依赖 X-Internal-Token，复用避免双注册同路径。未来统一到 JWT 是 polish 项，不阻塞功能。
 
 #### Task 不变量
 
-- **T1**：ack 时 `claim_token` 不匹配 → 409，daemon 必须丢弃结果不重试
-- **T2**：`lease_until` 过期的 task 由 matter sweeper 重置回 `queued`，attempt++（最多 max_attempts）
-- **T3**：同一 (matter_id, bot_uid, trigger_entry_id) 只入队一次（dedup by trigger_entry_id）
-- **T4**：写 timeline + 写 activity + ack 顺序敏感但**不必原子**（三个独立 HTTP 请求；失败时 daemon 重试，幂等性靠 trigger_entry_id 解决）
+- **T1**：ack 时 `claim_token` 不匹配 → 409，daemon 必须丢弃结果不重试（lease 过期被其他 daemon 拿走的情形）
+- **T2**：`lease_until` 过期由 matter sweeper（§8）reclaim 回 `queued`，`attempt++`，超 `max_attempts` 标 failed
+- **T3**：同 (matter_id, bot_uid, trigger_entry_id) 在 UNIQUE 上 dedup；`trigger_entry_id IS NULL` 允许多次（assignee 多次添加）
+- **T4**：timeline / activity / ack 三个写入不要求原子；daemon 失败重试，幂等性靠 claim_token 一次性
 
 ---
 
@@ -283,272 +309,280 @@ POST /matters/:id/activities
 loop {
   # 每 N 秒
   for runtime in registered_runtimes:
-    heartbeat(runtime_id)
-       ↳ runtime 返回 pending_command (provision bot)
-       ↳ 如果有 → 处理 (§6)
-
-  for bot in my_managed_bots:    # runtime 注册时告诉 daemon 自己负责哪些 bot
-    tasks = matter.GET tasks?bot_uid=bot.uid
-    for task in tasks:
-      result = spawn_openclaw_agent(bot.agent_id, task.prompt)
-      matter.POST timeline(task.matter_id, result.reply)
-      matter.POST activity(task.matter_id, kind='completed', ...)
-      matter.POST tasks/<task.id>/ack(claim_token, 'succeeded', ...)
+    resp = fleet.POST /v1/daemon/heartbeat {runtime_id} (Bearer JWT)
+    if resp.PendingCommand?.action == "bot.provision":
+        go handleBotProvision(resp.PendingCommand)
+    if len(resp.ManagedBots) > 0:
+        go pollMatterTasksForManagedBots(resp.ManagedBots)
 }
+
+func pollMatterTasksForManagedBots(bots):
+  for bot in bots:
+    tasks = matter.GET /api/v1/internal/bot-tasks?bot_uid=bot.bot_uid (Bearer JWT)
+    for task in tasks:
+       reply = runOpenclawAgent(bot.workspace_id, task.prompt)
+       matter.POST /api/v1/internal/matters/:matter_id/timeline   (X-Internal-Token)
+       matter.POST /api/v1/internal/matters/:matter_id/activities (X-Internal-Token)
+       matter.POST /api/v1/internal/bot-tasks/:task_id/ack         (Bearer JWT)
 ```
 
 ### Daemon 怎么知道自己管理哪些 bot
 
-`POST /v1/daemon/register` response 增加 `managed_bots` 列表：
+`POST /v1/daemon/heartbeat` 响应里 fleet 注入 `managed_bots`：
 
 ```json
 {
-  "runtimes": [...],
+  "status": "ok",
   "managed_bots": [
-    {"bot_uid": "27xxx_bot", "agent_id": "openclaw-workspace-xxx"}
-  ]
+    {"bot_uid": "27xxx_bot", "workspace_id": "demo-f1c7"},
+    ...
+  ],
+  "pending_command": { ... }  // 可选 bot.provision
 }
 ```
 
-daemon 用这个列表去 matter pull tasks。注册/heartbeat 时 runtime 更新这个列表（用户在 web 端建/删 bot 时变化）。
+fleet 用 `SELECT bot_uid, workspace_id FROM bot WHERE daemon_id=? AND status='active'` 生成。
 
 ### Heartbeat 节奏
 
-- 默认 5s 一次
-- pull task 节奏 = 心跳节奏（在 heartbeat 之间穿插，避免抢资源）
-- 长任务（agent 跑 10min）期间继续 heartbeat，task 自己 lease 续约（POST tasks/<id>/heartbeat refresh lease_until）
+- 默认 15s 一次（`OCTO_HEARTBEAT_INTERVAL` 可调）
+- 每次心跳后逐 bot pull matter（n+1 HTTP，可接受；每 bot 5 task limit）
+- 长任务（openclaw agent 跑 10min）期间 daemon 继续 heartbeat；matter sweeper 见 §8
 
 ---
 
-## 6. Bot 生命周期（runtime 端）
+## 6. Bot 生命周期
 
-### 状态机
+### 状态机（简化后实际实现）
 
 ```text
-[draft] → [provisioning] → [bot_minted] → [provisioned] → [active] ←→ [archived]
-                ↓                              ↓
-            [mint_failed]               [provision_failed]
+[draft] → [bot_minted] → [dispatched] → [active] ←→ [archived]
+              │              │              │
+              └──→ [failed] ←┴──────────────┘
 ```
 
 | 状态 | 含义 | 触发 |
 |---|---|---|
-| `draft` | 用户提交「创建 bot」表单，runtime 落了行还没动 | web POST /runtimes/bots |
-| `provisioning` | runtime 调 server mint OBO | 紧接 draft |
-| `bot_minted` | server 返回 bot_uid + bot_token，runtime 落字段 | server 200 |
-| `provisioned` | runtime 已派 `bot.provision` command；等 daemon ack | heartbeat dispatch |
-| `active` | daemon ack 成功，bot 可用 | daemon ack 200 |
-| `archived` | 用户在 web 端归档 | user action |
-| `mint_failed` | server 调用失败 | server 4xx/5xx |
-| `provision_failed` | daemon ack 失败 | daemon ack 'failed' |
+| `draft` | 浏览器 step 1 完成，fleet 落了行没 bot_uid | `POST /v1/runtimes/bots` |
+| `bot_minted` | 浏览器 step 3 patch 上 bot_uid，等 daemon 心跳取 | `POST /v1/runtimes/bots/:id/mint` |
+| `dispatched` | daemon heartbeat 拿到 pending_command 拉走 | fleet claim_token 颁发 |
+| `active` | daemon openclaw bind 成功 ack 回 fleet | daemon ack 200 |
+| `failed` | mint 失败 / provision 失败 | server 4xx / daemon ack 'failed' |
+| `archived` | 浏览器删除 | `DELETE /v1/runtimes/bots/:id` |
 
-### `bot` 表 schema
+### `bot` 表 schema（fleet 端）
 
 ```sql
 CREATE TABLE bot (
-  id              char(36)    NOT NULL,
-  space_id        varchar(64) NOT NULL,
-  owner_uid       varchar(64) NOT NULL,
-  runtime_id      bigint      NOT NULL,           -- 关联 agent_runtime.id
-  display_name    varchar(120) NOT NULL,
-  provider        varchar(32) NOT NULL,           -- 'openclaw' | 'claude' | 'codex' | 'hermes'
-  bot_uid         varchar(64) NULL,               -- server mint 后填
-  bot_token       varchar(120) NULL,              -- 同上
-  agent_id        varchar(64) NULL,               -- openclaw workspace id (仅 openclaw provider)
-  status          varchar(32) NOT NULL,
-  claim_token     varchar(64) NULL,               -- daemon 取走 provision 时
-  error_msg       text NULL,
-  created_at      datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at      datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  archived_at     datetime NULL,
-  PRIMARY KEY (id),
-  UNIQUE KEY uk_bot_uid (bot_uid),
-  KEY idx_runtime_status (runtime_id, status)
+  id              BIGINT AUTO_INCREMENT PRIMARY KEY,
+  space_id        VARCHAR(64)  NOT NULL,
+  owner_uid       VARCHAR(64)  NOT NULL,
+  runtime_id      BIGINT       NOT NULL,
+  runtime_kind    VARCHAR(32)  NOT NULL,        -- 'openclaw' | 'claude' | 'codex' | 'hermes'
+  daemon_id       VARCHAR(64)  NOT NULL,
+  name            VARCHAR(120) NOT NULL,
+  bot_uid         VARCHAR(64)  NOT NULL DEFAULT '',   -- step 3 填
+  bot_token       VARCHAR(120) NOT NULL DEFAULT '',   -- 始终为空，PR-B 后死字段
+  workspace_id    VARCHAR(64)  NOT NULL DEFAULT '',   -- openclaw workspace
+  status          VARCHAR(32)  NOT NULL,
+  claim_token     VARCHAR(64)  NOT NULL DEFAULT '',
+  error_msg       TEXT,
+  created_by      VARCHAR(32)  NOT NULL DEFAULT 'web',
+  created_at      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  KEY idx_runtime (runtime_id, status),
+  KEY idx_bot_uid (bot_uid)
 );
 ```
+
+> `bot.bot_token` 列保留是 PoC4 残留，PR-B 后无人写入。可在 PR-D cleanup 删掉（一行 migration）。
 
 ### `bot.provision` heartbeat command
 
 ```json
 {
-  "id": "<bot.id>",
+  "id": <fleet bot.id>,
   "action": "bot.provision",
-  "provider": "openclaw",
-  "agent_id": "<openclaw workspace id, daemon 创建>",
+  "workspace_id": "<derived from name, e.g. demo-f1c7>",
+  "display_name": "<bot name>",
   "bot_uid": "<server minted>",
-  "bot_token": "<bf_xxx>",
+  "bot_token": "",                  // 始终空，daemon 主动拉
   "api_url": "<server external base>",
   "claim_token": "<uuid>"
 }
 ```
 
 daemon 收到后：
-- 对 openclaw：`openclaw agents add <agent_id>` + patch `channels.octo.accounts.<bot_uid>` + `openclaw agents bind --agent <agent_id> --bind octo:<bot_uid>`
-- 对 claude/codex/hermes：当前 PoC 不支持（runtime 端在 createBot 时直接 reject），未来扩展
+- 若 `bot_token == ""`：先 `GET /v1/bot/:bot_uid/token` 拉
+- `api_url == ""` fallback `OCTO_SERVER_URL` env
+- 对 openclaw：`openclaw agents add <workspace>` + patch `channels.octo.accounts.<bot_uid>` + `openclaw agents bind --agent <workspace> --bind octo:<bot_uid>`
+- 对 claude/codex/hermes：当前 PoC 不支持，UI 在 CreateBotModal 显示「暂不支持」
 
 #### Bot 不变量
 
-- **B1**：bot.bot_uid 全局唯一（server 端约束）
-- **B2**：bot.runtime_id 必须 = bot owner 在 runtime 表里能查到的 runtime 行 id
-- **B3**：bot.archived_at 非空时，所有 matter 内涉及该 bot 的 dispatch 立即拒绝（matter pull 时 runtime 标记 bot 不再 managed）
+- **B1**：`bot.bot_uid` 全局唯一（server 端 robot 表 UNIQUE）
+- **B2**：`bot.runtime_id` 必须 = `agent_runtime` 表中同 owner 的行 id
+- **B3**：`bot.status='archived'` 时 fleet 不再把它放进 `managed_bots`，daemon 自然停止 pull
 
 ---
 
-## 7. Matter 写回：直接 POST（不要 HMAC）
+## 7. Matter 写回：X-Internal-Token（暂时复用）
 
-替代设计（push/outbox）需要 HMAC attestation：fleet 写 matter timeline 时签整个 body，matter 验签后才写。本 plan **不做**，因为：
+PR-B 没有把 timeline / activities 写回 endpoint 切到 JWT，因为：
 
-- daemon 用 runtime_token 调 matter，已经过 JWK 验签 → 调用方身份已确认
-- HMAC 只防"重放"，可以用 `claim_token` 一次性消费做幂等（§4 已设计）
-- HMAC canonical 字符串规范会占 200+ 行设计文档，砍掉减负
+- 老 endpoint `POST /api/v1/internal/matters/:id/timeline` 已存在 X-Internal-Token 实现
+- 若同时挂 JWT 子路由，路径冲突；改 JWT 需重命名 endpoint，破坏现有 server 调用（即使 PR-C 删了，未来其他 service 仍可能用）
+- daemon 走 JWT 路是 task pull/ack（GET / POST .../ack），是新加路径，不冲突
 
-### 写回 API（matter 端 internal）
+未来 polish：把 writeback 也切 JWT，端到端纯 JWT。
 
-```text
-POST /api/v1/matters/:id/timeline
-Header: Authorization: Bearer <runtime_token>
-Body: {
-  actor_uid: <bot_uid>,           # matter 不验"actor 必须是真人"，因为 token 已限定 space
-  content:   <bot reply>,
-  attachments?: [...],
-}
-```
-
-matter 端校验：
-
-1. `runtime_token` JWK 验签 + scope check
-2. `actor_uid` 必须是有效的 IM user（信任 token 隐含的"调用方有权代理 actor_uid"）
-3. 写入 timeline + activity
-
-```text
-POST /api/v1/matters/:id/activities
-Body: { actor_uid, kind, detail }
-
-POST /api/v1/matters/internal/tasks/:task_id/ack
-Body: { claim_token, status, result_summary?, error_msg?, elapsed_ms? }
-```
+> 唯一例外：fleet 的 `GET /v1/runtimes/bots/:id/feed` 是 proxy 到 matter `GET /api/v1/internal/bots/:bot_uid/feed`（X-Internal-Token），matter URL 从 `OCTO_MATTER_URL` env 兜底。这条违反 0 通信，未来改成浏览器直接调 matter。
 
 ---
 
-## 8. Audit / 对账（简化）
+## 8. Sweeper（matter 5min 周期）
 
-替代设计（push/outbox）需要 audit worker 对账 fleet 是否漏写 timeline。本 plan 不需要：
+`octo-matter` 跑一个 5 分钟 tick 的 sweeper（`BotTaskRepo.ReclaimExpired`）：
 
-- matter `bot_task` 表本身就是 ground truth（status='succeeded' 表示写回完成）
-- web 端「智能体」详情 → Tasks tab 直接 SELECT matter_bot_task 看历史 + 失败原因
-- 不需要 audit worker；如果有 task 卡在 `dispatched` > lease_until → matter sweeper 自动重置回 `queued`
+```sql
+-- 先 dead-letter (避免下一步又 reclaim 已到 cap 的行)
+UPDATE matter_bot_task
+   SET status='failed', error_msg='exceeded max_attempts'
+ WHERE status='dispatched' AND lease_until < NOW(3) AND attempt+1 > max_attempts;
 
-唯一保留的 audit：
+-- 再 reclaim
+UPDATE matter_bot_task
+   SET status='queued', attempt=attempt+1, claim_token=NULL, claimed_by=NULL, claimed_at=NULL, lease_until=NULL
+ WHERE status='dispatched' AND lease_until < NOW(3);
+```
 
-- matter sweeper（5min 周期）：
-  - reclaim 过期 lease 的 task（status='dispatched' AND lease_until < NOW() AND attempt < max_attempts → status='queued', attempt++）
-  - 标 dead-letter（attempt >= max_attempts → status='failed', error_msg='exceeded max_attempts'）
+无需 audit worker — `matter_bot_task` 是 ground truth，web UI bot 详情页直接 SELECT 显示。
 
 ---
 
 ## 9. Daemon 执行侧安全约束
 
 - agent run 用 ACP fresh session（每个 task 独立 session_key）
-- 子进程 10min hard timeout（exec.CommandContext + ctx.WithTimeout）
-- stdout 截 200KB（matter activity.detail.bytes 字段记录原始长度）
-- agent 端工具调用（grep / bash / etc）由 openclaw 自己的 approval 系统约束，daemon 不再加层
-- claim_token / runtime_token 永不打到日志（用 `***` 替代）
+- `runOpenclawAgent` 子进程 10min hard timeout（`exec.CommandContext` + `context.WithTimeout`）
+- stdout 截 `maxResultSummaryBytes = 64KB`（`matter activity.detail.bytes` 字段记录原始长度）
+- agent 端工具调用（grep / bash / etc）由 openclaw 自己 approval 系统约束，daemon 不再加层
+- `claim_token` / JWT 永不打到日志
 
 ---
 
 ## 10. 配置项汇总
 
-### octo-server（不变）
+### octo-server
 
 ```env
-NOTIFY_INTERNAL_TOKEN=<shared with matter & runtime>
+JWT_PRIVATE_KEY_PATH=~/.octo-server/jwt-priv.pem  # 默认；首次启动自动生成 RSA-2048
+# (其他 server 既有配置不变)
 ```
 
-### octo-matter（新）
+### octo-fleet
 
 ```env
-FLEET_JWT_PUBKEY_PATH=/etc/octo/fleet-pub.pem         # 共享公钥（JWK 验签）
-# 或：直接内嵌
-# FLEET_JWT_PUBKEY=-----BEGIN PUBLIC KEY-----\n...
+OCTO_MATTER_URL=http://127.0.0.1:8080             # bot feed proxy 兜底用
+NOTIFY_INTERNAL_TOKEN=<shared-secret>             # bot feed proxy 调 matter 时用
+# configs/fleet.yaml 里还有：
+#   addr: ":8092"
+#   db.mysqlAddr: "root:demo@tcp(127.0.0.1:3306)/octo_fleet?..."
+#   db.redisAddr: "127.0.0.1:6379"
+#   auth.serverJwksURL: "http://localhost:8090/.well-known/jwks.json"
 ```
 
-### octo-fleet（新）
+### octo-matter
 
 ```env
-SERVER_INTERNAL_URL=http://octo-server:8090
-NOTIFY_INTERNAL_TOKEN=<shared with server>            # 调 server mint OBO 时用
-FLEET_JWT_PRIVKEY_PATH=/etc/octo/fleet-priv.pem       # JWT issuer 私钥
-FLEET_JWT_PUBKEY_PATH=/etc/octo/fleet-pub.pem         # 自己验签时也用
+OCTO_SERVER_JWKS_URL=http://localhost:8090/.well-known/jwks.json  # daemon JWT 验签用
+NOTIFY_INTERNAL_TOKEN=<shared-secret>                              # 老 internal endpoint 用
+# (其他 matter 既有配置不变)
 ```
 
-### octo-daemon-cli（基本不变）
+### octo-daemon-cli
 
 ```env
-FLEET_URL=http://octo-fleet:8092
-MATTER_URL=http://octo-matter:8080
-# api_key 已存在 ~/.octo-daemon/config.json
+OCTO_FLEET_URL=http://127.0.0.1:8092       # 心跳 / register / bot ack
+OCTO_SERVER_URL=http://127.0.0.1:8090      # 拿 JWT / 拉 bot_token
+OCTO_MATTER_URL=http://127.0.0.1:8080      # 拉 bot_task / writeback
+NOTIFY_INTERNAL_TOKEN=<shared-secret>      # matter timeline writeback 用
+# (api_key 仍在 ~/.octo-daemon/config.json，启动时换 JWT)
+```
+
+### octo-web
+
+```env
+# 不需要 ENV，所有改动在 vite.config.ts 的 dev proxy + src/Service/APIClient.ts 的 interceptor
+# 生产部署时 nginx 把 /api/v1/runtimes* / /api/v1/daemon* 路由到 fleet :8092
 ```
 
 ---
 
-## 11. 替代设计对比 + cutover 路径
+## 11. 替代设计对比
 
-下表展示替代设计（push / outbox）的复杂度差异 — 草稿阶段曾考虑过，因为 fleet 复杂度过高 + matter↔fleet 强耦合放弃。
+下表展示 push/outbox 替代设计的复杂度差异——草稿期曾考虑，因 fleet 复杂度过高 + matter↔fleet 强耦合放弃。
 
-| 维度 | 替代方案：push / outbox | 本 plan：daemon pull |
+| 维度 | 替代方案：push / outbox | 本 plan：daemon pull · 0 通信 |
 |---|---|---|
-| 触发模式 | matter outbox → fleet push | daemon pull from matter |
+| 触发模式 | matter outbox → fleet push | daemon pull from matter / fleet |
 | matter → fleet | webhook | 无 |
-| fleet → matter | HMAC writeback | 无 |
-| fleet → server | mint OBO + verify api-key | 保留（不可避免） |
-| daemon → server | 无 | 无 |
-| matter 复杂度 | +outbox 表 +outbox worker +HMAC 验签 | +bot_task 表 +internal endpoints |
-| fleet 复杂度 | 高（outbox / HMAC / worker） | 低（daemon mgr + bot mapping） |
-| daemon 复杂度 | 中（被推） | 中高（主动 pull + 协调） |
+| fleet → matter | HMAC writeback | 无（仅 bot feed proxy 一处，将来移除） |
+| fleet → server | mint OBO + verify api-key | **无** |
+| daemon → server | 无 | 有：`POST /v1/auth/token` + `GET /v1/bot/:uid/token`（必要） |
+| matter 复杂度 | +outbox 表 +outbox worker +HMAC 验签 | +matter_bot_task 表 +sweeper +daemon endpoints |
+| fleet 复杂度 | 高（outbox / HMAC / worker） | 中（runtime 管理 + bot 编排元数据） |
+| daemon 复杂度 | 中（被推） | 中高（主动 pull + 协调）|
 | 失败爆炸半径 | matter outbox 卡死 = 全停 | daemon 挂 = 单机停 |
-| 时延 | push 即时 | pull 间隔 5-10s |
+| 时延 | push 即时 | pull 间隔 15s |
 | HMAC canonical 规范 | 200+ 行 | 不需要 |
 
-### Cutover 路径（PoC → GA）
-
-PoC 当前代码（一切在 octo-server 里）→ 拆分的迁移步骤：
-
-1. **新建 octo-fleet 服务**：
-   - 把 server 里的 `bot_task` 表搬到 matter
-   - 把 server 里的 `managed_runtime_agent` 表搬到 fleet（重命名为 `bot`）
-   - 把 server 里 `modules/runtime/*` 代码搬过来（目录名后续也改为 `fleet/`）
-2. **matter 加 bot_task 表 + internal endpoints**（§4）
-3. **fleet 加 JWT issuer**（§2）+ matter 加 JWK 验签
-4. **daemon 改为主动 pull**（§5）
-5. **PoC 期保留** server 内嵌路径作为 fallback；新 client 全部走 fleet
-6. **数据迁移**：server `managed_runtime_agent` → fleet `bot`（一次性脚本）
-
 ---
 
-## 12. 契约 PR 三件套
+## 12. 实施实况（已落地）
 
-按服务拆 3 个 PR（每个独立可 merge）：
+PR 拆分按服务边界做：
 
-- **PR-A · octo-fleet 独立化**：新服务骨架 + bot CRUD + bot.provision 流程 + JWT issuer
-- **PR-B · octo-matter bot_task**：新增表 + 写时入队 + internal pull/ack endpoints + JWK 验签
-- **PR-C · octo-daemon claim loop**：从 runtime 拿 managed_bots + matter pull tasks + writeback
+| PR | 范围 | 涉及 repo | 状态 |
+|---|---|---|---|
+| **PR-A.1** | JWT 信任链（server issuer + fleet verifier + daemon JWT exchange） | octo-server, octo-fleet, octo-daemon-cli | ✅ |
+| **PR-A.2** | runtime 业务搬 fleet + 浏览器接 JWT + daemon 切 fleet URL + server runtime deprecate | 全部 4 repo + 新增 octo-fleet | ✅ |
+| **PR-A.3** | bot 创建 3-step 编排（fleet draft → server mint → fleet patch + daemon 拉 bot_token） | server, fleet, daemon, web | ✅ |
+| **PR-B.1** | matter_bot_task 表 + daemon JWT endpoints + @mention 写本地 | matter | ✅ |
+| **PR-B.2** | daemon 改 pull from matter（fleet 心跳吐 managed_bots） | daemon, fleet | ✅ |
+| **PR-B.3** | fleet 卸载 bot_task（endpoint 410，table 留 rollback） | fleet | ✅ |
+| **PR-B.4** | e2e + space_id fixup | matter, daemon | ✅ |
+| **PR-B.4.5** | assignee 路径补走本地 DB（之前漏改）| matter | ✅ |
+| **PR-C** | server 删 modules/runtime（27 文件 / 3819 行） | server | ✅ |
 
-PR 顺序：A → B → C（C 依赖 A 的 JWT issuer 和 B 的 matter endpoints）。
+各 repo 分支：
+
+| Repo | Branch | HEAD commit |
+|---|---|---|
+| octo-server | `feat/agent-runtime` | https://github.com/Mininglamp-OSS/octo-server/tree/feat/agent-runtime |
+| octo-fleet (新) | `main` | https://github.com/Mininglamp-OSS/octo-fleet |
+| octo-matter | `feat/agent-runtime` | https://github.com/Mininglamp-OSS/octo-matter/tree/feat/agent-runtime |
+| octo-daemon-cli | `feat/agent-runtime` | https://github.com/Mininglamp-OSS/octo-daemon-cli/tree/feat/agent-runtime |
+| octo-web | `feat/agent-runtime` | https://github.com/Mininglamp-OSS/octo-web/tree/feat/agent-runtime |
 
 ---
 
 ## 13. 决策记录
 
-- [x] **服务改名**：`octo-runtime` → **`octo-fleet`**（端口仍 :8092；env `FLEET_*`）
-- [x] **跨服务鉴权**：分阶段
-  - PoC 期：matter / fleet 调 server `POST /v1/auth/verify`（复用现成 endpoint）
-  - GA：切共享 JWK 本地验签（fleet 颁发 + matter 持公钥），消除 N+1
-  - 切换时机：第一次 matter 或 fleet 上 production / multi-region 时
-- [x] **`bot_task` 表归 matter**：写 timeline 同事务入队 · daemon 直接 pull · matter 不知道 fleet 存在
-- [x] **lease 续约接口**：PoC 不做（10min lease 覆盖绝大多数 agent run）；GA 加 `POST /matters/internal/tasks/:id/heartbeat`（agent 跑超过 8min 时主动续约）
-- [x] **多 daemon 并发 pull 同 bot**：靠 §4 的 atomic UPDATE...WHERE status='queued' 保护；contract test（100 个 daemon × 1 个 bot × 50 个 task → 每个 task 恰好被 claim 一次）列入 GA blocker，PoC 不强制
+- [x] **服务名**：`octo-fleet`（不是 octo-runtime），端口 :8092，独立 GitHub repo (private)
+- [x] **0 通信架构**：server / fleet / matter 三者之间 0 HTTP 互调；唯一例外 fleet→matter 的 bot feed proxy 是 polish 项
+- [x] **server 作为 JWT issuer**：直接走最终态 RS256 + JWKS，跳过 PoC 期"调 server /v1/auth/verify"中间方案
+- [x] **bot_token 留 server**：daemon 用自己的 daemon-scope JWT 拉，never 经过浏览器/fleet
+- [x] **bot_task 归 matter**：写 timeline 同事务入队，daemon pull from matter，fleet 不再持有
+- [x] **lease 续约**：PoC 不做（10min lease 覆盖大部分 agent run）；GA 加 `POST /api/v1/internal/bot-tasks/:id/heartbeat` refresh lease
+- [x] **多 daemon 并发**：matter `ClaimNextForBot` 用 `UPDATE...WHERE status='queued' ORDER BY ... LIMIT N` 原子 claim；contract test 列入 GA blocker
+- [x] **server runtime 删 vs 留**：PR-C 真删，rollback 路径靠 `LEGACY_RUNTIME_ROUTES=true` env（实际上代码已删，env 不再生效；要 rollback 需 git revert）
 
-### 后续讨论项（暂不阻塞 cutover）
+### 后续讨论项（暂不阻塞 GA）
 
-- agent 跑 timeout（10min hard）期间 daemon crash 怎么 recover：现行靠 lease 过期 sweeper（§8），但失去了"已部分完成"的进度信息 → GA 阶段可考虑加 `POST /matters/internal/tasks/:id/checkpoint`（写流式进度到 activity.detail）
-- 多个 bot 在同一 daemon 上并行 task 的资源限额（openclaw gateway scope upgrade 撞车那个 PoC 实测问题）
-- fleet 颁发 JWT 的 key rotation 协调机制（PoC 期无所谓）
+- agent timeout（10min）期间 daemon crash → 失去"已部分完成"进度。GA 加 `POST /api/v1/internal/bot-tasks/:id/checkpoint` 写流式进度
+- 多个 bot 在同一 daemon 上并行 task 的资源限额（openclaw gateway scope upgrade 撞车 PoC 实测）
+- JWT key rotation 协调机制（PoC 无所谓）
+- writeback 端点全切 JWT（去掉 NOTIFY_INTERNAL_TOKEN 依赖）
+- bot feed proxy 改成浏览器直接调 matter（彻底 0 fleet→matter）
+- bot table 字段瘦身（bot_token / claim_token 等死字段删一波 migration）
+- 单元测试补齐（auth_jwt / JWTVerifier / BotTaskRepo — 当前覆盖 0%）
