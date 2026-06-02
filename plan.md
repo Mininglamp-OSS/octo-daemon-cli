@@ -137,6 +137,7 @@ daemon → server GET  /v1/bot/:uid/token (Bearer JWT) ← 拉 bot_token 喂给 
 - **AU2**：unknown kid 触发一次 JWKS refresh（10s floor 防 issuer DoS），仍失败 → 401
 - **AU3**：fleet/matter 拿到的 JWT.space_id 直接信任（issuer 已校验成员关系），不再查 space_member 表
 - **AU4 (修订)**：daemon 必须直连 server（拿 JWT + 拉 bot_token）。fleet/matter 在**业务路径**上仍不调 server（启动期拉 JWKS 是公钥分发，不在此约束内）
+- **AU5 (writeback context binding)**：matter `/timeline` + `/activities` 在 daemon JWT 分支下，要求 body 带 `task_id + claim_token` + 4 项 invariants 全过（bot_uid / space_id / claimed_by / claim_token+dispatched 状态），任一不通过 → 403 `WRITEBACK_FORBIDDEN`。X-Internal-Token 分支 short-circuit 不查 — 老调用方零改动。详见 §7。
 
 ### 为什么两种协议并存 (Why two protocols)
 
@@ -318,16 +319,19 @@ UPDATE matter_bot_task
 ```text
 # 成功
 POST /api/v1/internal/matters/:id/timeline   (Bearer daemon JWT, DualAuth)
-  Body: { actor_uid: <bot_uid>, space_id, content: <agent reply> }
+  Body: { actor_uid: <bot_uid>, space_id, content: <agent reply>,
+          task_id, claim_token }                           # ← AU5 binding
 POST /api/v1/internal/matters/:id/activities (Bearer daemon JWT, DualAuth)
   Body: { actor_uid: <bot_uid>, action: 'agent_task_completed',
-          detail: { bot_uid, task_id, elapsed_ms, bytes } }
+          detail: { bot_uid, task_id, elapsed_ms, bytes },
+          space_id, task_id, claim_token }                 # ← AU5 binding
 POST /api/v1/internal/bot-tasks/:id/ack       (Bearer daemon JWT)
   Body: { claim_token, status: 'succeeded', result_summary, elapsed_ms }
 
 # 失败
 POST /api/v1/internal/matters/:id/activities (Bearer daemon JWT, DualAuth)
-  Body: { actor_uid: <bot_uid>, action: 'agent_task_failed', detail: {...} }
+  Body: { actor_uid: <bot_uid>, action: 'agent_task_failed', detail: {...},
+          space_id, task_id, claim_token }                 # ← AU5 binding
 POST /api/v1/internal/bot-tasks/:id/ack       (Bearer daemon JWT)
   Body: { claim_token, status: 'failed', error_msg, elapsed_ms }
 ```
@@ -625,9 +629,9 @@ PR 拆分按服务边界做：
 | **PR-B.1** | matter_bot_task 表 + daemon JWT endpoints + @mention 写本地 | matter | ✅ |
 | **PR-B.2** | daemon 改 pull from matter（fleet 心跳吐 managed_bots） | daemon, fleet | ✅ |
 | **PR-B.3** | fleet 卸载 bot_task（endpoint 410，table 留 rollback） | fleet | ✅ |
-| **PR-B.4** | e2e + space_id fixup | matter, daemon | ✅ |
 | **PR-B.4.5** | assignee 路径补走本地 DB（之前漏改）| matter | ✅ |
 | **PR-C** | server 删 modules/runtime（27 文件 / 3819 行） | server | ✅ |
+| **PR-D** | matter DualAuth + daemon JWT writeback + actor_uid binding (security fix) | matter, daemon, server | ✅ |
 
 各 repo 分支：
 
@@ -652,6 +656,7 @@ PR 拆分按服务边界做：
 - [x] **多 daemon 并发**：matter `ClaimNextForBot` 用 `UPDATE...WHERE status='queued' ORDER BY ... LIMIT N` 原子 claim；contract test 列入 GA blocker
 - [x] **server runtime 删 vs 留**：PR-C 真删，rollback 路径靠 `LEGACY_RUNTIME_ROUTES=true` env（实际上代码已删，env 不再生效；要 rollback 需 git revert）
 - [x] **writeback 端点 DualAuth**：timeline / activities 接受 daemon JWT 或 X-Internal-Token 任一；daemon 一律走 JWT，**用户机器上 0 shared secret**（NOTIFY_INTERNAL_TOKEN 从 BotFather /daemon 安装命令移除）
+- [x] **writeback context binding (AU5)**：reviewer 指出 DualAuth-JWT 开放后 actor_uid 无 JWT subject 绑定 = 任意 daemon 能伪造任意 bot；修法采用 `task_id + claim_token` 4-invariant 校验（而非 JWT bots claim），claim_token 天然带 revocation + JWT schema 0 改动 + sweeper 回收即失效
 
 ### 后续讨论项（暂不阻塞 GA）
 

@@ -735,16 +735,16 @@
       <g transform="translate(728,418)"><rect x="-26" y="-9" width="52" height="18" class="arrow-label-bg"/><text x="0" y="3" text-anchor="middle" class="seq-label" fill="#0369a1">reply</text></g>
 
       <!-- 8. writeback (3 calls: timeline + activity + ack) -->
-      <text x="472" y="442" text-anchor="middle" class="seq-meta" fill="#6b21a8">Bearer daemon JWT · timeline+activity 走 DualAuth · ack 走纯 JWT group</text>
+      <text x="472" y="442" text-anchor="middle" class="seq-meta" fill="#6b21a8">Bearer daemon JWT · timeline+activity 走 DualAuth (body 带 task_id+claim_token, AU5 4-invariant) · ack 走纯 JWT group</text>
       <line x1="560" y1="458" x2="384" y2="458" stroke="#9333ea" stroke-width="1.3" marker-end="url(#s-purple)"/>
-      <g transform="translate(472,450)"><rect x="-122" y="-9" width="244" height="18" class="arrow-label-bg"/><text x="0" y="3" text-anchor="middle" class="seq-label" fill="#6b21a8">POST /internal/matters/:id/timeline</text></g>
+      <g transform="translate(472,450)"><rect x="-148" y="-9" width="296" height="18" class="arrow-label-bg"/><text x="0" y="3" text-anchor="middle" class="seq-label" fill="#6b21a8">POST /internal/matters/:id/timeline {…, task_id, claim_token}</text></g>
 
       <line x1="560" y1="484" x2="384" y2="484" stroke="#9333ea" stroke-width="1.3" marker-end="url(#s-purple)"/>
-      <g transform="translate(472,476)"><rect x="-138" y="-9" width="276" height="18" class="arrow-label-bg"/><text x="0" y="3" text-anchor="middle" class="seq-label" fill="#6b21a8">POST /internal/matters/:id/activities (completed)</text></g>
+      <g transform="translate(472,476)"><rect x="-164" y="-9" width="328" height="18" class="arrow-label-bg"/><text x="0" y="3" text-anchor="middle" class="seq-label" fill="#6b21a8">POST /internal/matters/:id/activities {…, task_id, claim_token}</text></g>
 
       <line x1="560" y1="510" x2="384" y2="510" stroke="#9333ea" stroke-width="1.4" marker-end="url(#s-purple)"/>
       <g transform="translate(472,502)"><rect x="-142" y="-9" width="284" height="18" class="arrow-label-bg" stroke="#d8b4fe"/><text x="0" y="3" text-anchor="middle" class="seq-label" fill="#6b21a8" font-weight="600">POST /internal/bot-tasks/:id/ack {claim_token, status}</text></g>
-      <text x="472" y="528" text-anchor="middle" class="seq-meta" fill="#6b21a8">T1 不变量 · 不匹配 → 409 丢弃结果</text>
+      <text x="472" y="528" text-anchor="middle" class="seq-meta" fill="#6b21a8">T1 不变量 · 不匹配 → 409 丢弃结果 · AU5 不通过 → 403 WRITEBACK_FORBIDDEN</text>
 
       <!-- 9. polling -->
       <line x1="220" y1="550" x2="376" y2="550" stroke="#9333ea" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#s-purple)" opacity="0.8"/>
@@ -904,7 +904,7 @@ unknown kid 自动触发 JWKS refresh (10s floor)</code></pre>
         <tr><th><strong>bot_token</strong>（bot 凭据）</th><td><strong>octo-server</strong> · <code>robot.bot_token</code></td><td>永不外发；daemon 用 <code>GET /v1/bot/:uid/token</code> + daemon JWT 拉</td></tr>
         <tr><th>space membership</th><td>octo-server</td><td>JWT 颁发时校验；fleet/matter 直接信 JWT.space_id（不再查 space_member）</td></tr>
         <tr><th>matter · timeline · activity · outputs</th><td>octo-matter</td><td>通过 <code>matter_id</code> 引用 · daemon writeback 走 JWT (DualAuth)，老调用方 X-Internal-Token fallback</td></tr>
-        <tr><th><strong>matter_bot_task</strong>（bot 任务队列）</th><td><strong>octo-matter</strong> <span class="pill pill--ok" style="margin-left:6px">已落地 PR-B</span></td><td>matter 评论 @bot 同事务入队 · daemon JWT pull · ack claim_token 校验</td></tr>
+        <tr><th><strong>matter_bot_task</strong>（bot 任务队列）</th><td><strong>octo-matter</strong> <span class="pill pill--ok" style="margin-left:6px">已落地 PR-B</span></td><td>matter 评论 @bot 同事务入队 · daemon JWT pull · ack 用 claim_token · writeback 4-invariant binding (AU5)</td></tr>
         <tr><th>JWT 私钥 + JWKS</th><td>octo-server · <code>modules/auth_jwt</code></td><td>fleet/matter 启动拉 <code>/.well-known/jwks.json</code> 缓存 · unknown kid 触发 refresh</td></tr>
         <tr><th>daemon 注册 · runtime 健康度</th><td>octo-fleet · <code>agent_runtime</code> 表</td><td>web 直调 fleet · daemon heartbeat 维护</td></tr>
         <tr><th><code>bot_uid ↔ workspace_id</code> 映射</th><td>octo-fleet · <code>bot</code> 表</td><td>heartbeat 响应吐 <code>managed_bots</code> 给 daemon · matter 不知道 workspace 这层</td></tr>
@@ -947,7 +947,7 @@ unknown kid 自动触发 JWKS refresh (10s floor)</code></pre>
   <ol class="decisions">
     <li><strong>整体拓扑</strong> · server / fleet / matter 三服务 0 HTTP 互调 · daemon 协调一切 · <span class="pill pill--ok" style="margin-left:6px">✓ 已落地</span></li>
     <li><strong>服务命名</strong> · <code>octo-fleet</code>（不是 octo-runtime），端口 :8092，独立 GitHub repo (private) · <span class="pill pill--ok" style="margin-left:6px">✓ 已落地</span></li>
-    <li><strong>bot_task 队列归 matter</strong> · matter 评论 @bot 同事务入队 · daemon JWT pull · ack claim_token 校验 · <span class="pill pill--ok" style="margin-left:6px">✓ PR-B</span></li>
+    <li><strong>bot_task 队列归 matter</strong> · matter 评论 @bot 同事务入队 · daemon JWT pull · ack claim_token 校验 · writeback 4-invariant binding (AU5) · <span class="pill pill--ok" style="margin-left:6px">✓ PR-B + PR-D</span></li>
     <li><strong>跨服务鉴权</strong> · server 是唯一 JWT issuer · fleet/matter 拉 JWKS 本地验签 · daemon 用 api_key 换 JWT 调三端 · <span class="pill pill--ok" style="margin-left:6px">✓ PR-A.1</span></li>
     <li><strong>bot_token 不出 server</strong> · 浏览器 step2 调 server mint 只拿 bot_uid · daemon 用 daemon-scope JWT 拉 token 喂 openclaw · <span class="pill pill--ok" style="margin-left:6px">✓ PR-A.3</span></li>
     <li><strong>server runtime 模块删除</strong> · PR-C 真删（27 文件 · 3819 行）· rollback 走 git revert · <span class="pill pill--ok" style="margin-left:6px">✓ PR-C</span></li>
