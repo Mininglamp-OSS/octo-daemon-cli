@@ -43,12 +43,9 @@ func (d *Daemon) handleMatterBotTask(parent context.Context, workspaceID string,
 }
 
 func (d *Daemon) matterWriteReplyAndActivity(parent context.Context, task MatterBotTask, reply string, elapsedMs int64) error {
-	// space_id isn't carried in the task payload — matter's writeback
-	// endpoint accepts it in the body but the existing handler reads
-	// space_id from the matter row itself. Pass empty here.
 	ctx, cancel := context.WithTimeout(parent, 10*time.Second)
 	defer cancel()
-	if err := d.client.WriteMatterTimeline(ctx, task.MatterID, task.BotUID, "", reply); err != nil {
+	if err := d.client.WriteMatterTimeline(ctx, task.MatterID, task.BotUID, task.SpaceID, reply); err != nil {
 		return err
 	}
 	return d.client.WriteMatterActivity(ctx, task.MatterID, task.BotUID, "agent_task_completed",

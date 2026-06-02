@@ -120,6 +120,7 @@ func (c *Client) GetBotToken(ctx context.Context, botUID string) (string, error)
 type MatterBotTask struct {
 	ID          string `json:"id"`
 	MatterID    string `json:"matter_id"`
+	SpaceID     string `json:"space_id"`
 	BotUID      string `json:"bot_uid"`
 	Prompt      string `json:"prompt"`
 	MatterTitle string `json:"matter_title,omitempty"`
