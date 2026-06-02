@@ -55,14 +55,22 @@ func NewDaemon(cfg Config) (*Daemon, error) {
 	if serverURL == "" {
 		serverURL = cfg.APIURL
 	}
+	matterURL := os.Getenv("OCTO_MATTER_URL")
+	internalToken := os.Getenv("NOTIFY_INTERNAL_TOKEN")
 	client := NewClient(fleetURL, cfg.APIKey, cfg.CLIVersion)
 	client.SetServerURL(serverURL)
+	if matterURL != "" {
+		client.SetMatterURL(matterURL)
+	}
+	if internalToken != "" {
+		client.SetInternalToken(internalToken)
+	}
 	// Enable JWT only when we have a distinct fleet URL (i.e., a real
 	// PR-A.2 cutover). Otherwise the same baseURL means we're talking to
 	// the old in-server runtime endpoints which still expect api_key.
 	if os.Getenv("OCTO_FLEET_URL") != "" {
 		client.EnableJWT(daemonID)
-		log.Printf("[INFO] daemon JWT mode enabled (fleet=%s server=%s)", fleetURL, serverURL)
+		log.Printf("[INFO] daemon JWT mode enabled (fleet=%s server=%s matter=%s)", fleetURL, serverURL, matterURL)
 	}
 
 	return &Daemon{
@@ -397,6 +405,12 @@ func (d *Daemon) sendHeartbeats(ctx context.Context) {
 		// take much longer (openclaw agent runs are minutes, not seconds).
 		if resp.PendingTask != nil {
 			go d.handleBotTask(ctx, resp.PendingTask)
+		}
+		// PR-B.2: matter ownership of bot_task. fleet emits managed_bots
+		// in heartbeat response; daemon pulls each bot's queued tasks
+		// from matter directly (skipping the fleet pending_task path).
+		if len(resp.ManagedBots) > 0 {
+			d.pollMatterTasksForManagedBots(ctx, resp.ManagedBots)
 		}
 	}
 
