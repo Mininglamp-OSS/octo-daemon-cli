@@ -20,7 +20,7 @@
 
 定稿方案把 octo-fleet 降级为「daemon 注册中心 + bot 编排元数据表」：
 
-- **3 个后端服务（server / fleet / matter）零 HTTP 互调**
+- **3 个后端服务（server / fleet / matter）零业务 HTTP 互调**（仅 fleet/matter 启动时拉 server `/.well-known/jwks.json` 做公钥分发，运行期 0 业务调用）
 - daemon 是唯一协调者：**主动 pull** matter 任务 + 直接 POST writeback；同时直接调 server 拿 JWT / bot_token
 - 跨服务信任：**server 是唯一 JWT issuer**，fleet/matter 各自拉 server 的 `/.well-known/jwks.json` 缓存公钥，本地验签
 - bot_token 永不离开 server DB（不流经浏览器、不流经 fleet）
@@ -47,8 +47,8 @@ matter 评论里 @bot
 - user / IM 账户 / bot 凭据（**bot_token 留 `robot.bot_token` 列，永不外发**）
 - space membership / auth / api-key
 - **新增 `modules/auth_jwt`**：
-  - `POST /v1/auth/token`：用 session 或 api_key 换 RS256 JWT
-  - `GET /.well-known/jwks.json`：暴露公钥
+  - `POST /v1/auth/token`：用 session（web 登录后）**或** api_key（daemon 启动）换 RS256 JWT；scope 由凭据类型决定（session → `web`，api_key → `daemon`）
+  - `GET /.well-known/jwks.json`：暴露公钥（fleet/matter 拉取并缓存）
   - `POST /v1/bot/mint`：web session 调，OBO 创建 IM bot，**返回 `bot_uid`（不返回 bot_token）**
   - `GET /v1/bot/:uid/token`：daemon JWT 调，校验 `robot.creator_uid == JWT.sub` 后返回 `bot_token`
 - **删除 `modules/runtime/`**（PR-C 完成）；schema migration 残留行可手动 `DELETE FROM gorp_migrations WHERE id LIKE 'runtime-%'`
@@ -88,7 +88,7 @@ matter 评论里 @bot
 
 ## 2. 信任链 / Auth
 
-**核心**：server 是唯一 JWT issuer（RS256），所有其他服务拉 JWKS 本地验签。**0 服务间 HTTP 调用**。
+**核心**：server 是唯一 JWT issuer（RS256），所有其他服务拉 JWKS 本地验签。**业务路径 0 服务间 HTTP 调用**（JWKS 拉取属于公钥分发基础设施，每个 verifier 启动时一次 + unknown kid 触发，不算业务调用）。
 
 ### Web 用户流程
 
@@ -136,7 +136,7 @@ daemon → server GET  /v1/bot/:uid/token (Bearer JWT) ← 拉 bot_token 喂给 
 - **AU1**：JWT 过期 / kid 未知 / 签名失败 → 401，daemon 收到 401 后自动刷新 JWT 重试
 - **AU2**：unknown kid 触发一次 JWKS refresh（10s floor 防 issuer DoS），仍失败 → 401
 - **AU3**：fleet/matter 拿到的 JWT.space_id 直接信任（issuer 已校验成员关系），不再查 space_member 表
-- **AU4 (调整)**：daemon 必须直连 server（拿 JWT + 拉 bot_token）。fleet/matter 仍**不**调 server
+- **AU4 (修订)**：daemon 必须直连 server（拿 JWT + 拉 bot_token）。fleet/matter 在**业务路径**上仍不调 server（启动期拉 JWKS 是公钥分发，不在此约束内）
 
 ---
 
@@ -165,6 +165,7 @@ mint OBO 流程**不走 fleet → server**，而是浏览器编排 3 步，bot_t
                                        ↳ server 校验 robot.creator_uid == JWT.sub → 返回 bot_token
                     ↳ daemon openclaw agents add + config patch + agents bind
                     ↳ daemon → fleet POST /v1/daemon/bots/:id/ack {claim_token, status='active'}
+                                       ↳ fleet UPDATE bot SET status='active' (触发 §6 状态机转 active)
 ```
 
 ### Failure modes
@@ -180,6 +181,8 @@ mint OBO 流程**不走 fleet → server**，而是浏览器编排 3 步，bot_t
 ---
 
 ## 4. matter 端 `matter_bot_task` 表
+
+> **同名歧义**：本节 `claim_token` 是 **matter** `matter_bot_task` 维度（daemon 拉 task 时颁发），跟 §6 里 fleet `bot.claim_token`（bot.provision 派发时颁发，语义上更像 `provision_token`）**不是同一个**。两个 token 互不通用、寿命也不同。后续 cleanup 计划把 fleet 那个改名 `provision_token`（在「后续讨论项」里）。
 
 ### Schema (`octo-matter/migrations/008_bot_task.sql`)
 
@@ -365,7 +368,7 @@ fleet 用 `SELECT bot_uid, workspace_id FROM bot WHERE daemon_id=? AND status='a
 |---|---|---|
 | `draft` | 浏览器 step 1 完成，fleet 落了行没 bot_uid | `POST /v1/runtimes/bots` |
 | `bot_minted` | 浏览器 step 3 patch 上 bot_uid，等 daemon 心跳取 | `POST /v1/runtimes/bots/:id/mint` |
-| `dispatched` | daemon heartbeat 拿到 pending_command 拉走 | fleet claim_token 颁发 |
+| `dispatched` | daemon heartbeat 拿到 pending_command 拉走 | fleet `bot.claim_token` 颁发（语义上是 provision_token，§4 注） |
 | `active` | daemon openclaw bind 成功 ack 回 fleet | daemon ack 200 |
 | `failed` | mint 失败 / provision 失败 | server 4xx / daemon ack 'failed' |
 | `archived` | 浏览器删除 | `DELETE /v1/runtimes/bots/:id` |
@@ -385,7 +388,7 @@ CREATE TABLE bot (
   bot_token       VARCHAR(120) NOT NULL DEFAULT '',   -- 始终为空，PR-B 后死字段
   workspace_id    VARCHAR(64)  NOT NULL DEFAULT '',   -- openclaw workspace
   status          VARCHAR(32)  NOT NULL,
-  claim_token     VARCHAR(64)  NOT NULL DEFAULT '',
+  claim_token     VARCHAR(64)  NOT NULL DEFAULT '',  -- 语义上是 provision_token (§4 注)，未来 rename
   error_msg       TEXT,
   created_by      VARCHAR(32)  NOT NULL DEFAULT 'web',
   created_at      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -471,6 +474,8 @@ UPDATE matter_bot_task
 ---
 
 ## 10. 配置项汇总
+
+> **端口免责**：以下端口为本文 PoC / 本地 dev 默认（server `:8090`、matter `:8080`、fleet `:8092`）。生产部署由 deployment 仓库的 docker-compose / k8s manifest 决定，可能不同；env 名保持稳定。
 
 ### octo-server
 
@@ -584,5 +589,5 @@ PR 拆分按服务边界做：
 - JWT key rotation 协调机制（PoC 无所谓）
 - writeback 端点全切 JWT（去掉 NOTIFY_INTERNAL_TOKEN 依赖）
 - bot feed proxy 改成浏览器直接调 matter（彻底 0 fleet→matter）
-- bot table 字段瘦身（bot_token / claim_token 等死字段删一波 migration）
+- bot table 字段瘦身（bot_token 死字段删除；fleet `bot.claim_token` rename `provision_token` 消歧 §4 注）
 - 单元测试补齐（auth_jwt / JWTVerifier / BotTaskRepo — 当前覆盖 0%）

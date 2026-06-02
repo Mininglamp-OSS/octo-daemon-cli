@@ -657,7 +657,7 @@
 
   <h3>3.1 · 用户在 matter 评论里 @bot</h3>
   <div class="panel panel--diagram">
-    <svg viewBox="0 0 1120 540" preserveAspectRatio="xMidYMid meet" aria-label="时序：用户 @bot">
+    <svg viewBox="0 0 1120 580" preserveAspectRatio="xMidYMid meet" aria-label="时序：用户 @bot">
       <defs class="svg-defs">
         <marker id="s-slate"  viewBox="0 -5 10 10" refX="9" refY="0" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,-5L10,0L0,5" fill="#64748b"/></marker>
         <marker id="s-purple" viewBox="0 -5 10 10" refX="9" refY="0" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,-5L10,0L0,5" fill="#9333ea"/></marker>
@@ -676,19 +676,19 @@
         <rect x="530" y="14" width="60"  height="22" rx="11" fill="#dcfce7"/>
         <text x="560" y="29" text-anchor="middle" class="seq-actor" fill="#16a34a">daemon</text>
         <rect x="710" y="14" width="60"  height="22" rx="11" fill="#ffedd5"/>
-        <text x="740" y="29" text-anchor="middle" class="seq-actor" fill="#ea580c">runtime</text>
+        <text x="740" y="29" text-anchor="middle" class="seq-actor" fill="#ea580c">fleet</text>
         <rect x="870" y="14" width="60"  height="22" rx="11" fill="#e0f2fe"/>
         <text x="900" y="29" text-anchor="middle" class="seq-actor" fill="#0284c7">openclaw</text>
       </g>
 
       <!-- lifelines -->
       <g stroke="#e2e8f0" stroke-dasharray="2,4">
-        <line x1="80" y1="42" x2="80" y2="510"/>
-        <line x1="220" y1="42" x2="220" y2="510"/>
-        <line x1="380" y1="42" x2="380" y2="510"/>
-        <line x1="560" y1="42" x2="560" y2="510"/>
-        <line x1="740" y1="42" x2="740" y2="510"/>
-        <line x1="900" y1="42" x2="900" y2="510"/>
+        <line x1="80" y1="42" x2="80" y2="550"/>
+        <line x1="220" y1="42" x2="220" y2="550"/>
+        <line x1="380" y1="42" x2="380" y2="550"/>
+        <line x1="560" y1="42" x2="560" y2="550"/>
+        <line x1="740" y1="42" x2="740" y2="550"/>
+        <line x1="900" y1="42" x2="900" y2="550"/>
       </g>
 
       <!-- 1. user → web -->
@@ -718,11 +718,11 @@
 
       <!-- 6. daemon → matter pull -->
       <line x1="560" y1="290" x2="384" y2="290" stroke="#9333ea" stroke-width="1.3" marker-end="url(#s-purple)"/>
-      <g transform="translate(472,282)"><rect x="-110" y="-9" width="220" height="18" class="arrow-label-bg"/><text x="0" y="3" text-anchor="middle" class="seq-label" fill="#6b21a8">GET /internal/tasks?bot_uid=X</text></g>
-      <text x="472" y="306" text-anchor="middle" class="seq-meta" fill="#6b21a8">Bearer runtime_token · JWK 本地验签</text>
+      <g transform="translate(472,282)"><rect x="-130" y="-9" width="260" height="18" class="arrow-label-bg"/><text x="0" y="3" text-anchor="middle" class="seq-label" fill="#6b21a8">GET /api/v1/internal/bot-tasks?bot_uid=X</text></g>
+      <text x="472" y="306" text-anchor="middle" class="seq-meta" fill="#6b21a8">Bearer daemon JWT · server JWKS 本地验签</text>
 
       <line x1="376" y1="334" x2="560" y2="334" stroke="#9333ea" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#s-purple)" opacity="0.8"/>
-      <g transform="translate(468,326)"><rect x="-122" y="-9" width="244" height="18" class="arrow-label-bg"/><text x="0" y="3" text-anchor="middle" class="seq-label" fill="#6b21a8">[{task_id, matter_id, prompt, …}]</text></g>
+      <g transform="translate(468,326)"><rect x="-122" y="-9" width="244" height="18" class="arrow-label-bg"/><text x="0" y="3" text-anchor="middle" class="seq-label" fill="#6b21a8">[{task_id, matter_id, prompt, claim_token, …}]</text></g>
 
       <!-- 7. spawn -->
       <line x1="560" y1="368" x2="896" y2="368" stroke="#0284c7" stroke-width="1.3" marker-end="url(#s-blue)"/>
@@ -734,16 +734,20 @@
       <line x1="896" y1="426" x2="564" y2="426" stroke="#0284c7" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#s-blue)" opacity="0.8"/>
       <g transform="translate(728,418)"><rect x="-26" y="-9" width="52" height="18" class="arrow-label-bg"/><text x="0" y="3" text-anchor="middle" class="seq-label" fill="#0369a1">reply</text></g>
 
-      <!-- 8. writeback -->
+      <!-- 8. writeback (3 calls: timeline + activity + ack) -->
       <line x1="560" y1="458" x2="384" y2="458" stroke="#9333ea" stroke-width="1.3" marker-end="url(#s-purple)"/>
-      <g transform="translate(472,450)"><rect x="-94" y="-9" width="188" height="18" class="arrow-label-bg"/><text x="0" y="3" text-anchor="middle" class="seq-label" fill="#6b21a8">POST /timeline (bot reply)</text></g>
+      <g transform="translate(472,450)"><rect x="-122" y="-9" width="244" height="18" class="arrow-label-bg"/><text x="0" y="3" text-anchor="middle" class="seq-label" fill="#6b21a8">POST /internal/matters/:id/timeline</text></g>
 
-      <line x1="560" y1="486" x2="384" y2="486" stroke="#9333ea" stroke-width="1.3" marker-end="url(#s-purple)"/>
-      <g transform="translate(472,478)"><rect x="-100" y="-9" width="200" height="18" class="arrow-label-bg"/><text x="0" y="3" text-anchor="middle" class="seq-label" fill="#6b21a8">POST /activities (succeeded)</text></g>
+      <line x1="560" y1="484" x2="384" y2="484" stroke="#9333ea" stroke-width="1.3" marker-end="url(#s-purple)"/>
+      <g transform="translate(472,476)"><rect x="-138" y="-9" width="276" height="18" class="arrow-label-bg"/><text x="0" y="3" text-anchor="middle" class="seq-label" fill="#6b21a8">POST /internal/matters/:id/activities (completed)</text></g>
+
+      <line x1="560" y1="510" x2="384" y2="510" stroke="#9333ea" stroke-width="1.4" marker-end="url(#s-purple)"/>
+      <g transform="translate(472,502)"><rect x="-142" y="-9" width="284" height="18" class="arrow-label-bg" stroke="#d8b4fe"/><text x="0" y="3" text-anchor="middle" class="seq-label" fill="#6b21a8" font-weight="600">POST /internal/bot-tasks/:id/ack {claim_token, status}</text></g>
+      <text x="472" y="528" text-anchor="middle" class="seq-meta" fill="#6b21a8">T1 不变量 · 不匹配 → 409 丢弃结果</text>
 
       <!-- 9. polling -->
-      <line x1="220" y1="510" x2="376" y2="510" stroke="#9333ea" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#s-purple)" opacity="0.8"/>
-      <text x="298" y="504" text-anchor="middle" class="seq-meta" fill="#6b21a8">3s polling → 看到 bot 回复</text>
+      <line x1="220" y1="550" x2="376" y2="550" stroke="#9333ea" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#s-purple)" opacity="0.8"/>
+      <text x="298" y="544" text-anchor="middle" class="seq-meta" fill="#6b21a8">3s polling → 看到 bot 回复</text>
     </svg>
   </div>
 
