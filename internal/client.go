@@ -311,11 +311,12 @@ func (c *Client) EnsureJWT(ctx context.Context, daemonID string) (string, error)
 }
 
 type RegisterRequest struct {
-	DaemonID   string        `json:"daemon_id"`
-	DeviceName string        `json:"device_name"`
-	DeviceInfo string        `json:"device_info"`
-	CLIVersion string        `json:"cli_version"`
-	Runtimes   []RuntimeInfo `json:"runtimes"`
+	DaemonID            string        `json:"daemon_id"`
+	DeviceName          string        `json:"device_name"`
+	DeviceInfo          string        `json:"device_info"`
+	CLIVersion          string        `json:"cli_version"`
+	HeartbeatIntervalMs int64         `json:"heartbeat_interval_ms,omitempty"` // fleet uses for per-runtime stale = 3× this
+	Runtimes            []RuntimeInfo `json:"runtimes"`
 }
 
 type RegisteredRuntime struct {
