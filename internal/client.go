@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	neturl "net/url"
 	"runtime"
 	"strings"
 	"sync"
@@ -115,8 +117,14 @@ type MatterBotTask struct {
 	LeaseUntil  string `json:"lease_until"`
 }
 
+// ErrMatterBatchUnsupported is returned by ListMatterBotTasksBatch when
+// matter is older than the bot_uids batch endpoint and rejects the call
+// with 400. Callers should fall back to per-bot ListMatterBotTasks.
+var ErrMatterBatchUnsupported = errors.New("matter ListBotTasksBatch unsupported (server too old)")
+
 // ListMatterBotTasks pulls up to limit queued tasks for the given bot_uid
 // from matter (daemon JWT auth). Returns empty slice when nothing's queued.
+// Retained as a fallback for pre-batch matter deployments.
 func (c *Client) ListMatterBotTasks(ctx context.Context, botUID string, limit int) ([]MatterBotTask, error) {
 	if c.matterURL == "" {
 		return nil, fmt.Errorf("matter URL not set")
@@ -125,8 +133,10 @@ func (c *Client) ListMatterBotTasks(ctx context.Context, botUID string, limit in
 	if err != nil {
 		return nil, err
 	}
-	url := fmt.Sprintf("%s/api/v1/internal/bot-tasks?bot_uid=%s&limit=%d",
-		c.matterURL, botUID, limit)
+	q := neturl.Values{}
+	q.Set("bot_uid", botUID)
+	q.Set("limit", fmt.Sprintf("%d", limit))
+	url := fmt.Sprintf("%s/api/v1/internal/bot-tasks?%s", c.matterURL, q.Encode())
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
@@ -140,6 +150,58 @@ func (c *Client) ListMatterBotTasks(ctx context.Context, botUID string, limit in
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("matter ListBotTasks %d: %s", resp.StatusCode, string(body))
+	}
+	var r struct {
+		Tasks []MatterBotTask `json:"tasks"`
+	}
+	if err := json.Unmarshal(body, &r); err != nil {
+		return nil, err
+	}
+	return r.Tasks, nil
+}
+
+// ListMatterBotTasksBatch issues one HTTP call that claims up to perBotLimit
+// queued tasks per bot_uid from matter (daemon JWT auth). The matter side
+// runs the per-bot claims inside a single DB transaction so all-or-nothing
+// at the batch level; per-bot limit preserves fairness (a noisy bot won't
+// drown out quiet ones the way a flat limit would).
+//
+// Returned slice is flat — each MatterBotTask carries its own BotUID so
+// the caller can group client-side without an extra round trip.
+//
+// Returns ErrMatterBatchUnsupported on HTTP 400 — matter is older than
+// the bot_uids endpoint. Caller should fall back to per-bot pulls.
+func (c *Client) ListMatterBotTasksBatch(ctx context.Context, botUIDs []string, perBotLimit int) ([]MatterBotTask, error) {
+	if len(botUIDs) == 0 {
+		return nil, nil
+	}
+	if c.matterURL == "" {
+		return nil, fmt.Errorf("matter URL not set")
+	}
+	jwtTok, err := c.EnsureJWT(ctx, c.daemonID)
+	if err != nil {
+		return nil, err
+	}
+	q := neturl.Values{}
+	q.Set("bot_uids", strings.Join(botUIDs, ","))
+	q.Set("limit", fmt.Sprintf("%d", perBotLimit))
+	url := fmt.Sprintf("%s/api/v1/internal/bot-tasks?%s", c.matterURL, q.Encode())
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+jwtTok)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("matter ListBotTasksBatch: %w", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode == http.StatusBadRequest {
+		return nil, ErrMatterBatchUnsupported
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("matter ListBotTasksBatch %d: %s", resp.StatusCode, string(body))
 	}
 	var r struct {
 		Tasks []MatterBotTask `json:"tasks"`
