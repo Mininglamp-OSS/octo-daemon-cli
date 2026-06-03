@@ -21,6 +21,8 @@ type Daemon struct {
 	registeredRuntimes []RegisteredRuntime
 	lastRuntimes       []RuntimeInfo
 	generation         uint64
+	managedBots        []ManagedBot    // refreshed by heartbeat handler, consumed by matterPullLoop
+	inFlightBots       map[string]bool // bot_uid currently being drained; pollMatterTasksForManagedBots skips re-claiming these
 	// exitErr is set-once by requestExit; readExitErr consumes under d.mu.
 	// Populated when the daemon wants Run() to return a specific ExitError
 	// (403 → 78, upgrade → 75). Nil means "plain graceful shutdown, exit 0".
@@ -69,9 +71,10 @@ func NewDaemon(cfg Config) (*Daemon, error) {
 	}
 
 	return &Daemon{
-		cfg:      cfg,
-		client:   client,
-		daemonID: daemonID,
+		cfg:          cfg,
+		client:       client,
+		daemonID:     daemonID,
+		inFlightBots: make(map[string]bool),
 	}, nil
 }
 
@@ -107,6 +110,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	defer d.deregister()
 
 	go d.slowDetectLoop(ctx)
+	go d.matterPullLoop(ctx)
 	hbErr := d.heartbeatLoop(ctx)
 
 	// Prefer the set-once ExitError (403 → 78, upgrade → 75) over the
@@ -261,6 +265,31 @@ func (d *Daemon) slowDetectLoop(ctx context.Context) {
 	}
 }
 
+// matterPullLoop polls matter for queued bot tasks on its own cadence,
+// independent of heartbeat. Reads the latest managed_bots snapshot under
+// d.mu (refreshed by sendHeartbeats), snapshots it, then releases the
+// lock before issuing the (potentially slow) HTTP call. Decouples matter
+// pull frequency from heartbeat tuning.
+func (d *Daemon) matterPullLoop(ctx context.Context) {
+	ticker := time.NewTicker(d.cfg.MatterPullInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			d.mu.Lock()
+			snapshot := append([]ManagedBot(nil), d.managedBots...)
+			d.mu.Unlock()
+			if len(snapshot) == 0 {
+				continue
+			}
+			d.pollMatterTasksForManagedBots(ctx, snapshot)
+		}
+	}
+}
+
 // requestSlowDetect asks for a slow detection round. If one is already running,
 // sets pending flag so it will re-run when the current one finishes.
 func (d *Daemon) requestSlowDetect(ctx context.Context) {
@@ -369,6 +398,17 @@ func (d *Daemon) sendHeartbeats(ctx context.Context) {
 	d.mu.Unlock()
 
 	needReRegister := false
+	// Accumulate managed_bots across runtimes within this cycle, dedup by
+	// bot_uid, then assign once at the end. Without this, an empty
+	// resp.ManagedBots from a non-hosting runtime would overwrite the bots
+	// reported by the hosting runtime within the same cycle (runtime order
+	// is incidental). Guarded by anyHeartbeatOK so a fully-failed cycle
+	// doesn't clobber the prior snapshot — matterPullLoop keeps using the
+	// last known good set until heartbeats recover.
+	var collectedBots []ManagedBot
+	seenBots := make(map[string]bool)
+	anyHeartbeatOK := false
+
 	for _, rt := range registered {
 		if offlineProviders[rt.Provider] {
 			continue
@@ -385,6 +425,7 @@ func (d *Daemon) sendHeartbeats(ctx context.Context) {
 			needReRegister = true
 			continue
 		}
+		anyHeartbeatOK = true
 		// Handle pending ping request from server
 		if resp.PendingPing != nil {
 			go func(pp *PendingPing) {
@@ -417,12 +458,27 @@ func (d *Daemon) sendHeartbeats(ctx context.Context) {
 		if resp.PendingTask != nil {
 			go d.handleBotTask(ctx, resp.PendingTask)
 		}
-		// PR-B.2: matter ownership of bot_task. fleet emits managed_bots
-		// in heartbeat response; daemon pulls each bot's queued tasks
-		// from matter directly (skipping the fleet pending_task path).
-		if len(resp.ManagedBots) > 0 {
-			d.pollMatterTasksForManagedBots(ctx, resp.ManagedBots)
+		// PR-B.2: accumulate managed_bots across runtimes. Whether the
+		// server scopes managed_bots per-runtime or per-daemon, the union
+		// (deduped) is the safe interpretation — never lose a bot just
+		// because some sibling runtime reported it empty.
+		for _, b := range resp.ManagedBots {
+			if b.BotUID == "" || seenBots[b.BotUID] {
+				continue
+			}
+			seenBots[b.BotUID] = true
+			collectedBots = append(collectedBots, b)
 		}
+	}
+
+	if anyHeartbeatOK {
+		// Single assign after the loop — replaces the prior per-iteration
+		// overwrite. matterPullLoop will see the union (possibly empty if
+		// no bots managed). Skipping on all-fail keeps the last known set
+		// rather than clobbering it on infrastructure outage.
+		d.mu.Lock()
+		d.managedBots = collectedBots
+		d.mu.Unlock()
 	}
 
 	if needReRegister {

@@ -17,6 +17,7 @@ type Config struct {
 
 	HeartbeatInterval  time.Duration
 	SlowDetectInterval time.Duration
+	MatterPullInterval time.Duration
 	RegisterTimeout    time.Duration
 }
 
@@ -32,6 +33,14 @@ func (c *Config) withDefaults() {
 		// pins it back to the intended 60s regardless of heartbeat tuning.
 		// Ops override via OCTO_SLOW_DETECT_SECONDS env var (positive int).
 		c.SlowDetectInterval = envSecondsOrDefault("OCTO_SLOW_DETECT_SECONDS", 60*time.Second)
+	}
+	if c.MatterPullInterval == 0 {
+		// Decoupled from HeartbeatInterval. Used to ride the heartbeat
+		// response (one matter pull per heartbeat tick), which coupled
+		// matter pull frequency to whatever heartbeat got tuned to.
+		// Own ticker pins matter pull to its own cadence.
+		// Ops override via OCTO_MATTER_PULL_SECONDS env var (positive int).
+		c.MatterPullInterval = envSecondsOrDefault("OCTO_MATTER_PULL_SECONDS", 3*time.Second)
 	}
 	if c.RegisterTimeout == 0 {
 		c.RegisterTimeout = 30 * time.Second

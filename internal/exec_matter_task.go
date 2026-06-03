@@ -86,10 +86,29 @@ func (d *Daemon) ackMatterTask(parent context.Context, task MatterBotTask, statu
 // by fleet's heartbeat and pulls + processes any queued matter tasks
 // for each bot. Each bot's tasks are processed sequentially in a
 // goroutine so a stuck agent doesn't block others.
+//
+// Per-bot in-flight gate: when the matterPullLoop ticker fires while a
+// bot's previous goroutine is still draining (LLM runs can take minutes),
+// that bot is skipped this tick. Without the gate, parallel ticks would
+// claim more tasks against the same bot before the prior batch finished
+// — breaking per-bot ordering and prematurely consuming claim_token leases.
 func (d *Daemon) pollMatterTasksForManagedBots(parent context.Context, managed []ManagedBot) {
 	for _, mb := range managed {
 		bot := mb
+		d.mu.Lock()
+		if d.inFlightBots[bot.BotUID] {
+			d.mu.Unlock()
+			continue
+		}
+		d.inFlightBots[bot.BotUID] = true
+		d.mu.Unlock()
+
 		go func() {
+			defer func() {
+				d.mu.Lock()
+				delete(d.inFlightBots, bot.BotUID)
+				d.mu.Unlock()
+			}()
 			ctx, cancel := context.WithTimeout(parent, 15*time.Second)
 			tasks, err := d.client.ListMatterBotTasks(ctx, bot.BotUID, 5)
 			cancel()
