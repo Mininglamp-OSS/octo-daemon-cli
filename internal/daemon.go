@@ -333,11 +333,12 @@ func (d *Daemon) checkForbidden(err error) bool {
 
 func (d *Daemon) buildRegisterRequest(runtimes []RuntimeInfo) RegisterRequest {
 	return RegisterRequest{
-		DaemonID:   d.daemonID,
-		DeviceName: d.cfg.DeviceName,
-		DeviceInfo: GetDeviceInfo(),
-		CLIVersion: d.cfg.CLIVersion,
-		Runtimes:   runtimes,
+		DaemonID:            d.daemonID,
+		DeviceName:          d.cfg.DeviceName,
+		DeviceInfo:          GetDeviceInfo(),
+		CLIVersion:          d.cfg.CLIVersion,
+		HeartbeatIntervalMs: d.cfg.HeartbeatInterval.Milliseconds(),
+		Runtimes:            runtimes,
 	}
 }
 
