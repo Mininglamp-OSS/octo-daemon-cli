@@ -20,7 +20,8 @@ type Config struct {
 
 func (c *Config) withDefaults() {
 	if c.HeartbeatInterval == 0 {
-		c.HeartbeatInterval = 15 * time.Second
+		// Keep in sync with fleet runSweeper: staleThreshold = 3x this value.
+		c.HeartbeatInterval = 5 * time.Second
 	}
 	if c.RegisterTimeout == 0 {
 		c.RegisterTimeout = 30 * time.Second
