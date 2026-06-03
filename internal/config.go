@@ -29,9 +29,10 @@ func (c *Config) withDefaults() {
 }
 
 type persistedConfig struct {
-	APIKey     string `json:"api_key"`
-	APIURL     string `json:"api_url"`
-	DeviceName string `json:"device_name,omitempty"`
+	APIKey                   string `json:"api_key"`
+	APIURL                   string `json:"api_url"`
+	DeviceName               string `json:"device_name,omitempty"`
+	HeartbeatIntervalSeconds int    `json:"heartbeat_interval_seconds,omitempty"`
 }
 
 func ConfigFilePath() string {
@@ -43,6 +44,9 @@ func SaveConfig(cfg Config) error {
 		APIKey:     cfg.APIKey,
 		APIURL:     cfg.APIURL,
 		DeviceName: cfg.DeviceName,
+	}
+	if cfg.HeartbeatInterval > 0 {
+		p.HeartbeatIntervalSeconds = int(cfg.HeartbeatInterval / time.Second)
 	}
 	data, err := json.MarshalIndent(p, "", "  ")
 	if err != nil {
@@ -64,9 +68,13 @@ func LoadConfig(path string) (Config, error) {
 	if err := json.Unmarshal(data, &p); err != nil {
 		return Config{}, fmt.Errorf("parse config: %w", err)
 	}
-	return Config{
+	cfg := Config{
 		APIKey:     p.APIKey,
 		APIURL:     p.APIURL,
 		DeviceName: p.DeviceName,
-	}, nil
+	}
+	if p.HeartbeatIntervalSeconds > 0 {
+		cfg.HeartbeatInterval = time.Duration(p.HeartbeatIntervalSeconds) * time.Second
+	}
+	return cfg, nil
 }
