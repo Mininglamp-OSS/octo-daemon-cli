@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 )
 
@@ -14,14 +15,23 @@ type Config struct {
 	DeviceName string
 	CLIVersion string
 
-	HeartbeatInterval time.Duration
-	RegisterTimeout   time.Duration
+	HeartbeatInterval  time.Duration
+	SlowDetectInterval time.Duration
+	RegisterTimeout    time.Duration
 }
 
 func (c *Config) withDefaults() {
 	if c.HeartbeatInterval == 0 {
 		// Keep in sync with fleet runSweeper: staleThreshold = 3x this value.
 		c.HeartbeatInterval = 5 * time.Second
+	}
+	if c.SlowDetectInterval == 0 {
+		// Decoupled from HeartbeatInterval: slowDetect used to fire every
+		// 4 heartbeats (60s at the old 15s heartbeat). When heartbeat
+		// shrank to 5s it accidentally accelerated to 20s — own ticker
+		// pins it back to the intended 60s regardless of heartbeat tuning.
+		// Ops override via OCTO_SLOW_DETECT_SECONDS env var (positive int).
+		c.SlowDetectInterval = envSecondsOrDefault("OCTO_SLOW_DETECT_SECONDS", 60*time.Second)
 	}
 	if c.RegisterTimeout == 0 {
 		c.RegisterTimeout = 30 * time.Second
@@ -77,4 +87,19 @@ func LoadConfig(path string) (Config, error) {
 		cfg.HeartbeatInterval = time.Duration(p.HeartbeatIntervalSeconds) * time.Second
 	}
 	return cfg, nil
+}
+
+// envSecondsOrDefault reads a positive integer env var as seconds, falling
+// back to the supplied default if missing/invalid/non-positive. Used for
+// ops-tunable cadence knobs that don't warrant a persisted config field.
+func envSecondsOrDefault(key string, fallback time.Duration) time.Duration {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n <= 0 {
+		return fallback
+	}
+	return time.Duration(n) * time.Second
 }

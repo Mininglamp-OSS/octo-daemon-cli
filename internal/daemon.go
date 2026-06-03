@@ -21,7 +21,6 @@ type Daemon struct {
 	registeredRuntimes []RegisteredRuntime
 	lastRuntimes       []RuntimeInfo
 	generation         uint64
-	heartbeatCount     int
 	// exitErr is set-once by requestExit; readExitErr consumes under d.mu.
 	// Populated when the daemon wants Run() to return a specific ExitError
 	// (403 → 78, upgrade → 75). Nil means "plain graceful shutdown, exit 0".
@@ -107,6 +106,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 
 	defer d.deregister()
 
+	go d.slowDetectLoop(ctx)
 	hbErr := d.heartbeatLoop(ctx)
 
 	// Prefer the set-once ExitError (403 → 78, upgrade → 75) over the
@@ -237,12 +237,26 @@ func (d *Daemon) heartbeatLoop(ctx context.Context) error {
 		case <-ctx.Done():
 			return nil
 		case <-ticker.C:
-			d.heartbeatCount++
 			d.sendHeartbeats(ctx)
+		}
+	}
+}
 
-			if d.heartbeatCount%4 == 0 {
-				d.requestSlowDetect(ctx)
-			}
+// slowDetectLoop fires runtime re-detection on its own cadence. It used
+// to piggy-back on heartbeatLoop (every 4 ticks) which silently coupled
+// detection frequency to heartbeat tuning — when heartbeat dropped 15s→5s
+// detection accelerated from 60s to 20s by accident. Own ticker pins
+// detection to SlowDetectInterval (default 60s).
+func (d *Daemon) slowDetectLoop(ctx context.Context) {
+	ticker := time.NewTicker(d.cfg.SlowDetectInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			d.requestSlowDetect(ctx)
 		}
 	}
 }
