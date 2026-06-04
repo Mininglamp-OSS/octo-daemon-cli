@@ -34,8 +34,11 @@ func (d *Daemon) handleBotProvision(ctx context.Context, cmd *PendingAgentComman
 	// PR-A.2: fleet no longer carries bot_token in the heartbeat payload
 	// — it lives only in server's robot table. Daemon fetches it here
 	// using its daemon-scope JWT (server validates JWT.sub matches
-	// robot.creator_uid). Same for api_url: if fleet didn't fill it,
-	// fall back to daemon's configured OCTO_SERVER_URL.
+	// robot.creator_uid). api_url is always sourced locally — fleet
+	// no longer fills it (fleet's External.BaseURL is fleet's own URL,
+	// not server's; fleet has no reliable IM-server URL to send).
+	// Daemon uses OCTO_SERVER_URL env or its own --api-url flag as
+	// single source of truth.
 	if cmd.BotToken == "" {
 		tokCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		tok, err := d.client.GetBotToken(tokCtx, cmd.BotUID)
