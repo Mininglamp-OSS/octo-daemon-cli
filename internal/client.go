@@ -226,33 +226,24 @@ func (c *Client) AckMatterBotTask(ctx context.Context, taskID, claimToken, statu
 // WriteMatterTimeline posts a bot reply to matter timeline using the
 // daemon's api_key Bearer (合并 plan 决策一+二 Phase 4 — DualAuth + AU5
 // 已删, matter 端 AuthMiddleware + RequireKind(apikey) 验权).
-//
-// taskID + claimToken still sent for backward compat with older matter
-// builds; current matter ignores them (AU5 4-invariant 删除后 issue #75
-// 推迟决策四自然解).
-func (c *Client) WriteMatterTimeline(ctx context.Context, matterID, actorUID, spaceID, content, taskID, claimToken string) error {
+func (c *Client) WriteMatterTimeline(ctx context.Context, matterID, actorUID, spaceID, content string) error {
 	return c.matterInternalPost(ctx, fmt.Sprintf("/api/v1/internal/matters/%s/timeline", matterID),
 		map[string]any{
-			"actor_uid":   actorUID,
-			"space_id":    spaceID,
-			"content":     content,
-			"task_id":     taskID,
-			"claim_token": claimToken,
+			"actor_uid": actorUID,
+			"space_id":  spaceID,
+			"content":   content,
 		})
 }
 
 // WriteMatterActivity posts an agent_task_* activity to matter via the
 // api_key Bearer (合并 plan 决策一+二 Phase 4 — 同 WriteMatterTimeline).
-// taskID + claimToken 字段保留兼容老 matter, 当前 matter 端不再校验.
-func (c *Client) WriteMatterActivity(ctx context.Context, matterID, actorUID, action string, detail map[string]any, spaceID, taskID, claimToken string) error {
+func (c *Client) WriteMatterActivity(ctx context.Context, matterID, actorUID, action string, detail map[string]any, spaceID string) error {
 	return c.matterInternalPost(ctx, fmt.Sprintf("/api/v1/internal/matters/%s/activities", matterID),
 		map[string]any{
-			"actor_uid":   actorUID,
-			"action":      action,
-			"detail":      detail,
-			"space_id":    spaceID,
-			"task_id":     taskID,
-			"claim_token": claimToken,
+			"actor_uid": actorUID,
+			"action":    action,
+			"detail":    detail,
+			"space_id":  spaceID,
 		})
 }
 
