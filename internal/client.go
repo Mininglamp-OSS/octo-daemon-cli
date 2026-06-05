@@ -11,7 +11,6 @@ import (
 	neturl "net/url"
 	"runtime"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -31,12 +30,6 @@ type Client struct {
 
 	serverURL string
 	matterURL string
-	useJWT    bool
-	daemonID  string
-
-	jwtMu     sync.Mutex
-	jwtToken  string
-	jwtExpiry time.Time
 }
 
 func NewClient(apiURL, apiKey, cliVersion string) *Client {
@@ -49,8 +42,7 @@ func NewClient(apiURL, apiKey, cliVersion string) *Client {
 	}
 }
 
-// SetServerURL points the JWT exchange + bot_token fetch at octo-server.
-// Once set, EnsureJWT and GetBotToken work.
+// SetServerURL points bot_token fetch at octo-server.
 func (c *Client) SetServerURL(serverURL string) {
 	c.serverURL = strings.TrimRight(serverURL, "/")
 }
@@ -61,30 +53,18 @@ func (c *Client) SetMatterURL(matterURL string) {
 	c.matterURL = strings.TrimRight(matterURL, "/")
 }
 
-// EnableJWT switches postJSON to use Bearer <JWT> instead of Bearer
-// <api_key>. Must be called after SetServerURL so the client can
-// actually fetch a JWT. daemonID is embedded into the JWT scope.
-func (c *Client) EnableJWT(daemonID string) {
-	c.useJWT = true
-	c.daemonID = daemonID
-}
-
 // GetBotToken fetches the bot_token for the given bot_uid from
 // octo-server. Requires SetServerURL + a working api_key.
 func (c *Client) GetBotToken(ctx context.Context, botUID string) (string, error) {
 	if c.serverURL == "" {
 		return "", fmt.Errorf("server URL not set")
 	}
-	jwtTok, err := c.EnsureJWT(ctx, c.daemonID)
-	if err != nil {
-		return "", err
-	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
 		c.serverURL+"/v1/bot/"+botUID+"/token", nil)
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("Authorization", "Bearer "+jwtTok)
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return "", err
@@ -129,10 +109,6 @@ func (c *Client) ListMatterBotTasks(ctx context.Context, botUID string, limit in
 	if c.matterURL == "" {
 		return nil, fmt.Errorf("matter URL not set")
 	}
-	jwtTok, err := c.EnsureJWT(ctx, c.daemonID)
-	if err != nil {
-		return nil, err
-	}
 	q := neturl.Values{}
 	q.Set("bot_uid", botUID)
 	q.Set("limit", fmt.Sprintf("%d", limit))
@@ -141,7 +117,7 @@ func (c *Client) ListMatterBotTasks(ctx context.Context, botUID string, limit in
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+jwtTok)
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("matter ListBotTasks: %w", err)
@@ -178,10 +154,6 @@ func (c *Client) ListMatterBotTasksBatch(ctx context.Context, botUIDs []string, 
 	if c.matterURL == "" {
 		return nil, fmt.Errorf("matter URL not set")
 	}
-	jwtTok, err := c.EnsureJWT(ctx, c.daemonID)
-	if err != nil {
-		return nil, err
-	}
 	q := neturl.Values{}
 	q.Set("bot_uids", strings.Join(botUIDs, ","))
 	q.Set("limit", fmt.Sprintf("%d", perBotLimit))
@@ -190,7 +162,7 @@ func (c *Client) ListMatterBotTasksBatch(ctx context.Context, botUIDs []string, 
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+jwtTok)
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("matter ListBotTasksBatch: %w", err)
@@ -219,10 +191,6 @@ func (c *Client) AckMatterBotTask(ctx context.Context, taskID, claimToken, statu
 	if c.matterURL == "" {
 		return fmt.Errorf("matter URL not set")
 	}
-	jwtTok, err := c.EnsureJWT(ctx, c.daemonID)
-	if err != nil {
-		return err
-	}
 	body, err := json.Marshal(map[string]any{
 		"claim_token":    claimToken,
 		"status":         status,
@@ -238,7 +206,7 @@ func (c *Client) AckMatterBotTask(ctx context.Context, taskID, claimToken, statu
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+jwtTok)
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -295,10 +263,6 @@ func (c *Client) matterInternalPost(ctx context.Context, path string, payload ma
 	if c.matterURL == "" {
 		return fmt.Errorf("matter URL not set")
 	}
-	jwtTok, err := c.EnsureJWT(ctx, c.daemonID)
-	if err != nil {
-		return fmt.Errorf("ensure jwt: %w", err)
-	}
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return err
@@ -308,7 +272,7 @@ func (c *Client) matterInternalPost(ctx context.Context, path string, payload ma
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+jwtTok)
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("matter post: %w", err)
@@ -319,57 +283,6 @@ func (c *Client) matterInternalPost(ctx context.Context, path string, payload ma
 		return fmt.Errorf("matter %s %d: %s", path, resp.StatusCode, string(rb))
 	}
 	return nil
-}
-
-type tokenExchangeReq struct {
-	APIKey   string `json:"api_key"`
-	DaemonID string `json:"daemon_id,omitempty"`
-}
-
-type tokenExchangeResp struct {
-	Token     string `json:"token"`
-	ExpiresIn int    `json:"expires_in"`
-	Scope     string `json:"scope"`
-}
-
-// EnsureJWT fetches (or refreshes if within 5min of expiry) a daemon-scope
-// JWT from octo-server using the configured api-key. Safe for concurrent
-// callers via jwtMu. Returns the bearer token string.
-func (c *Client) EnsureJWT(ctx context.Context, daemonID string) (string, error) {
-	if c.serverURL == "" {
-		return "", fmt.Errorf("server URL not set — call SetServerURL first")
-	}
-	c.jwtMu.Lock()
-	defer c.jwtMu.Unlock()
-	if c.jwtToken != "" && time.Until(c.jwtExpiry) > 5*time.Minute {
-		return c.jwtToken, nil
-	}
-	body, err := json.Marshal(tokenExchangeReq{APIKey: c.apiKey, DaemonID: daemonID})
-	if err != nil {
-		return "", err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		c.serverURL+"/v1/auth/token", bytes.NewReader(body))
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("token exchange: %w", err)
-	}
-	defer resp.Body.Close()
-	respBody, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", fmt.Errorf("token exchange %d: %s", resp.StatusCode, string(respBody))
-	}
-	var r tokenExchangeResp
-	if err := json.Unmarshal(respBody, &r); err != nil {
-		return "", fmt.Errorf("parse token response: %w", err)
-	}
-	c.jwtToken = r.Token
-	c.jwtExpiry = time.Now().Add(time.Duration(r.ExpiresIn) * time.Second)
-	return r.Token, nil
 }
 
 type RegisterRequest struct {
@@ -527,15 +440,7 @@ func (c *Client) postJSON(ctx context.Context, path string, body any, result any
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-	authToken := c.apiKey
-	if c.useJWT {
-		jwtTok, jerr := c.EnsureJWT(ctx, c.daemonID)
-		if jerr != nil {
-			return fmt.Errorf("ensure jwt: %w", jerr)
-		}
-		authToken = jwtTok
-	}
-	req.Header.Set("Authorization", "Bearer "+authToken)
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
 	req.Header.Set("X-Client-Platform", "daemon")
 	req.Header.Set("X-Client-Version", c.cliVersion)
 	req.Header.Set("X-Client-OS", normalizeOS())

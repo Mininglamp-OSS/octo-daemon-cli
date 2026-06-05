@@ -62,12 +62,10 @@ func NewDaemon(cfg Config) (*Daemon, error) {
 	if matterURL != "" {
 		client.SetMatterURL(matterURL)
 	}
-	// Enable JWT only when we have a distinct fleet URL (i.e., a real
-	// PR-A.2 cutover). Otherwise the same baseURL means we're talking to
-	// the old in-server runtime endpoints which still expect api_key.
+	// 合并 plan 决策一+二 Phase 3B: daemon 直接持 api_key 调 fleet/matter/server,
+	// 不再换 JWT。fleet/matter middleware 调 server /v1/auth/verify-api-key 验证。
 	if os.Getenv("OCTO_FLEET_URL") != "" {
-		client.EnableJWT(daemonID)
-		log.Printf("[INFO] daemon JWT mode enabled (fleet=%s server=%s matter=%s)", fleetURL, serverURL, matterURL)
+		log.Printf("[INFO] daemon api_key mode enabled (fleet=%s server=%s matter=%s)", fleetURL, serverURL, matterURL)
 	}
 
 	return &Daemon{
