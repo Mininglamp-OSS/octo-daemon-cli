@@ -103,8 +103,8 @@ type MatterBotTask struct {
 var ErrMatterBatchUnsupported = errors.New("matter ListBotTasksBatch unsupported (server too old)")
 
 // ListMatterBotTasks pulls up to limit queued tasks for the given bot_uid
-// from matter (daemon JWT auth). Returns empty slice when nothing's queued.
-// Retained as a fallback for pre-batch matter deployments.
+// from matter (api_key auth via Bearer). Returns empty slice when nothing's
+// queued. Retained as a fallback for pre-batch matter deployments.
 func (c *Client) ListMatterBotTasks(ctx context.Context, botUID string, limit int) ([]MatterBotTask, error) {
 	if c.matterURL == "" {
 		return nil, fmt.Errorf("matter URL not set")
@@ -137,8 +137,8 @@ func (c *Client) ListMatterBotTasks(ctx context.Context, botUID string, limit in
 }
 
 // ListMatterBotTasksBatch issues one HTTP call that claims up to perBotLimit
-// queued tasks per bot_uid from matter (daemon JWT auth). The matter side
-// runs the per-bot claims inside a single DB transaction so all-or-nothing
+// queued tasks per bot_uid from matter (api_key auth via Bearer). The matter
+// side runs the per-bot claims inside a single DB transaction so all-or-nothing
 // at the batch level; per-bot limit preserves fairness (a noisy bot won't
 // drown out quiet ones the way a flat limit would).
 //
@@ -223,16 +223,13 @@ func (c *Client) AckMatterBotTask(ctx context.Context, taskID, claimToken, statu
 	return nil
 }
 
-// WriteMatterTimeline posts a bot reply to matter timeline. Uses the
-// daemon's own JWT — matter's writeback endpoints accept either daemon
-// JWT or X-Internal-Token (DualAuth); we always use JWT so the daemon
-// never needs the shared NOTIFY_INTERNAL_TOKEN secret on the user's
-// machine.
+// WriteMatterTimeline posts a bot reply to matter timeline using the
+// daemon's api_key Bearer (合并 plan 决策一+二 Phase 4 — DualAuth + AU5
+// 已删, matter 端 AuthMiddleware + RequireKind(apikey) 验权).
 //
-// taskID + claimToken bind this writeback to the in-flight bot_task
-// daemon just claimed; matter cross-checks them against matter_bot_task
-// to enforce "you can only write under bots whose tasks you currently
-// hold" (closes the actor_uid spoofing gap on the JWT path).
+// taskID + claimToken still sent for backward compat with older matter
+// builds; current matter ignores them (AU5 4-invariant 删除后 issue #75
+// 推迟决策四自然解).
 func (c *Client) WriteMatterTimeline(ctx context.Context, matterID, actorUID, spaceID, content, taskID, claimToken string) error {
 	return c.matterInternalPost(ctx, fmt.Sprintf("/api/v1/internal/matters/%s/timeline", matterID),
 		map[string]any{
@@ -245,8 +242,8 @@ func (c *Client) WriteMatterTimeline(ctx context.Context, matterID, actorUID, sp
 }
 
 // WriteMatterActivity posts an agent_task_* activity to matter via the
-// daemon JWT path (same DualAuth endpoint as timeline). taskID + claimToken
-// serve the same writeback-context binding role as in WriteMatterTimeline.
+// api_key Bearer (合并 plan 决策一+二 Phase 4 — 同 WriteMatterTimeline).
+// taskID + claimToken 字段保留兼容老 matter, 当前 matter 端不再校验.
 func (c *Client) WriteMatterActivity(ctx context.Context, matterID, actorUID, action string, detail map[string]any, spaceID, taskID, claimToken string) error {
 	return c.matterInternalPost(ctx, fmt.Sprintf("/api/v1/internal/matters/%s/activities", matterID),
 		map[string]any{
