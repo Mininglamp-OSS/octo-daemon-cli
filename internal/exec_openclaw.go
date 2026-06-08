@@ -106,7 +106,12 @@ func patchOctoAccount(ctx context.Context, cmd *PendingAgentCommand) error {
 					cmd.BotUID: map[string]any{
 						"botToken": cmd.BotToken,
 						"apiUrl":   cmd.APIURL,
-						"name":     cmd.DisplayName,
+						// name 是 openclaw routing key, 必须等于 agent name
+						// (= workspace_id, 由 `agents add` 创建). 不能用
+						// DisplayName (那是用户给 bot 起的显示名, 跟 agent
+						// 路由无关) — 否则 octo channel 收到 IM 消息时
+						// 找不到对应 agent, fallback 到默认 main agent.
+						"name":     cmd.WorkspaceID,
 					},
 				},
 			},
