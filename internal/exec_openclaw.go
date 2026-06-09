@@ -14,21 +14,20 @@ import (
 
 // handleBotProvision runs the openclaw side-effects for a "bot.provision"
 // command in one shot:
-//   1. openclaw agents add <workspace> --non-interactive --workspace ...
-//   2. openclaw config patch (channels.octo.accounts.<bot_uid>)
-//   3. openclaw agents bind --agent <workspace> --bind octo:<bot_uid>
+//  1. openclaw agents add <workspace> --non-interactive --workspace ...
+//  2. openclaw config patch (channels.octo.accounts.<bot_uid>)
+//  3. openclaw agents bind --agent <workspace> --bind octo:<bot_uid>
 //
 // Then forces enrichDetectAndRegister BEFORE ack so server metadata
 // reflects the new openclaw state when the Web UI re-fetches.
 // Failure at any step → ack(failed, "<step>: <err>"); a partial state on
 // disk is acceptable for PoC (operator can clean up manually).
-func (d *Daemon) handleBotProvision(ctx context.Context, cmd *PendingAgentCommand) {
+func (d *Daemon) handleBotProvision(ctx context.Context, cmd *PendingAgentCommand) error {
 	log.Printf("[INFO] [bot.provision] received id=%d workspace=%s bot=%s",
 		cmd.ID, cmd.WorkspaceID, cmd.BotUID)
 
 	if cmd.WorkspaceID == "" || cmd.BotUID == "" {
-		d.ackBotProvision(ctx, cmd, "failed", "missing workspace_id/bot_uid")
-		return
+		return d.ackBotProvision(ctx, cmd, "failed", "missing workspace_id/bot_uid")
 	}
 
 	// PR-A.2: fleet no longer carries bot_token in the heartbeat payload
@@ -44,8 +43,7 @@ func (d *Daemon) handleBotProvision(ctx context.Context, cmd *PendingAgentComman
 		tok, err := d.client.GetBotToken(tokCtx, cmd.BotUID)
 		cancel()
 		if err != nil {
-			d.ackBotProvision(ctx, cmd, "failed", fmt.Sprintf("fetch bot_token: %v", err))
-			return
+			return d.ackBotProvision(ctx, cmd, "failed", fmt.Sprintf("fetch bot_token: %v", err))
 		}
 		cmd.BotToken = tok
 	}
@@ -58,25 +56,22 @@ func (d *Daemon) handleBotProvision(ctx context.Context, cmd *PendingAgentComman
 
 	if err := addOpenclawWorkspace(ctx, cmd); err != nil {
 		log.Printf("[ERROR] [bot.provision] add workspace failed: %v", err)
-		d.ackBotProvision(ctx, cmd, "failed", fmt.Sprintf("agents add: %v", err))
-		return
+		return d.ackBotProvision(ctx, cmd, "failed", fmt.Sprintf("agents add: %v", err))
 	}
 	if err := patchOctoAccount(ctx, cmd); err != nil {
 		log.Printf("[ERROR] [bot.provision] patch octo account failed: %v", err)
-		d.ackBotProvision(ctx, cmd, "failed", fmt.Sprintf("config patch: %v", err))
-		return
+		return d.ackBotProvision(ctx, cmd, "failed", fmt.Sprintf("config patch: %v", err))
 	}
 	if err := bindBotToWorkspace(ctx, cmd); err != nil {
 		log.Printf("[ERROR] [bot.provision] bind failed: %v", err)
-		d.ackBotProvision(ctx, cmd, "failed", fmt.Sprintf("agents bind: %v", err))
-		return
+		return d.ackBotProvision(ctx, cmd, "failed", fmt.Sprintf("agents bind: %v", err))
 	}
 
 	if _, err := d.enrichDetectAndRegister(ctx); err != nil {
 		log.Printf("[WARN] [bot.provision] post-action enrich+register failed: %v", err)
 	}
 
-	d.ackBotProvision(ctx, cmd, "active", "")
+	return d.ackBotProvision(ctx, cmd, "active", "")
 }
 
 func addOpenclawWorkspace(ctx context.Context, cmd *PendingAgentCommand) error {
@@ -111,7 +106,7 @@ func patchOctoAccount(ctx context.Context, cmd *PendingAgentCommand) error {
 						// DisplayName (那是用户给 bot 起的显示名, 跟 agent
 						// 路由无关) — 否则 octo channel 收到 IM 消息时
 						// 找不到对应 agent, fallback 到默认 main agent.
-						"name":     cmd.WorkspaceID,
+						"name": cmd.WorkspaceID,
 					},
 				},
 			},
@@ -147,12 +142,21 @@ func bindBotToWorkspace(ctx context.Context, cmd *PendingAgentCommand) error {
 	return nil
 }
 
-func (d *Daemon) ackBotProvision(ctx context.Context, cmd *PendingAgentCommand, status, errMsg string) {
+// ackBotProvision 把 status 发回 fleet. 返回 AckBot 的实际 err.
+//
+// caller 决定 swallow vs propagate (Jerry-Xin Critical fix):
+// 现在所有调用点都是 terminal (failed/active), 必须 `return d.ackBotProvision(...)`
+// 让 handler 把 ack 失败往上抛 → adapter (HandleBotProvision) 透传 →
+// dispatcher 不 markDone → SSE replay / heartbeat 兜底重试. 不传则
+// fleet 端 row 永远停在 bot_minted, daemon 本地已 markDone 不再处理,
+// 直到 sweeper timeout 误判.
+func (d *Daemon) ackBotProvision(ctx context.Context, cmd *PendingAgentCommand, status, errMsg string) error {
 	ackCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	if err := d.client.AckBot(ackCtx, cmd.ID, cmd.ClaimToken, status, errMsg); err != nil {
 		log.Printf("[ERROR] [bot.provision] ack id=%d status=%s failed: %v", cmd.ID, status, err)
-		return
+		return err
 	}
 	log.Printf("[INFO] [bot.provision] acked id=%d status=%s", cmd.ID, status)
+	return nil
 }
