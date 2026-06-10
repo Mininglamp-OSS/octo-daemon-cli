@@ -9,11 +9,14 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/Mininglamp-OSS/octo-daemon-cli/internal/adapter"
 )
 
 type Daemon struct {
 	cfg      Config
 	client   *Client
+	registry *adapter.Registry
 	daemonID string
 	lockFile *os.File
 
@@ -68,12 +71,36 @@ func NewDaemon(cfg Config) (*Daemon, error) {
 		log.Printf("[INFO] daemon api_key mode enabled (fleet=%s server=%s matter=%s)", fleetURL, serverURL, matterURL)
 	}
 
+	// Build the runtime-adapter registry. All four kinds are registered; only
+	// openclaw is fully implemented today, the others are skeletons returning
+	// ErrUnsupported. Commands don't yet carry runtime_kind, so every command
+	// resolves to openclaw via Registry.Get("").
+	reg := adapter.NewRegistry()
+	for _, a := range []adapter.RuntimeAdapter{
+		adapter.NewOpenclawAdapter(nil),
+		adapter.NewClaudeAdapter(nil),
+		adapter.NewCodexAdapter(nil),
+		adapter.NewHermesAdapter(nil),
+	} {
+		if err := reg.Register(a); err != nil {
+			return nil, fmt.Errorf("register runtime adapter: %w", err)
+		}
+	}
+
 	return &Daemon{
 		cfg:          cfg,
 		client:       client,
+		registry:     reg,
 		daemonID:     daemonID,
 		inFlightBots: make(map[string]bool),
 	}, nil
+}
+
+// runtimeAdapter resolves the adapter for a command's runtime_kind. Commands do
+// not yet carry runtime_kind, so callers pass "" and Registry.Get normalizes it
+// to openclaw. When the field lands on the command payloads, swap "" for it.
+func (d *Daemon) runtimeAdapter(kind string) (adapter.RuntimeAdapter, error) {
+	return d.registry.Get(kind)
 }
 
 func (d *Daemon) Run(ctx context.Context) error {
@@ -108,7 +135,10 @@ func (d *Daemon) Run(ctx context.Context) error {
 	defer d.deregister()
 
 	go d.slowDetectLoop(ctx)
-	go d.matterPullLoop(ctx)
+	// matter-task pull temporarily disabled. The whole matter subgraph
+	// (matterPullLoop → pollMatterTasks* → handleMatterBotTask → ...) is kept
+	// but unreferenced; each is tagged //nolint:unused until this is re-enabled.
+	// go d.matterPullLoop(ctx)
 	hbErr := d.heartbeatLoop(ctx)
 
 	// Prefer the set-once ExitError (403 → 78, upgrade → 75) over the
@@ -268,6 +298,7 @@ func (d *Daemon) slowDetectLoop(ctx context.Context) {
 // d.mu (refreshed by sendHeartbeats), snapshots it, then releases the
 // lock before issuing the (potentially slow) HTTP call. Decouples matter
 // pull frequency from heartbeat tuning.
+//nolint:unused
 func (d *Daemon) matterPullLoop(ctx context.Context) {
 	ticker := time.NewTicker(d.cfg.MatterPullInterval)
 	defer ticker.Stop()

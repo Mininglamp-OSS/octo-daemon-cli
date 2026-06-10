@@ -6,13 +6,17 @@ package internal
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"strings"
 	"time"
+
+	"github.com/Mininglamp-OSS/octo-daemon-cli/internal/adapter"
 )
 
 // handleMatterBotTask runs the agent for a matter-pulled task and posts
 // the reply + activity + ack back to matter directly.
+//nolint:unused
 func (d *Daemon) handleMatterBotTask(parent context.Context, workspaceID string, task MatterBotTask) {
 	log.Printf("[INFO] [matter-task] received id=%s workspace=%s matter=%s bot=%s",
 		task.ID, workspaceID, task.MatterID, task.BotUID)
@@ -27,7 +31,18 @@ func (d *Daemon) handleMatterBotTask(parent context.Context, workspaceID string,
 	}
 
 	start := time.Now()
-	result, err := runOpenclawAgent(parent, workspaceID, task.Prompt)
+	ad, err := d.runtimeAdapter("")
+	if err != nil {
+		d.ackMatterTask(parent, task, "failed", "", fmt.Sprintf("resolve adapter: %v", err))
+		return
+	}
+	res, err := ad.RunTask(parent, adapter.RunTaskRequest{
+		WorkspaceID: workspaceID,
+		BotUID:      task.BotUID,
+		Prompt:      task.Prompt,
+		TaskID:      task.ID,
+		MatterID:    task.MatterID,
+	})
 	elapsed := time.Since(start).Milliseconds()
 	if err != nil {
 		log.Printf("[ERROR] [matter-task] id=%s openclaw agent failed: %v", task.ID, err)
@@ -35,7 +50,7 @@ func (d *Daemon) handleMatterBotTask(parent context.Context, workspaceID string,
 		d.ackMatterTask(parent, task, "failed", "", err.Error())
 		return
 	}
-	reply := truncateOutput(result, maxResultSummaryBytes)
+	reply := truncateOutput(res.Reply, maxResultSummaryBytes)
 	if err := d.matterWriteReplyAndActivity(parent, task, reply, elapsed); err != nil {
 		log.Printf("[WARN] [matter-task] id=%s writeback failed: %v (ack still attempted)", task.ID, err)
 	}
@@ -43,6 +58,7 @@ func (d *Daemon) handleMatterBotTask(parent context.Context, workspaceID string,
 	d.ackMatterTask(parent, task, "succeeded", reply, "")
 }
 
+//nolint:unused
 func (d *Daemon) matterWriteReplyAndActivity(parent context.Context, task MatterBotTask, reply string, elapsedMs int64) error {
 	ctx, cancel := context.WithTimeout(parent, 10*time.Second)
 	defer cancel()
@@ -61,6 +77,7 @@ func (d *Daemon) matterWriteReplyAndActivity(parent context.Context, task Matter
 		}, task.SpaceID)
 }
 
+//nolint:unused
 func (d *Daemon) matterWriteFailedActivity(parent context.Context, task MatterBotTask, errMsg string, elapsedMs int64) {
 	ctx, cancel := context.WithTimeout(parent, 10*time.Second)
 	defer cancel()
@@ -73,6 +90,7 @@ func (d *Daemon) matterWriteFailedActivity(parent context.Context, task MatterBo
 		}, task.SpaceID)
 }
 
+//nolint:unused
 func (d *Daemon) ackMatterTask(parent context.Context, task MatterBotTask, status, resultSummary, errMsg string) {
 	ctx, cancel := context.WithTimeout(parent, 15*time.Second)
 	defer cancel()
@@ -99,6 +117,7 @@ func (d *Daemon) ackMatterTask(parent context.Context, task MatterBotTask, statu
 // parallel ticks would claim more tasks against the same bot before the
 // prior batch finished — breaking per-bot ordering and prematurely
 // consuming claim_token leases.
+//nolint:unused
 func (d *Daemon) pollMatterTasksForManagedBots(parent context.Context, managed []ManagedBot) {
 	if len(managed) == 0 {
 		return
@@ -174,6 +193,7 @@ func (d *Daemon) pollMatterTasksForManagedBots(parent context.Context, managed [
 // for the case where matter is older than the bot_uids batch endpoint.
 // One goroutine per bot, one HTTP per bot — preserves correctness at the
 // cost of the QPS savings batch was meant to deliver.
+//nolint:unused
 func (d *Daemon) pollMatterTasksPerBotFallback(parent context.Context, managed []ManagedBot) {
 	for _, mb := range managed {
 		bot := mb
