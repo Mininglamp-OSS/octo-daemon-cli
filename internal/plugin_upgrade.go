@@ -15,11 +15,11 @@ import (
 //   - CLI 自身会：从 ClawHub 下载 → 装到 openclaw extensions → 自动重启 openclaw gateway
 //   - daemon 不主动上报 completed，靠 register handler 里的 plugin 关单路径关闭
 //     (register 上报 metadata.plugins 含新版本 → 服务端 completeUpgradeIfMatchedWithRuntime 关单)
-func (d *Daemon) handlePluginUpgrade(ctx context.Context, up *PendingUpgrade) {
+func (d *Daemon) handlePluginUpgrade(ctx context.Context, up *PendingUpgrade) error {
 	log.Printf("[INFO] plugin upgrade task: %s → %s (task=%s)", up.Component, up.TargetVersion, up.TaskID)
 
-	// dispatched → installing
-	d.reportUpgrade(ctx, up.TaskID, "installing", "")
+	// dispatched → installing (progress — 失败 swallow)
+	_ = d.reportUpgrade(ctx, up.TaskID, "installing", "")
 
 	// 服务端插件 timeout 10 分钟；daemon 这里留 1 分钟 buffer 给上报，用 9 分钟
 	installCtx, cancel := context.WithTimeout(ctx, 9*time.Minute)
@@ -34,8 +34,7 @@ func (d *Daemon) handlePluginUpgrade(ctx context.Context, up *PendingUpgrade) {
 	if err != nil {
 		msg := fmt.Sprintf("npx install failed: %v\noutput: %s", err, truncateOutput(string(out), 2000))
 		log.Printf("[ERROR] plugin upgrade failed: %s", msg)
-		d.reportUpgrade(ctx, up.TaskID, "failed", msg)
-		return
+		return d.reportUpgrade(ctx, up.TaskID, "failed", msg)
 	}
 	log.Printf("[INFO] plugin upgrade npx exited cleanly (task=%s)", up.TaskID)
 
@@ -47,8 +46,7 @@ func (d *Daemon) handlePluginUpgrade(ctx context.Context, up *PendingUpgrade) {
 	time.Sleep(2 * time.Second)
 	if openclawBin, lookErr := exec.LookPath("openclaw"); lookErr == nil {
 		if !isOpenclawGatewayRunning(openclawBin) {
-			d.reportUpgrade(ctx, up.TaskID, "failed", "plugin installed but openclaw gateway is not running after restart")
-			return
+			return d.reportUpgrade(ctx, up.TaskID, "failed", "plugin installed but openclaw gateway is not running after restart")
 		}
 	}
 
@@ -69,7 +67,7 @@ func (d *Daemon) handlePluginUpgrade(ctx context.Context, up *PendingUpgrade) {
 			select {
 			case <-ctx.Done():
 				log.Printf("[WARN] post-upgrade enrich register aborted: %v", ctx.Err())
-				return
+				return nil
 			case <-time.After(backoff):
 			}
 		}
@@ -77,12 +75,13 @@ func (d *Daemon) handlePluginUpgrade(ctx context.Context, up *PendingUpgrade) {
 		_, lastErr = d.enrichDetectAndRegister(enrichCtx)
 		enrichCancel()
 		if lastErr == nil {
-			return
+			return nil
 		}
 		log.Printf("[WARN] post-upgrade enrich register attempt %d/%d failed: %v", attempt+1, maxAttempts, lastErr)
 	}
 	log.Printf("[WARN] post-upgrade enrich register exhausted retries (last: %v), scheduling slow detect fallback", lastErr)
 	d.requestSlowDetect(ctx)
+	return nil
 }
 
 func truncateOutput(s string, max int) string {

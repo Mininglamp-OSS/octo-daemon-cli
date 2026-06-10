@@ -14,11 +14,12 @@ import (
 )
 
 type Daemon struct {
-	cfg      Config
-	client   *Client
-	registry *adapter.Registry
-	daemonID string
-	lockFile *os.File
+	cfg       Config
+	client    *Client
+	registry  *adapter.Registry
+	sseClient *SSEClient
+	daemonID  string
+	lockFile  *os.File
 
 	mu                 sync.Mutex
 	registeredRuntimes []RegisteredRuntime
@@ -103,6 +104,290 @@ func (d *Daemon) runtimeAdapter(kind string) (adapter.RuntimeAdapter, error) {
 	return d.registry.Get(kind)
 }
 
+// initSSEClient 构造 SSE client (在 NewDaemon 之外, lazy 因为 SSEClient.load
+// 读 dedup file 失败不应阻塞 NewDaemon — daemon 还能跑只是无 SSE).
+// Run() 之前调一次, 失败则 SSE 不启 daemon 走 heartbeat 兜底.
+//
+// 决策三 §D3 SSE endpoint URL config: 直接复用 fleetURL (OCTO_FLEET_URL
+// 或 cfg.APIURL), SSE endpoint 是 fleet 子路径 /v1/daemon/events. 无需
+// 单独 SSE base URL. 紧急 rollback: set OCTO_SSE_DISABLED=1 跳过 init,
+// daemon 走 heartbeat 兜底 (Phase A 主路径 graceful; heartbeat-only rollback
+// 存在 terminal ack/report 失败后无 retry 路径的已知 caveat, task 会卡到
+// sweeper timeout — 见 runHeartbeatUpgrade / runHeartbeatBotProvision
+// sseClient==nil 分支 [WARN] log 和 TODO Phase B 注释). Phase B 后谨慎
+// — 那时 heartbeat 已不带 pending.
+func (d *Daemon) initSSEClient() {
+	if v := os.Getenv("OCTO_SSE_DISABLED"); v == "1" || v == "true" {
+		log.Printf("[INFO] SSE disabled by OCTO_SSE_DISABLED env, falling back to heartbeat pending")
+		return
+	}
+	fleetURL := os.Getenv("OCTO_FLEET_URL")
+	if fleetURL == "" {
+		fleetURL = d.cfg.APIURL
+	}
+	sse, err := NewSSEClient(fleetURL, d.cfg.APIKey, d.daemonID, d.client)
+	if err != nil {
+		log.Printf("[WARN] SSE init failed (%v) — heartbeat 兜底继续工作", err)
+		return
+	}
+	d.sseClient = sse
+}
+
+// ===== 决策三 SSE dispatcher adapter methods =====
+//
+// SSEClient 内部声明的 dispatcher interfaces (botProvisionDispatcher /
+// upgradeDispatcher / managedBotsDispatcher) 由 Daemon 实现 — 这里是
+// adapter 方法, 把 SSE 收到的 event 转给现有 handleXxx.
+//
+// err 返回语义 (H3 caster review fix):
+//   - nil = handler 跑完 (即便内部 ack-failed 也算 nil — handler 已 ack
+//     到 fleet, 不要 dedup-replay 死循环坏 download URL)
+//   - non-nil = handler panic (我们 defer recover 捕获) 或 framework 级
+//     dispatching 失败. dedup 不 mark, 下次 SSE replay 重试.
+
+// HandleBotProvision 实现 botProvisionDispatcher. 复用现有
+// handleBotProvision (内部已处理 missing bot_token / APIURL).
+//
+// Jerry-Xin Critical fix: handleBotProvision 改返 error, 这里透传.
+// terminal ack (AckBot active/failed) 失败时 err != nil → dispatcher
+// 不 markDone → SSE replay 兜底重试.
+func (d *Daemon) HandleBotProvision(ctx context.Context, cmd *PendingAgentCommand) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("handleBotProvision panic: %v", r)
+			log.Printf("[ERROR] SSE bot_provision handler panic (id=%d): %v", cmd.ID, r)
+		}
+	}()
+	return d.handleBotProvision(ctx, cmd)
+}
+
+// HandleUpgrade 实现 upgradeDispatcher. 复用现有 handleUpgrade.
+// Jerry-Xin Critical fix: handleUpgrade 改返 error, 这里透传.
+func (d *Daemon) HandleUpgrade(ctx context.Context, up *PendingUpgrade) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("handleUpgrade panic: %v", r)
+			log.Printf("[ERROR] SSE upgrade handler panic (task_id=%s): %v", up.TaskID, r)
+		}
+	}()
+	return d.handleUpgrade(ctx, up)
+}
+
+// ApplyManagedBotsDelta 实现 managedBotsDispatcher. SSE delta 推到本地
+// managedBots 缓存 — heartbeat snapshot 是 baseline (Phase A 双跑).
+//
+// **D-1 (lml2468 review) Phase A 重要约束**: 只 apply `removed`, **不 apply
+// `added`**. 原因:
+//   - fleet 端 dispatchManagedBotsChanged payload 是 `[]string` (只 bot_uid,
+//     没 workspace_id). 如果 daemon 端 added 路径用 BotUID 当 WorkspaceID
+//     placeholder, pollMatterTasksForManagedBots → handleMatterBotTask 会把
+//     placeholder 当真 workspace 跑 openclaw agent → **data correctness
+//     risk** (1s SSE 到 vs 5-7s heartbeat snapshot 之间的窗口跑错 workspace).
+//   - mint → bot active 用户感知 latency 主要在 daemon fetch + openclaw
+//     workspace create (秒级), 早 5s 加进 managedBots 不缩短 e2e latency.
+//   - removed 是 correctness-positive (清掉 phantom bot 防 daemon 一直
+//     poll matter 拿不存在 bot 的 task), 立刻 apply 安全.
+//
+// **Phase B 启动条件**: fleet SSE payload schema 改 `[{bot_uid, workspace_id}]`
+// 对象后, daemon 端再开启 added 路径 (拿真 workspace_id, 不再用 placeholder).
+//
+// 幂等: removed bot 不存在 = no-op.
+func (d *Daemon) ApplyManagedBotsDelta(added, removed []string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	// D-1 Phase A: added 列表丢弃, 不进 managedBots (防 placeholder
+	// WorkspaceID 跑错 openclaw workspace). 走 heartbeat snapshot 拿真 workspace_id.
+	_ = added
+	if len(removed) == 0 {
+		if len(added) > 0 {
+			log.Printf("[INFO] SSE managed_bots delta: ignoring +%d added (Phase A, heartbeat baseline), 0 removed", len(added))
+		}
+		return
+	}
+	removeSet := make(map[string]struct{}, len(removed))
+	for _, u := range removed {
+		removeSet[u] = struct{}{}
+	}
+	filtered := d.managedBots[:0]
+	for _, b := range d.managedBots {
+		if _, drop := removeSet[b.BotUID]; !drop {
+			filtered = append(filtered, b)
+		}
+	}
+	d.managedBots = filtered
+	addedSamples := truncateBotUIDList(added, 10)
+	removedSamples := truncateBotUIDList(removed, 10)
+	log.Printf("[INFO] SSE managed_bots delta applied (+%d ignored %v, -%d %v, now %d)",
+		len(added), addedSamples, len(removed), removedSamples, len(d.managedBots))
+}
+
+// truncateBotUIDList 截断 bot_uid 列表用于 log (防 spam). 前 N 个 + 省略号.
+// CC-2 (cc reviewer): log 加具体 bot_uid 列表帮 oncall 定位.
+func truncateBotUIDList(uids []string, max int) []string {
+	if len(uids) <= max {
+		return uids
+	}
+	out := make([]string, 0, max+1)
+	out = append(out, uids[:max]...)
+	out = append(out, fmt.Sprintf("...+%d more", len(uids)-max))
+	return out
+}
+
+// startSSEForRuntimes 为每个 registeredRuntime 起一条 SSE goroutine
+// (Q2: per-runtime conn). goroutine 自管 reconnect, ctx cancel 退出.
+//
+// M6 known limitation (caster review final from codex, document only):
+// 当前只在初始 Run() 后 snapshot 一次 registeredRuntimes 起 SSE goroutine.
+// 后续 re-register (slowDetectLoop 检测到新 CLI / runtime crash 重 register)
+// 不会动 SSE goroutine 池 — 新 runtime 走 heartbeat 兜底 (Phase A 双跑设计),
+// 移除的 runtime SSE goroutine 也会继续跑 (fleet 端 ownership gate 会 403
+// 让它无限重连退避). Phase B 加 reconcile (map[runtimeID]cancel, 每次
+// re-register diff 启/停).
+func (d *Daemon) startSSEForRuntimes(ctx context.Context) {
+	d.mu.Lock()
+	runtimes := append([]RegisteredRuntime(nil), d.registeredRuntimes...)
+	d.mu.Unlock()
+	for _, rt := range runtimes {
+		go d.sseClient.RunForRuntime(ctx, rt.ID, d, d, d)
+		log.Printf("[INFO] SSE started for runtime %d (%s)", rt.ID, rt.Provider)
+	}
+}
+
+// runHeartbeatPing / runHeartbeatUpgrade / runHeartbeatBotProvision
+// (B1 caster review final from codex): heartbeat dispatch 加 dedup claim
+// 跟 SSE path 共享同一 dedupState. 防 SSE+heartbeat 双跑窗口同一 event
+// 被两条路径双处理.
+//
+// R4 (codex round 4): claim 返 3-tuple (claimed, alreadyDone, err).
+// alreadyDone (其它路径已 markDone) → skip. inflight (其它路径正在处理) →
+// skip (让 owner 完成). claimed → handler 处理, 成功 markDone, 失败
+// unclaim 让 replay/heartbeat 兜底重试.
+//
+// sseClient == nil 时 (OCTO_SSE_DISABLED 紧急回退), heartbeat 是唯一路径,
+// 跳 claim 直接处理.
+
+func (d *Daemon) runHeartbeatPing(ctx context.Context, pp *PendingPing) {
+	if d.sseClient != nil {
+		claimed, alreadyDone, cerr := d.sseClient.dedup.claim(sseEventPing, pp.PingID)
+		if cerr != nil {
+			log.Printf("[WARN] heartbeat ping claim persist failed (id=%s): %v", pp.PingID, cerr)
+			return
+		}
+		if alreadyDone || !claimed {
+			return // SSE 已处理完 / 正在处理
+		}
+		// claimed=true: 走 handler, 完后 markDone 或失败 unclaim
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[ERROR] heartbeat ping handler panic (id=%s): %v", pp.PingID, r)
+				_ = d.sseClient.dedup.unclaim(sseEventPing, pp.PingID)
+			}
+		}()
+		if err := d.client.ReportPing(ctx, pp.PingID); err != nil {
+			log.Printf("[WARN] heartbeat ping report failed (id=%s): %v", pp.PingID, err)
+			_ = d.sseClient.dedup.unclaim(sseEventPing, pp.PingID)
+			return
+		}
+		log.Printf("[INFO] heartbeat ping reported (id=%s)", pp.PingID)
+		_ = d.sseClient.dedup.markDone(sseEventPing, pp.PingID)
+		return
+	}
+	// sseClient nil 路径 (OCTO_SSE_DISABLED)
+	if err := d.client.ReportPing(ctx, pp.PingID); err != nil {
+		log.Printf("[WARN] heartbeat ping report failed (id=%s): %v", pp.PingID, err)
+	} else {
+		log.Printf("[INFO] heartbeat ping reported (id=%s)", pp.PingID)
+	}
+}
+
+func (d *Daemon) runHeartbeatUpgrade(ctx context.Context, up *PendingUpgrade) {
+	if d.sseClient != nil {
+		claimed, alreadyDone, cerr := d.sseClient.dedup.claim(sseEventUpgrade, up.TaskID)
+		if cerr != nil {
+			log.Printf("[WARN] heartbeat upgrade claim persist failed (task_id=%s): %v", up.TaskID, cerr)
+			return
+		}
+		if alreadyDone || !claimed {
+			return // SSE 已处理完 / 正在处理
+		}
+		// Jerry-Xin Critical fix: 不能无脑 markDone, 看 handler 返不返 error.
+		// terminal ack failure (handler 内 reportUpgrade(failed) 失败) → handlerErr != nil
+		// → unclaim (不 markDone), 下次 heartbeat 复跑.
+		var handlerErr error
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[ERROR] heartbeat upgrade handler panic (task_id=%s): %v", up.TaskID, r)
+				_ = d.sseClient.dedup.unclaim(sseEventUpgrade, up.TaskID)
+				return
+			}
+			if handlerErr != nil {
+				log.Printf("[WARN] heartbeat upgrade handler error (task_id=%s): %v — unclaim + retry next heartbeat", up.TaskID, handlerErr)
+				_ = d.sseClient.dedup.unclaim(sseEventUpgrade, up.TaskID)
+				return
+			}
+			_ = d.sseClient.dedup.markDone(sseEventUpgrade, up.TaskID)
+		}()
+		handlerErr = d.handleUpgrade(ctx, up)
+		return
+	}
+	// sseClient == nil — emergency heartbeat-only rollback (OCTO_SSE_DISABLED=1
+	// 或 SSE init 失败). 无 dedup, 无 SSE replay.
+	//
+	// 已知 pre-existing silent-drop: fleet `claimPendingUpgrade` 是 atomic
+	// `UPDATE WHERE status='pending'`, 一旦转 dispatched 就不再推. 这里 handler
+	// 内部 terminal report 失败时, fleet row 还是 dispatched 但 daemon 不知道
+	// 要重试, task 卡到 sweeper timeout. 跟 SSE 之前老 heartbeat-only 代码
+	// behavior 一致 — 不是 SSE PR 引入的回归.
+	//
+	// Jerry-Xin Critical fix (sseClient != nil 主路径) 已修. 紧急回退 path
+	// 是 emergency-only (用户主动开 OCTO_SSE_DISABLED 接受 trade-off),
+	// 不在本 fix scope. 这里 explicit [WARN] log 让 operator 可见.
+	// TODO Phase B: 加 in-process retry queue + idempotency check 修复 silent
+	// drop, 一并把 handler 拆成 install vs ack 两段 (避免 retry 整个 handler
+	// 时 install 重复跑 — bot_provision idempotent OK 但 upgrade restart 后无法 retry).
+	if err := d.handleUpgrade(ctx, up); err != nil {
+		log.Printf("[WARN] heartbeat-only upgrade handler error (task_id=%s): %v — no retry path in OCTO_SSE_DISABLED mode, task may stick until sweeper timeout (Phase B fix pending)", up.TaskID, err)
+	}
+}
+
+func (d *Daemon) runHeartbeatBotProvision(ctx context.Context, cmd *PendingAgentCommand) {
+	commandID := fmt.Sprintf("%d", cmd.ID)
+	if d.sseClient != nil {
+		claimed, alreadyDone, cerr := d.sseClient.dedup.claim(sseEventBotProvision, commandID)
+		if cerr != nil {
+			log.Printf("[WARN] heartbeat bot_provision claim persist failed (id=%s): %v", commandID, cerr)
+			return
+		}
+		if alreadyDone || !claimed {
+			return
+		}
+		// Jerry-Xin Critical fix: 同 runHeartbeatUpgrade, terminal ack failure 不 markDone.
+		var handlerErr error
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[ERROR] heartbeat bot_provision handler panic (id=%s): %v", commandID, r)
+				_ = d.sseClient.dedup.unclaim(sseEventBotProvision, commandID)
+				return
+			}
+			if handlerErr != nil {
+				log.Printf("[WARN] heartbeat bot_provision handler error (id=%s): %v — unclaim + retry next heartbeat", commandID, handlerErr)
+				_ = d.sseClient.dedup.unclaim(sseEventBotProvision, commandID)
+				return
+			}
+			_ = d.sseClient.dedup.markDone(sseEventBotProvision, commandID)
+		}()
+		handlerErr = d.handleBotProvision(ctx, cmd)
+		return
+	}
+	// sseClient == nil — emergency heartbeat-only rollback. 同 runHeartbeatUpgrade
+	// 已知 pre-existing silent-drop (fleet claim 转 dispatched 后不再推, terminal
+	// ack 失败 = task 卡到 sweeper). 不在 Jerry-Xin Critical fix scope.
+	// TODO Phase B: 加 in-process retry queue 修复 (bot_provision idempotent, 简单些).
+	if err := d.handleBotProvision(ctx, cmd); err != nil {
+		log.Printf("[WARN] heartbeat-only bot_provision handler error (id=%s): %v — no retry path in OCTO_SSE_DISABLED mode, task may stick until sweeper timeout (Phase B fix pending)", commandID, err)
+	}
+}
+
 func (d *Daemon) Run(ctx context.Context) error {
 	lockFile, err := TryLock()
 	if err != nil {
@@ -139,6 +424,12 @@ func (d *Daemon) Run(ctx context.Context) error {
 	// (matterPullLoop → pollMatterTasks* → handleMatterBotTask → ...) is kept
 	// but unreferenced; each is tagged //nolint:unused until this is re-enabled.
 	// go d.matterPullLoop(ctx)
+	// 决策三 SSE 反向派发 (Phase A 双跑): 每 runtime 一条独立 SSE goroutine.
+	// 启失败不 fatal — heartbeat pending_* 仍兜底.
+	d.initSSEClient()
+	if d.sseClient != nil {
+		d.startSSEForRuntimes(ctx)
+	}
 	hbErr := d.heartbeatLoop(ctx)
 
 	// Prefer the set-once ExitError (403 → 78, upgrade → 75) over the
@@ -298,6 +589,7 @@ func (d *Daemon) slowDetectLoop(ctx context.Context) {
 // d.mu (refreshed by sendHeartbeats), snapshots it, then releases the
 // lock before issuing the (potentially slow) HTTP call. Decouples matter
 // pull frequency from heartbeat tuning.
+//
 //nolint:unused
 func (d *Daemon) matterPullLoop(ctx context.Context) {
 	ticker := time.NewTicker(d.cfg.MatterPullInterval)
@@ -455,19 +747,18 @@ func (d *Daemon) sendHeartbeats(ctx context.Context) {
 			continue
 		}
 		anyHeartbeatOK = true
-		// Handle pending ping request from server
+		// Handle pending ping request from server.
+		// B1 (caster review final from codex): claim dedup 跟 SSE path 共享, 防
+		// Phase A 双跑期 SSE 收到同 event 重复处理 (e.g. SSE 中 reconnect 时
+		// heartbeat 抢先 → SSE replay 再收 → 不应再 ReportPing). sseClient
+		// 可能 nil (OCTO_SSE_DISABLED), 那种情况 heartbeat 是唯一路径, 不需要
+		// dedup.
 		if resp.PendingPing != nil {
-			go func(pp *PendingPing) {
-				if err := d.client.ReportPing(ctx, pp.PingID); err != nil {
-					log.Printf("[WARN] ping report failed: %v", err)
-				} else {
-					log.Printf("[INFO] ping reported (id=%s)", pp.PingID)
-				}
-			}(resp.PendingPing)
+			go d.runHeartbeatPing(ctx, resp.PendingPing)
 		}
 		// Handle pending upgrade task from server
 		if resp.PendingUpgrade != nil {
-			go d.handleUpgrade(ctx, resp.PendingUpgrade)
+			go d.runHeartbeatUpgrade(ctx, resp.PendingUpgrade)
 		}
 		// Handle pending managed-agent provisioning command from server.
 		// Off-loaded to a goroutine so the heartbeat loop is not blocked by
@@ -476,7 +767,7 @@ func (d *Daemon) sendHeartbeats(ctx context.Context) {
 			// PoC4: server only emits "bot.provision" now; the old
 			// "agent.create" and "bot.add" actions are gone.
 			if resp.PendingCommand.Action == "bot.provision" {
-				go d.handleBotProvision(ctx, resp.PendingCommand)
+				go d.runHeartbeatBotProvision(ctx, resp.PendingCommand)
 			} else {
 				log.Printf("[WARN] unknown pending command action=%q id=%d — ignoring",
 					resp.PendingCommand.Action, resp.PendingCommand.ID)

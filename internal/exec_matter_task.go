@@ -16,6 +16,7 @@ import (
 
 // handleMatterBotTask runs the agent for a matter-pulled task and posts
 // the reply + activity + ack back to matter directly.
+//
 //nolint:unused
 func (d *Daemon) handleMatterBotTask(parent context.Context, workspaceID string, task MatterBotTask) {
 	log.Printf("[INFO] [matter-task] received id=%s workspace=%s matter=%s bot=%s",
@@ -117,6 +118,7 @@ func (d *Daemon) ackMatterTask(parent context.Context, task MatterBotTask, statu
 // parallel ticks would claim more tasks against the same bot before the
 // prior batch finished — breaking per-bot ordering and prematurely
 // consuming claim_token leases.
+//
 //nolint:unused
 func (d *Daemon) pollMatterTasksForManagedBots(parent context.Context, managed []ManagedBot) {
 	if len(managed) == 0 {
@@ -193,6 +195,7 @@ func (d *Daemon) pollMatterTasksForManagedBots(parent context.Context, managed [
 // for the case where matter is older than the bot_uids batch endpoint.
 // One goroutine per bot, one HTTP per bot — preserves correctness at the
 // cost of the QPS savings batch was meant to deliver.
+//
 //nolint:unused
 func (d *Daemon) pollMatterTasksPerBotFallback(parent context.Context, managed []ManagedBot) {
 	for _, mb := range managed {

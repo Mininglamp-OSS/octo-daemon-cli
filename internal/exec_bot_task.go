@@ -101,6 +101,7 @@ func runOpenclawAgent(parent context.Context, agentID, prompt string) (string, e
 // locate the start of the JSON envelope and decode the rest, then walk a few
 // known shapes (openclaw `payloads`, finalAssistantVisibleText, plus simpler
 // claude/codex-style flat fields) in priority order.
+//
 //nolint:unused
 func extractAgentReply(out []byte) string {
 	trimmed := strings.TrimSpace(string(out))
@@ -135,6 +136,7 @@ func extractAgentReply(out []byte) string {
 // replyFromEnvelope walks the openclaw / generic-agent shapes. Order matters:
 // payloads is the openclaw native shape; finalAssistantVisibleText is the
 // embedded-agent shape; the flat keys cover claude/codex-like CLIs.
+//
 //nolint:unused
 func replyFromEnvelope(env map[string]any) string {
 	// openclaw shape: { payloads: [ { text: "..." } ] }
@@ -184,6 +186,7 @@ func replyFromEnvelope(env map[string]any) string {
 // extractFromJSONL handles the line-delimited JSON case (some agent CLIs emit
 // one event per line). Walk lines in reverse so the final answer wins over
 // intermediate thinking events.
+//
 //nolint:unused
 func extractFromJSONL(trimmed string) string {
 	lines := strings.Split(trimmed, "\n")
