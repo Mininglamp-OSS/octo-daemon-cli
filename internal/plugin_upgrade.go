@@ -9,12 +9,22 @@ import (
 )
 
 // handlePluginUpgrade 执行 octo 插件升级
-//   - npx -y openclaw-channel-octo install --force
-//   - openclaw-channel-octo 包的 install 脚本是 ClawHub wrapper（内部调
-//     openclaw plugins install clawhub:octo），从 ClawHub 拉新插件
-//   - CLI 自身会：从 ClawHub 下载 → 装到 openclaw extensions → 自动重启 openclaw gateway
-//   - daemon 不主动上报 completed，靠 register handler 里的 plugin 关单路径关闭
-//     (register 上报 metadata.plugins 含新版本 → 服务端 completeUpgradeIfMatchedWithRuntime 关单)
+//   - npx -y create-openclaw-octo install
+//   - create-openclaw-octo 是统一安装入口 CLI (跟 botfather /install 命令一致),
+//     内部:
+//       1. 检测当前状态 (老版 npm 包 / 已迁移到 ClawHub / 未装)
+//       2. 老版本自动卸载 + 装 ClawHub 版本 (legacy → octo prefix 迁移)
+//       3. 已是 ClawHub 版本 → 升级到 latest
+//       4. 失败完整回滚 (cli/install.ts runMigration: pre-migration backup +
+//          rollback closure: 清 partial install + 恢复 cfg + 重启 legacy plugin)
+//       5. 自动重启 openclaw gateway
+//   - daemon 不主动上报 completed, 靠 register handler 里的 plugin 关单路径关闭
+//     (register 上报 metadata.plugins 含新版本 → 服务端
+//      completeUpgradeIfMatchedWithRuntime 关单)
+//
+// Phase B (所有 daemon 都迁完到 ClawHub 后) 可以切到 `openclaw plugins update octo`
+// 跳过 npx wrapper 直接 ClawHub native, 但**当前不行** — 还有装老版 npm 包的用户,
+// `openclaw plugins update` 在他们机器上找不到注册的 ClawHub 插件会失败.
 func (d *Daemon) handlePluginUpgrade(ctx context.Context, up *PendingUpgrade) error {
 	log.Printf("[INFO] plugin upgrade task: %s → %s (task=%s)", up.Component, up.TargetVersion, up.TaskID)
 
@@ -25,11 +35,10 @@ func (d *Daemon) handlePluginUpgrade(ctx context.Context, up *PendingUpgrade) er
 	installCtx, cancel := context.WithTimeout(ctx, 9*time.Minute)
 	defer cancel()
 
-	// up.Component 是 plugin id ("octo")，但 npm 包名是 "openclaw-channel-octo"，
+	// up.Component 是 plugin id ("octo")，但 npm 包名是 "create-openclaw-octo"，
 	// 必须 hardcode npm 包名（不能用 up.Component 当 npx target）。
-	// 不带 dist-tag → 走 @latest，安装脚本是 ClawHub wrapper，装到 ClawHub 最新版。
-	// v1 只装 latest，不传版本号；--force 避免 CLI 交互式确认
-	cmd := exec.CommandContext(installCtx, "npx", "-y", "openclaw-channel-octo", "install", "--force")
+	// 不带版本号 → 走 @latest. install 子命令内部走 ClawHub native, 兼容老环境.
+	cmd := exec.CommandContext(installCtx, "npx", "-y", "create-openclaw-octo", "install")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		msg := fmt.Sprintf("npx install failed: %v\noutput: %s", err, truncateOutput(string(out), 2000))
