@@ -15,6 +15,7 @@ builds:
     goos:
       - darwin
       - linux
+      - windows
     goarch:
       - amd64
       - arm64
@@ -26,8 +27,14 @@ builds:
 
 archives:
   - id: octo-daemon
-    name_template: "{{ .ProjectName }}-{{ .Os }}-{{ .Arch }}"
+    # Versioned archive names — consumed by npm-publish.yml's
+    # prepare-packages step (and consistent with octo-cli's convention),
+    # so the name must stay in lockstep with npm/scripts/prepare-packages.js.
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
     files:
       - LICENSE*
       - README*

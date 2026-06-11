@@ -45,18 +45,29 @@ upgrades.
 
 ## 🚀 Quickstart
 
-### 1. Get an API key
+### 1. Install
+
+```bash
+npm install -g @mininglamp-oss/octo-daemon
+```
+
+The matching prebuilt binary ships inside a platform sub-package selected
+automatically by npm (darwin / linux / win32 on x64 / arm64) — there is no
+postinstall download, so registry mirrors work transparently. Other
+platforms: build from source (see below).
+
+### 2. Get an API key
 
 In OCTO, send `/daemon` to BotFather. It returns the complete install
 command including your API key and server URL.
 
-### 2. Start
+### 3. Start
 
 ```bash
 octo-daemon start --api-key "uk_xxx" --api-url "http://your-server:8090"
 ```
 
-### 3. (Recommended) Install as a service
+### 4. (Recommended) Install as a service
 
 ```bash
 octo-daemon service install
@@ -67,7 +78,7 @@ On macOS this registers a user-level `launchd` agent
 The service auto-starts at login, restarts on crash within 10
 seconds, and respawns with the new binary after a remote upgrade.
 
-### 4. Check status
+### 5. Check status
 
 ```bash
 octo-daemon status            # process / version
@@ -131,8 +142,9 @@ GOOS=windows GOARCH=amd64 make build
 GOOS=darwin  GOARCH=arm64 make build
 ```
 
-Released binaries are built by GoReleaser via the `release.yml`
-workflow on each `v*` tag push.
+Released binaries are built by GoReleaser inside the
+`release-publish.yml` workflow (org-standard gated release flow), which
+then repacks them into the npm packages via `npm-publish.yml`.
 
 ## 🔗 OCTO Ecosystem
 

@@ -1,0 +1,230 @@
+# Publish the npm packages (@mininglamp-oss/octo-daemon + platform
+# sub-packages).
+#
+# Sequenced AFTER release-publish.yml's `build-artifacts` job, which ends by
+# dispatching us via `gh workflow run` (workflow_dispatch — exempt from the
+# GITHUB_TOKEN recursion-suppression rule that would swallow an
+# `on: release: published` trigger).
+#
+# Distribution model: platform sub-packages carry the prebuilt binary INSIDE
+# the npm tarball (esbuild-style, os/cpu constrained); the main package pins
+# them via optionalDependencies and ships only a Node shim. There is no
+# postinstall download, so installs work through any npm registry mirror and
+# never touch GitHub. This workflow is the only place where GitHub assets
+# are fetched (to repack them), and it runs on GitHub's own runners.
+#
+# Publish order: sub-packages first, main package last — an installer must
+# never resolve a main package whose optionalDependencies are not yet
+# published.
+#
+# Tag → npm dist-tag:
+#   v1.2.3        → @latest
+#   v1.2.3-rc.1   → @next   (any tag containing "-")
+#
+# A manual workflow_dispatch run defaults to --dry-run, so re-running by
+# hand is safe. Note: even dry-run needs the release assets to exist (the
+# packages are repacked from them).
+#
+# TODO(#37): add `--provenance` to both publish loops once the repository
+# is public — npm provenance requires a public repo and errors on private.
+name: npm publish
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to publish (e.g. v0.2.0)"
+        required: true
+        type: string
+      dry_run:
+        description: "Run npm publish with --dry-run (no actual upload)"
+        required: false
+        type: boolean
+        default: true
+
+concurrency:
+  group: npm-publish-${{ inputs.tag }}
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    defaults:
+      run:
+        working-directory: npm
+    steps:
+      # Resolve runs BEFORE checkout — only reads inputs, no filesystem
+      # dependency — so a rejected input never lands any content in the
+      # workspace. Inputs are read through env vars, never interpolated
+      # into the run: block (a crafted tag could otherwise break out of
+      # the assignment and run commands in a step that later sees
+      # NPM_TOKEN — CWE-94).
+      - name: Resolve version and dist-tag
+        id: version
+        working-directory: .
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          INPUT_DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          REF="$INPUT_TAG"
+          if [ "$INPUT_DRY_RUN" = "true" ]; then DRY="--dry-run"; else DRY=""; fi
+          # Strict v-prefixed semver: bare "0.2.0" is rejected so the
+          # refs/tags/$TAG checkout below cannot be confused with a
+          # same-named branch.
+          if [[ ! "$REF" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::inputs.tag must be v-prefixed semver (got '$REF')."
+            exit 1
+          fi
+          VERSION="${REF#v}"
+          if [[ "$VERSION" == *-* ]]; then DIST_TAG="next"; else DIST_TAG="latest"; fi
+          {
+            echo "VERSION=$VERSION"
+            echo "TAG=v$VERSION"
+            echo "DIST_TAG=$DIST_TAG"
+            echo "DRY_RUN=$DRY"
+          } >> "$GITHUB_OUTPUT"
+          echo "[npm-publish] version=$VERSION dist-tag=$DIST_TAG dry_run='$DRY'"
+
+      # Pin to the release tag so the shim/packaging code in the published
+      # tarballs matches the commit the GitHub Release was cut from.
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: refs/tags/${{ steps.version.outputs.TAG }}
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+
+      # Gate (1/2) — the tag must correspond to a real, published (non-
+      # draft) GitHub Release. Skipped on dry_run for plumbing tests.
+      - name: Verify release exists and is published
+        if: steps.version.outputs.DRY_RUN == ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.TAG }}
+        run: |
+          set -euo pipefail
+          # `gh release view ""` silently resolves to the LATEST release —
+          # an empty TAG must abort before reaching it.
+          if [ -z "$TAG" ]; then
+            echo "::error::Empty TAG output from resolver step."
+            exit 1
+          fi
+          info=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,tagName 2>/dev/null) || {
+            echo "::error::No GitHub Release for $TAG. Cut one via release-publish.yml first."
+            exit 1
+          }
+          returned_tag=$(printf '%s' "$info" | jq -r '.tagName')
+          if [ "$returned_tag" != "$TAG" ]; then
+            echo "::error::gh release view returned '$returned_tag', expected '$TAG'. Refusing."
+            exit 1
+          fi
+          is_draft=$(printf '%s' "$info" | jq -r '.isDraft')
+          if [ "$is_draft" = "true" ]; then
+            echo "::error::Release $TAG is still a draft; publish it first."
+            exit 1
+          fi
+          echo "[npm-publish] release $TAG exists and is published."
+
+      # Gate (2/2) — the tagged commit must have a successful "CI" run.
+      # Without this, a repo:write actor could push an arbitrary tag,
+      # create a Release by hand, and ship un-reviewed code to npm.
+      - name: Verify CI evidence for the tagged commit
+        if: steps.version.outputs.DRY_RUN == ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.TAG }}
+        run: |
+          set -euo pipefail
+          ref_data=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG")
+          ref_type=$(printf '%s' "$ref_data" | jq -r '.object.type')
+          ref_sha=$(printf '%s' "$ref_data" | jq -r '.object.sha')
+          if [ "$ref_type" = "tag" ]; then
+            tag_obj=$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$ref_sha")
+            target_type=$(printf '%s' "$tag_obj" | jq -r '.object.type')
+            if [ "$target_type" != "commit" ]; then
+              echo "::error::Annotated tag $TAG points to '$target_type', not a commit."
+              exit 1
+            fi
+            ref_sha=$(printf '%s' "$tag_obj" | jq -r '.object.sha')
+          fi
+          ci_count=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$ref_sha&status=success&per_page=100" \
+            --jq '[.workflow_runs[] | select(.name == "CI")] | length')
+          if [ "$ci_count" -eq 0 ]; then
+            echo "::error::No successful CI run for $TAG (commit $ref_sha)."
+            exit 1
+          fi
+          echo "[npm-publish] CI evidence OK: $ci_count run(s) on $ref_sha."
+
+      - name: Run packaging tests
+        run: node --test scripts/prepare-packages.test.js
+
+      - name: Download release archives
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.TAG }}
+        run: |
+          set -euo pipefail
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir dist \
+            --pattern '*.tar.gz' --pattern '*.zip' --pattern 'checksums.txt'
+          ls -lh dist/
+
+      # The checksums and the archives share one trust root (the Release),
+      # so this is an integrity check against transport corruption /
+      # partial CDN state, not a provenance proof. checksums.txt may list
+      # assets we did not download (none today, but cheap to be safe), so
+      # verify only the files present with --ignore-missing and then assert
+      # every downloaded archive was actually covered.
+      - name: Verify checksums
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum --check --ignore-missing checksums.txt
+          for f in *.tar.gz *.zip; do
+            grep -qF "  $f" checksums.txt || { echo "::error::$f not covered by checksums.txt"; exit 1; }
+          done
+
+      - name: Generate npm packages
+        env:
+          VERSION: ${{ steps.version.outputs.VERSION }}
+        run: node scripts/prepare-packages.js --version "$VERSION" --dist dist --out build
+
+      # Sub-packages first, main package last (see header). --access public
+      # is required for the first publish of any scoped package.
+      #
+      # The skip-if-published guard makes the loop idempotent: a re-run
+      # after a partial failure (e.g. network blip on package 4 of 7) must
+      # not die on "cannot publish over previously published version" for
+      # the packages that already made it.
+      - name: Publish to npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          VERSION: ${{ steps.version.outputs.VERSION }}
+          DIST_TAG: ${{ steps.version.outputs.DIST_TAG }}
+          DRY_RUN: ${{ steps.version.outputs.DRY_RUN }}
+        run: |
+          set -euo pipefail
+          publish_one() {
+            local dir="$1"
+            local name
+            name=$(node -p "require('./$dir/package.json').name")
+            if [ -z "$DRY_RUN" ] && npm view "$name@$VERSION" version >/dev/null 2>&1; then
+              echo "[npm-publish] $name@$VERSION already on the registry — skipping"
+              return 0
+            fi
+            echo "[npm-publish] publishing $name@$VERSION"
+            if [ -n "$DRY_RUN" ]; then
+              npm publish "$dir" --access public --tag "$DIST_TAG" --dry-run
+            else
+              npm publish "$dir" --access public --tag "$DIST_TAG"
+            fi
+          }
+          for dir in build/octo-daemon-*; do
+            publish_one "$dir"
+          done
+          publish_one build/octo-daemon

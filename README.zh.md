@@ -44,18 +44,28 @@ Agent，并把实时清单上报给
 
 ## 🚀 快速开始
 
-### 1. 拿 API key
+### 1. 安装
+
+```bash
+npm install -g @mininglamp-oss/octo-daemon
+```
+
+预编译二进制打包在平台子包里，由 npm 按当前系统自动选择（darwin /
+linux / win32，x64 / arm64）——没有 postinstall 下载，npm 镜像源
+（如 npmmirror）开箱即用。其他平台请从源码构建（见下文）。
+
+### 2. 拿 API key
 
 在 OCTO 里向 BotFather 发 `/daemon`，会返回完整启动命令（含 API
 key 和服务器地址）。
 
-### 2. 启动
+### 3. 启动
 
 ```bash
 octo-daemon start --api-key "uk_xxx" --api-url "http://your-server:8090"
 ```
 
-### 3.（推荐）装为系统服务
+### 4.（推荐）装为系统服务
 
 ```bash
 octo-daemon service install
@@ -65,7 +75,7 @@ macOS 上会注册一个用户级 `launchd` agent（`ai.octo.daemon`）；Linux
 上注册 `systemd --user` unit。服务在用户登录时自启、崩溃 10 秒内
 重启、远程升级后用新二进制重新拉起。
 
-### 4. 查看状态
+### 5. 查看状态
 
 ```bash
 octo-daemon status            # 进程 / 版本
@@ -120,8 +130,8 @@ GOOS=windows GOARCH=amd64 make build
 GOOS=darwin  GOARCH=arm64 make build
 ```
 
-正式版本由 `release.yml` workflow 在每个 `v*` tag push 时通过
-GoReleaser 自动构建。
+正式版本由 `release-publish.yml` workflow（组织标准的带门控发布流程）
+内的 GoReleaser 构建，再经 `npm-publish.yml` 重新打包为 npm 包发布。
 
 ## 🔗 OCTO 生态
 
