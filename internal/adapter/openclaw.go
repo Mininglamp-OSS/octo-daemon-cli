@@ -24,9 +24,10 @@ const (
 	openclawMaxConcurrency = 5
 
 	// Per-step timeouts, identical to the original direct-exec daemon code.
-	openclawAddTimeout   = 60 * time.Second
-	openclawPatchTimeout = 30 * time.Second
-	openclawBindTimeout  = 30 * time.Second
+	openclawAddTimeout     = 60 * time.Second
+	openclawPatchTimeout   = 30 * time.Second
+	openclawBindTimeout    = 30 * time.Second
+	openclawRestartTimeout = 60 * time.Second
 
 	// openclawTaskTimeout is the daemon's hard ceiling for one agent run when
 	// RunTaskRequest.Timeout is unset.
@@ -90,6 +91,14 @@ func (a *OpenclawAdapter) Provision(ctx context.Context, req ProvisionRequest) (
 		return ProvisionResult{}, err
 	}
 	if err := a.bindBot(ctx, req); err != nil {
+		return ProvisionResult{}, err
+	}
+	// TEMP: force a gateway restart so the new account is picked up. The
+	// running gateway's hot-reload currently misses accounts because accountId
+	// case is mixed (`config patch` writes one casing, the in-memory index
+	// keys on another), so the patched config never takes effect without a
+	// full restart. Remove this step once the accountId casing is normalized.
+	if err := a.restartGateway(ctx); err != nil {
 		return ProvisionResult{}, err
 	}
 	return ProvisionResult{WorkspaceID: req.WorkspaceID}, nil
@@ -174,6 +183,23 @@ func (a *OpenclawAdapter) bindBot(ctx context.Context, req ProvisionRequest) err
 
 // Deprovision is a no-op for openclaw at this PoC stage (operator cleans up).
 func (a *OpenclawAdapter) Deprovision(_ context.Context, _ string) error {
+	return nil
+}
+
+// restartGateway runs `openclaw gateway restart`.
+//
+// TEMP: only needed to work around the accountId casing bug that breaks
+// hot-reload of patched config. Remove together with the call site in
+// Provision once that is fixed.
+func (a *OpenclawAdapter) restartGateway(ctx context.Context) error {
+	cctx, cancel := context.WithTimeout(ctx, openclawRestartTimeout)
+	defer cancel()
+	args := []string{"gateway", "restart"}
+	log.Printf("[DEBUG] [openclaw] exec: openclaw %s", strings.Join(args, " "))
+	out, err := a.runner.Run(cctx, openclawBin, args, nil)
+	if err != nil {
+		return fmt.Errorf("openclaw gateway restart: %w (output: %s)", err, truncate(string(out), 800))
+	}
 	return nil
 }
 

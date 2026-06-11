@@ -57,7 +57,7 @@ func (d *Daemon) handleBotProvision(ctx context.Context, cmd *PendingAgentComman
 		}
 	}
 
-	ad, err := d.runtimeAdapter("")
+	ad, err := d.runtimeAdapter(cmd.RuntimeKind)
 	if err != nil {
 		return d.ackBotProvision(ctx, cmd, "failed", fmt.Sprintf("resolve adapter: %v", err))
 	}

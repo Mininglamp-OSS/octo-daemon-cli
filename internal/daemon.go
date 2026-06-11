@@ -73,9 +73,9 @@ func NewDaemon(cfg Config) (*Daemon, error) {
 	}
 
 	// Build the runtime-adapter registry. All four kinds are registered; only
-	// openclaw is fully implemented today, the others are skeletons returning
-	// ErrUnsupported. Commands don't yet carry runtime_kind, so every command
-	// resolves to openclaw via Registry.Get("").
+	// openclaw and hermes are implemented today, claude/codex are skeletons
+	// returning ErrUnsupported. Commands carry runtime_kind (fleet populates
+	// it); an empty kind falls back to openclaw via Registry.Get("").
 	reg := adapter.NewRegistry()
 	for _, a := range []adapter.RuntimeAdapter{
 		adapter.NewOpenclawAdapter(nil),
@@ -97,9 +97,9 @@ func NewDaemon(cfg Config) (*Daemon, error) {
 	}, nil
 }
 
-// runtimeAdapter resolves the adapter for a command's runtime_kind. Commands do
-// not yet carry runtime_kind, so callers pass "" and Registry.Get normalizes it
-// to openclaw. When the field lands on the command payloads, swap "" for it.
+// runtimeAdapter resolves the adapter for a command's runtime_kind. An empty
+// kind (older fleet builds, or task payloads that don't carry it yet) is
+// normalized to openclaw by Registry.Get.
 func (d *Daemon) runtimeAdapter(kind string) (adapter.RuntimeAdapter, error) {
 	return d.registry.Get(kind)
 }

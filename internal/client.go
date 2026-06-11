@@ -323,6 +323,7 @@ type PendingUpgrade struct {
 type PendingAgentCommand struct {
 	ID          int64  `json:"id"`
 	Action      string `json:"action"` // "bot.provision"
+	RuntimeKind string `json:"runtime_kind"`
 	WorkspaceID string `json:"workspace_id"`
 	DisplayName string `json:"display_name"`
 	BotUID      string `json:"bot_uid"`
