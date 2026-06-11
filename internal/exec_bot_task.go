@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/Mininglamp-OSS/octo-daemon-cli/internal/adapter"
 )
 
 // agentTaskTimeout caps how long a single openclaw agent run may take. The
@@ -36,13 +38,24 @@ func (d *Daemon) handleBotTask(ctx context.Context, task *PendingBotTask) {
 		return
 	}
 
-	result, err := runOpenclawAgent(ctx, task.AgentID, task.Prompt)
+	ad, err := d.runtimeAdapter("")
+	if err != nil {
+		d.ackBotTask(ctx, task, "failed", "", fmt.Sprintf("resolve adapter: %v", err))
+		return
+	}
+	res, err := ad.RunTask(ctx, adapter.RunTaskRequest{
+		WorkspaceID: task.AgentID,
+		BotUID:      task.BotUID,
+		Prompt:      task.Prompt,
+		TaskID:      fmt.Sprintf("%d", task.ID),
+		MatterID:    task.MatterID,
+	})
 	if err != nil {
 		log.Printf("[ERROR] [bot-task] id=%d openclaw agent failed: %v", task.ID, err)
 		d.ackBotTask(ctx, task, "failed", "", err.Error())
 		return
 	}
-	summary := truncateOutput(result, maxResultSummaryBytes)
+	summary := truncateOutput(res.Reply, maxResultSummaryBytes)
 	log.Printf("[INFO] [bot-task] id=%d succeeded, %d bytes result", task.ID, len(summary))
 	d.ackBotTask(ctx, task, "succeeded", summary, "")
 }
@@ -51,6 +64,11 @@ func (d *Daemon) handleBotTask(ctx context.Context, task *PendingBotTask) {
 // and parses the agent's text reply out of the JSON envelope. The local-vs-
 // gateway choice is left to openclaw's own resolution (we don't pass --local)
 // so the bot's already-configured channels.octo binding stays in effect.
+// Deprecated: superseded by adapter.OpenclawAdapter.RunTask (reply parsing now
+// lives in adapter.ExtractReplyFromEnvelope). Retained temporarily during the
+// runtime-adapter migration for reference/rollback; no longer called.
+//
+//nolint:unused
 func runOpenclawAgent(parent context.Context, agentID, prompt string) (string, error) {
 	ctx, cancel := context.WithTimeout(parent, agentTaskTimeout)
 	defer cancel()
@@ -83,6 +101,8 @@ func runOpenclawAgent(parent context.Context, agentID, prompt string) (string, e
 // locate the start of the JSON envelope and decode the rest, then walk a few
 // known shapes (openclaw `payloads`, finalAssistantVisibleText, plus simpler
 // claude/codex-style flat fields) in priority order.
+//
+//nolint:unused
 func extractAgentReply(out []byte) string {
 	trimmed := strings.TrimSpace(string(out))
 	if trimmed == "" {
@@ -116,6 +136,8 @@ func extractAgentReply(out []byte) string {
 // replyFromEnvelope walks the openclaw / generic-agent shapes. Order matters:
 // payloads is the openclaw native shape; finalAssistantVisibleText is the
 // embedded-agent shape; the flat keys cover claude/codex-like CLIs.
+//
+//nolint:unused
 func replyFromEnvelope(env map[string]any) string {
 	// openclaw shape: { payloads: [ { text: "..." } ] }
 	if payloads, ok := env["payloads"].([]any); ok {
@@ -164,6 +186,8 @@ func replyFromEnvelope(env map[string]any) string {
 // extractFromJSONL handles the line-delimited JSON case (some agent CLIs emit
 // one event per line). Walk lines in reverse so the final answer wins over
 // intermediate thinking events.
+//
+//nolint:unused
 func extractFromJSONL(trimmed string) string {
 	lines := strings.Split(trimmed, "\n")
 	for i := len(lines) - 1; i >= 0; i-- {

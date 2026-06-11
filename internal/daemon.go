@@ -9,11 +9,14 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/Mininglamp-OSS/octo-daemon-cli/internal/adapter"
 )
 
 type Daemon struct {
 	cfg       Config
 	client    *Client
+	registry  *adapter.Registry
 	sseClient *SSEClient
 	daemonID  string
 	lockFile  *os.File
@@ -69,12 +72,36 @@ func NewDaemon(cfg Config) (*Daemon, error) {
 		log.Printf("[INFO] daemon api_key mode enabled (fleet=%s server=%s matter=%s)", fleetURL, serverURL, matterURL)
 	}
 
+	// Build the runtime-adapter registry. All four kinds are registered; only
+	// openclaw and hermes are implemented today, claude/codex are skeletons
+	// returning ErrUnsupported. Commands carry runtime_kind (fleet populates
+	// it); an empty kind falls back to openclaw via Registry.Get("").
+	reg := adapter.NewRegistry()
+	for _, a := range []adapter.RuntimeAdapter{
+		adapter.NewOpenclawAdapter(nil),
+		adapter.NewClaudeAdapter(nil),
+		adapter.NewCodexAdapter(nil),
+		adapter.NewHermesAdapter(nil),
+	} {
+		if err := reg.Register(a); err != nil {
+			return nil, fmt.Errorf("register runtime adapter: %w", err)
+		}
+	}
+
 	return &Daemon{
 		cfg:          cfg,
 		client:       client,
+		registry:     reg,
 		daemonID:     daemonID,
 		inFlightBots: make(map[string]bool),
 	}, nil
+}
+
+// runtimeAdapter resolves the adapter for a command's runtime_kind. An empty
+// kind (older fleet builds, or task payloads that don't carry it yet) is
+// normalized to openclaw by Registry.Get.
+func (d *Daemon) runtimeAdapter(kind string) (adapter.RuntimeAdapter, error) {
+	return d.registry.Get(kind)
 }
 
 // initSSEClient 构造 SSE client (在 NewDaemon 之外, lazy 因为 SSEClient.load
@@ -393,7 +420,10 @@ func (d *Daemon) Run(ctx context.Context) error {
 	defer d.deregister()
 
 	go d.slowDetectLoop(ctx)
-	go d.matterPullLoop(ctx)
+	// matter-task pull temporarily disabled. The whole matter subgraph
+	// (matterPullLoop → pollMatterTasks* → handleMatterBotTask → ...) is kept
+	// but unreferenced; each is tagged //nolint:unused until this is re-enabled.
+	// go d.matterPullLoop(ctx)
 	// 决策三 SSE 反向派发 (Phase A 双跑): 每 runtime 一条独立 SSE goroutine.
 	// 启失败不 fatal — heartbeat pending_* 仍兜底.
 	d.initSSEClient()
@@ -559,6 +589,8 @@ func (d *Daemon) slowDetectLoop(ctx context.Context) {
 // d.mu (refreshed by sendHeartbeats), snapshots it, then releases the
 // lock before issuing the (potentially slow) HTTP call. Decouples matter
 // pull frequency from heartbeat tuning.
+//
+//nolint:unused
 func (d *Daemon) matterPullLoop(ctx context.Context) {
 	ticker := time.NewTicker(d.cfg.MatterPullInterval)
 	defer ticker.Stop()

@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/Mininglamp-OSS/octo-daemon-cli/internal/adapter"
 )
 
 // handleBotProvision runs the openclaw side-effects for a "bot.provision"
@@ -25,6 +27,7 @@ import (
 func (d *Daemon) handleBotProvision(ctx context.Context, cmd *PendingAgentCommand) error {
 	log.Printf("[INFO] [bot.provision] received id=%d workspace=%s bot=%s",
 		cmd.ID, cmd.WorkspaceID, cmd.BotUID)
+	log.Printf("[DEBUG] [bot.provision] command received: %s", debugDumpCommand(cmd))
 
 	if cmd.WorkspaceID == "" || cmd.BotUID == "" {
 		return d.ackBotProvision(ctx, cmd, "failed", "missing workspace_id/bot_uid")
@@ -54,17 +57,19 @@ func (d *Daemon) handleBotProvision(ctx context.Context, cmd *PendingAgentComman
 		}
 	}
 
-	if err := addOpenclawWorkspace(ctx, cmd); err != nil {
-		log.Printf("[ERROR] [bot.provision] add workspace failed: %v", err)
-		return d.ackBotProvision(ctx, cmd, "failed", fmt.Sprintf("agents add: %v", err))
+	ad, err := d.runtimeAdapter(cmd.RuntimeKind)
+	if err != nil {
+		return d.ackBotProvision(ctx, cmd, "failed", fmt.Sprintf("resolve adapter: %v", err))
 	}
-	if err := patchOctoAccount(ctx, cmd); err != nil {
-		log.Printf("[ERROR] [bot.provision] patch octo account failed: %v", err)
-		return d.ackBotProvision(ctx, cmd, "failed", fmt.Sprintf("config patch: %v", err))
-	}
-	if err := bindBotToWorkspace(ctx, cmd); err != nil {
-		log.Printf("[ERROR] [bot.provision] bind failed: %v", err)
-		return d.ackBotProvision(ctx, cmd, "failed", fmt.Sprintf("agents bind: %v", err))
+	if _, err := ad.Provision(ctx, adapter.ProvisionRequest{
+		WorkspaceID: cmd.WorkspaceID,
+		BotUID:      cmd.BotUID,
+		BotToken:    cmd.BotToken,
+		APIURL:      cmd.APIURL,
+		DisplayName: cmd.DisplayName,
+	}); err != nil {
+		log.Printf("[ERROR] [bot.provision] provision failed: %v", err)
+		return d.ackBotProvision(ctx, cmd, "failed", fmt.Sprintf("provision: %v", err))
 	}
 
 	if _, err := d.enrichDetectAndRegister(ctx); err != nil {
@@ -74,6 +79,11 @@ func (d *Daemon) handleBotProvision(ctx context.Context, cmd *PendingAgentComman
 	return d.ackBotProvision(ctx, cmd, "active", "")
 }
 
+// Deprecated: superseded by adapter.OpenclawAdapter.Provision. Retained
+// temporarily during the runtime-adapter migration for reference/rollback; no
+// longer called. Remove once the adapter path is proven.
+//
+//nolint:unused
 func addOpenclawWorkspace(ctx context.Context, cmd *PendingAgentCommand) error {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -82,10 +92,12 @@ func addOpenclawWorkspace(ctx context.Context, cmd *PendingAgentCommand) error {
 	workspace := filepath.Join(home, ".openclaw", "workspaces", cmd.WorkspaceID)
 	cctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
-	c := exec.CommandContext(cctx, "openclaw", "agents", "add", cmd.WorkspaceID,
+	args := []string{"agents", "add", cmd.WorkspaceID,
 		"--non-interactive",
 		"--workspace", workspace,
-	)
+	}
+	log.Printf("[DEBUG] [bot.provision] exec: openclaw %s", strings.Join(args, " "))
+	c := exec.CommandContext(cctx, "openclaw", args...)
 	out, err := c.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("openclaw agents add: %w (output: %s)", err, truncateOutput(string(out), 800))
@@ -93,6 +105,11 @@ func addOpenclawWorkspace(ctx context.Context, cmd *PendingAgentCommand) error {
 	return nil
 }
 
+// Deprecated: superseded by adapter.OpenclawAdapter.Provision. Retained
+// temporarily during the runtime-adapter migration for reference/rollback; no
+// longer called. Remove once the adapter path is proven.
+//
+//nolint:unused
 func patchOctoAccount(ctx context.Context, cmd *PendingAgentCommand) error {
 	patch := map[string]any{
 		"channels": map[string]any{
@@ -118,6 +135,11 @@ func patchOctoAccount(ctx context.Context, cmd *PendingAgentCommand) error {
 	}
 	cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
+	dump := string(buf)
+	if cmd.BotToken != "" {
+		dump = strings.ReplaceAll(dump, cmd.BotToken, "***redacted***")
+	}
+	log.Printf("[DEBUG] [bot.provision] exec: openclaw config patch --stdin payload=%s", dump)
 	c := exec.CommandContext(cctx, "openclaw", "config", "patch", "--stdin")
 	c.Stdin = strings.NewReader(string(buf))
 	out, err := c.CombinedOutput()
@@ -127,14 +149,21 @@ func patchOctoAccount(ctx context.Context, cmd *PendingAgentCommand) error {
 	return nil
 }
 
+// Deprecated: superseded by adapter.OpenclawAdapter.Provision. Retained
+// temporarily during the runtime-adapter migration for reference/rollback; no
+// longer called. Remove once the adapter path is proven.
+//
+//nolint:unused
 func bindBotToWorkspace(ctx context.Context, cmd *PendingAgentCommand) error {
 	cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	bind := fmt.Sprintf("octo:%s", cmd.BotUID)
-	c := exec.CommandContext(cctx, "openclaw", "agents", "bind",
+	args := []string{"agents", "bind",
 		"--agent", cmd.WorkspaceID,
 		"--bind", bind,
-	)
+	}
+	log.Printf("[DEBUG] [bot.provision] exec: openclaw %s", strings.Join(args, " "))
+	c := exec.CommandContext(cctx, "openclaw", args...)
 	out, err := c.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("openclaw agents bind: %w (output: %s)", err, truncateOutput(string(out), 800))
@@ -159,4 +188,21 @@ func (d *Daemon) ackBotProvision(ctx context.Context, cmd *PendingAgentCommand, 
 	}
 	log.Printf("[INFO] [bot.provision] acked id=%d status=%s", cmd.ID, status)
 	return nil
+}
+
+// debugDumpCommand marshals a received command to JSON for [DEBUG] logging,
+// with token-bearing fields masked so secrets never reach the logs.
+func debugDumpCommand(cmd *PendingAgentCommand) string {
+	redacted := *cmd
+	if redacted.BotToken != "" {
+		redacted.BotToken = "***redacted***"
+	}
+	if redacted.ClaimToken != "" {
+		redacted.ClaimToken = "***redacted***"
+	}
+	b, err := json.Marshal(redacted)
+	if err != nil {
+		return fmt.Sprintf("<marshal err: %v>", err)
+	}
+	return string(b)
 }
