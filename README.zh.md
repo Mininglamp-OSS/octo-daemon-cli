@@ -51,8 +51,8 @@ npm install -g @mininglamp-oss/octo-daemon
 ```
 
 预编译二进制打包在平台子包里，由 npm 按当前系统自动选择（darwin /
-linux / win32，x64 / arm64）——没有 postinstall 下载，npm 镜像源
-（如 npmmirror）开箱即用。其他平台请从源码构建（见下文）。
+linux，x64 / arm64）——没有 postinstall 下载，npm 镜像源
+（如 npmmirror）开箱即用。其他平台（含 Windows）请从源码构建（见下文）。
 
 ### 2. 拿 API key
 
@@ -125,9 +125,8 @@ make build
 交叉编译：
 
 ```bash
-GOOS=linux   GOARCH=amd64 make build
-GOOS=windows GOARCH=amd64 make build
-GOOS=darwin  GOARCH=arm64 make build
+GOOS=linux  GOARCH=amd64 make build
+GOOS=darwin GOARCH=arm64 make build
 ```
 
 正式版本由 `release-publish.yml` workflow（组织标准的带门控发布流程）

@@ -12,10 +12,15 @@ builds:
     main: .
     env:
       - CGO_ENABLED=0
+    # windows is intentionally absent: internal/upgrade.go uses Unix-only
+    # restart logic (sh -c + SysProcAttr.Setsid) with no build tags, so
+    # GOOS=windows does not compile. Re-adding windows requires the
+    # build-tag split tracked in the windows-support follow-up issue —
+    # npm/scripts/prepare-packages.js's PLATFORMS guard test will fail
+    # loudly if this matrix and the npm matrix ever drift.
     goos:
       - darwin
       - linux
-      - windows
     goarch:
       - amd64
       - arm64
@@ -32,9 +37,6 @@ archives:
     # so the name must stay in lockstep with npm/scripts/prepare-packages.js.
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     formats: [tar.gz]
-    format_overrides:
-      - goos: windows
-        formats: [zip]
     files:
       - LICENSE*
       - README*

@@ -9,6 +9,11 @@
 // the npm registry itself (platform sub-packages carry the binary inside
 // their tarball), so registry mirrors work transparently and npm's own
 // integrity checks replace any custom checksum logic.
+//
+// The main package intentionally carries no os/cpu constraints — on a
+// platform with no prebuilt sub-package the install succeeds and THIS shim
+// emits the build-from-source pointer, instead of npm aborting the whole
+// install with an opaque EBADPLATFORM.
 
 const os = require("os");
 const { spawnSync } = require("child_process");
@@ -18,26 +23,21 @@ const PLATFORM_PACKAGES = {
   "darwin-x64": "@mininglamp-oss/octo-daemon-darwin-x64",
   "linux-arm64": "@mininglamp-oss/octo-daemon-linux-arm64",
   "linux-x64": "@mininglamp-oss/octo-daemon-linux-x64",
-  "win32-arm64": "@mininglamp-oss/octo-daemon-win32-arm64",
-  "win32-x64": "@mininglamp-oss/octo-daemon-win32-x64",
 };
-
-const isWin = process.platform === "win32";
-const BIN_NAME = isWin ? "octo-daemon.exe" : "octo-daemon";
 
 function resolveBinary() {
   const key = `${process.platform}-${process.arch}`;
   const pkg = PLATFORM_PACKAGES[key];
   if (!pkg) {
-    console.error(`[octo-daemon] unsupported platform: ${key}`);
+    console.error(`[octo-daemon] no prebuilt binary for ${key}.`);
     console.error(
-      "[octo-daemon] Prebuilt binaries cover darwin/linux/win32 on x64/arm64. " +
+      "[octo-daemon] Prebuilt binaries cover darwin/linux on x64/arm64. " +
         "Build from source instead: https://github.com/Mininglamp-OSS/octo-daemon-cli",
     );
     process.exit(1);
   }
   try {
-    return require.resolve(`${pkg}/bin/${BIN_NAME}`);
+    return require.resolve(`${pkg}/bin/octo-daemon`);
   } catch (_err) {
     console.error(`[octo-daemon] platform package ${pkg} is not installed.`);
     console.error(
@@ -57,10 +57,9 @@ if (res.error) {
   process.exit(1);
 }
 
-// POSIX-only path (no-op on win32, where spawnSync does not surface
-// signals): re-raise terminating signals so the shell observes the
-// conventional 128+signum exit code; for default-ignored signals
-// (SIGPIPE, ...) the explicit exit below sets the code instead.
+// Re-raise terminating signals so the shell observes the conventional
+// 128+signum exit code; for default-ignored signals (SIGPIPE, ...) the
+// explicit exit below sets the code instead.
 if (res.signal) {
   process.kill(process.pid, res.signal);
   const signum = (os.constants && os.constants.signals && os.constants.signals[res.signal]) || 0;

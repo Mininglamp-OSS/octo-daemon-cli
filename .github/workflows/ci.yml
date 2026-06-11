@@ -39,6 +39,21 @@ jobs:
           CGO_ENABLED: "0"
         run: go build -v ./...
 
+      # Compile for every GOOS×GOARCH in the GoReleaser release matrix so a
+      # platform-specific break (e.g. Unix-only syscalls without build tags)
+      # surfaces on the PR instead of killing release-publish's
+      # build-artifacts job on the first tag. Keep in lockstep with
+      # .goreleaser.yaml goos/goarch.
+      - name: Cross-compile release matrix
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          set -euo pipefail
+          for target in darwin/amd64 darwin/arm64 linux/amd64 linux/arm64; do
+            GOOS="${target%/*}" GOARCH="${target#*/}" go build ./...
+            echo "cross-compile ok: $target"
+          done
+
   test:
     name: Test
     runs-on: ubuntu-latest

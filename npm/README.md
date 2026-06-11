@@ -24,7 +24,7 @@ Full documentation: <https://github.com/Mininglamp-OSS/octo-daemon-cli>
 
 ## Supported platforms
 
-darwin / linux / win32 on x64 and arm64. Other platforms: build from source with `make build`.
+darwin / linux on x64 and arm64. Other platforms (including Windows): build from source with `make build`.
 
 ## License
 

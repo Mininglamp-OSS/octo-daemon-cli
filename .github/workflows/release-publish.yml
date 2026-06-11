@@ -55,6 +55,7 @@ jobs:
         env:
           TAG: ${{ inputs.tag }}
         run: |
+          set -euo pipefail
           if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
             echo "::error::inputs.tag must be v-prefixed semver (got '$TAG')."
             exit 1
@@ -88,7 +89,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload artifacts to release
-        run: gh release upload "$TAG" dist/*.tar.gz dist/*.zip dist/checksums.txt --clobber
+        run: gh release upload "$TAG" dist/*.tar.gz dist/checksums.txt --clobber
         env:
           TAG: ${{ inputs.tag }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

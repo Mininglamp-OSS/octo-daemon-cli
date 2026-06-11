@@ -6,9 +6,9 @@
 //   node npm/scripts/prepare-packages.js --version 0.2.0 --dist <dir> --out <dir>
 //
 // Input  (--dist): the downloaded GitHub Release assets, i.e. GoReleaser
-//   archives named `octo-daemon_<version>_<os>_<arch>.tar.gz` (`.zip` on
-//   windows) — the name template lives in .goreleaser.yaml and must stay in
-//   lockstep with this script.
+//   archives named `octo-daemon_<version>_<os>_<arch>.tar.gz` — the name
+//   template lives in .goreleaser.yaml and must stay in lockstep with this
+//   script (the test parses .goreleaser.yaml and asserts the matrices match).
 // Output (--out):
 //   <out>/octo-daemon-<npmOs>-<npmCpu>/   one package per platform, binary
 //                                          inside `bin/`, os/cpu constrained
@@ -33,15 +33,14 @@ const SCOPE = "@mininglamp-oss";
 const PROJECT = "octo-daemon";
 
 // goreleaser (os, arch) -> npm (os, cpu). Single source of truth for the
-// platform matrix; .goreleaser.yaml's goos/goarch lists must cover exactly
-// these pairs.
+// platform matrix on the npm side; the guard test asserts set-equality with
+// .goreleaser.yaml's goos × goarch. windows is absent on purpose — the Go
+// code does not cross-compile for it yet (see .goreleaser.yaml).
 const PLATFORMS = [
   { goOs: "darwin", goArch: "arm64", npmOs: "darwin", npmCpu: "arm64" },
   { goOs: "darwin", goArch: "amd64", npmOs: "darwin", npmCpu: "x64" },
   { goOs: "linux", goArch: "arm64", npmOs: "linux", npmCpu: "arm64" },
   { goOs: "linux", goArch: "amd64", npmOs: "linux", npmCpu: "x64" },
-  { goOs: "windows", goArch: "arm64", npmOs: "win32", npmCpu: "arm64" },
-  { goOs: "windows", goArch: "amd64", npmOs: "win32", npmCpu: "x64" },
 ];
 
 function fail(msg) {
@@ -67,15 +66,6 @@ function parseArgs(argv) {
   return args;
 }
 
-function extractBinary(archivePath, isZip, workDir) {
-  fs.mkdirSync(workDir, { recursive: true });
-  if (isZip) {
-    execFileSync("unzip", ["-o", "-q", archivePath, "-d", workDir]);
-  } else {
-    execFileSync("tar", ["-xzf", archivePath, "-C", workDir]);
-  }
-}
-
 function writeJson(file, obj) {
   fs.writeFileSync(file, JSON.stringify(obj, null, 2) + "\n");
 }
@@ -93,24 +83,20 @@ function main() {
   const optionalDependencies = {};
 
   for (const p of PLATFORMS) {
-    const isZip = p.goOs === "windows";
-    const archive = path.join(
-      distDir,
-      `${PROJECT}_${version}_${p.goOs}_${p.goArch}.${isZip ? "zip" : "tar.gz"}`,
-    );
+    const archive = path.join(distDir, `${PROJECT}_${version}_${p.goOs}_${p.goArch}.tar.gz`);
     if (!fs.existsSync(archive)) fail(`missing release archive: ${archive}`);
 
-    const binName = isZip ? `${PROJECT}.exe` : PROJECT;
     const workDir = path.join(outDir, `.extract-${p.goOs}-${p.goArch}`);
-    extractBinary(archive, isZip, workDir);
-    const extracted = path.join(workDir, binName);
-    if (!fs.existsSync(extracted)) fail(`archive ${archive} does not contain ${binName}`);
+    fs.mkdirSync(workDir, { recursive: true });
+    execFileSync("tar", ["-xzf", archive, "-C", workDir]);
+    const extracted = path.join(workDir, PROJECT);
+    if (!fs.existsSync(extracted)) fail(`archive ${archive} does not contain ${PROJECT}`);
 
     const pkgName = `${SCOPE}/${PROJECT}-${p.npmOs}-${p.npmCpu}`;
     const pkgDir = path.join(outDir, `${PROJECT}-${p.npmOs}-${p.npmCpu}`);
     fs.mkdirSync(path.join(pkgDir, "bin"), { recursive: true });
-    fs.copyFileSync(extracted, path.join(pkgDir, "bin", binName));
-    fs.chmodSync(path.join(pkgDir, "bin", binName), 0o755);
+    fs.copyFileSync(extracted, path.join(pkgDir, "bin", PROJECT));
+    fs.chmodSync(path.join(pkgDir, "bin", PROJECT), 0o755);
     fs.rmSync(workDir, { recursive: true, force: true });
 
     writeJson(path.join(pkgDir, "package.json"), {
@@ -119,7 +105,7 @@ function main() {
       description: `${PROJECT} prebuilt binary for ${p.npmOs}-${p.npmCpu}.`,
       os: [p.npmOs],
       cpu: [p.npmCpu],
-      files: [`bin/${binName}`],
+      files: [`bin/${PROJECT}`],
       engines: { node: ">=18" },
       homepage: "https://github.com/Mininglamp-OSS/octo-daemon-cli#readme",
       repository: {
@@ -156,4 +142,8 @@ function main() {
   console.log(`[prepare-packages] ${SCOPE}/${PROJECT}@${version} (main, ${PLATFORMS.length} platform deps)`);
 }
 
-main();
+module.exports = { PLATFORMS };
+
+if (require.main === module) {
+  main();
+}

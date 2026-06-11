@@ -52,9 +52,9 @@ npm install -g @mininglamp-oss/octo-daemon
 ```
 
 The matching prebuilt binary ships inside a platform sub-package selected
-automatically by npm (darwin / linux / win32 on x64 / arm64) — there is no
+automatically by npm (darwin / linux on x64 / arm64) — there is no
 postinstall download, so registry mirrors work transparently. Other
-platforms: build from source (see below).
+platforms (including Windows): build from source (see below).
 
 ### 2. Get an API key
 
@@ -137,9 +137,8 @@ make build
 Cross-compile:
 
 ```bash
-GOOS=linux   GOARCH=amd64 make build
-GOOS=windows GOARCH=amd64 make build
-GOOS=darwin  GOARCH=arm64 make build
+GOOS=linux  GOARCH=amd64 make build
+GOOS=darwin GOARCH=arm64 make build
 ```
 
 Released binaries are built by GoReleaser inside the

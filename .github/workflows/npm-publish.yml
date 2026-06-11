@@ -71,6 +71,7 @@ jobs:
           INPUT_TAG: ${{ inputs.tag }}
           INPUT_DRY_RUN: ${{ inputs.dry_run }}
         run: |
+          set -euo pipefail
           REF="$INPUT_TAG"
           if [ "$INPUT_DRY_RUN" = "true" ]; then DRY="--dry-run"; else DRY=""; fi
           # Strict v-prefixed semver: bare "0.2.0" is rejected so the
@@ -153,10 +154,18 @@ jobs:
             fi
             ref_sha=$(printf '%s' "$tag_obj" | jq -r '.object.sha')
           fi
+          # Match by immutable workflow PATH, not the human-editable display
+          # name — a repo:write actor at an un-reviewed commit can trivially
+          # add an always-green workflow named "CI", but cannot retroactively
+          # change which file produced a recorded run. Also constrain the
+          # trigger event: only push/merge_group runs count as evidence
+          # (a hand-fired workflow_dispatch or fork pull_request does not).
           ci_count=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$ref_sha&status=success&per_page=100" \
-            --jq '[.workflow_runs[] | select(.name == "CI")] | length')
+            --jq '[.workflow_runs[]
+                   | select(.path == ".github/workflows/ci.yml")
+                   | select(.event == "push" or .event == "merge_group")] | length')
           if [ "$ci_count" -eq 0 ]; then
-            echo "::error::No successful CI run for $TAG (commit $ref_sha)."
+            echo "::error::No successful ci.yml (push/merge_group) run for $TAG (commit $ref_sha)."
             exit 1
           fi
           echo "[npm-publish] CI evidence OK: $ci_count run(s) on $ref_sha."
@@ -171,7 +180,7 @@ jobs:
         run: |
           set -euo pipefail
           gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir dist \
-            --pattern '*.tar.gz' --pattern '*.zip' --pattern 'checksums.txt'
+            --pattern '*.tar.gz' --pattern 'checksums.txt'
           ls -lh dist/
 
       # The checksums and the archives share one trust root (the Release),
@@ -183,9 +192,10 @@ jobs:
       - name: Verify checksums
         run: |
           set -euo pipefail
+          shopt -s nullglob
           cd dist
           sha256sum --check --ignore-missing checksums.txt
-          for f in *.tar.gz *.zip; do
+          for f in *.tar.gz; do
             grep -qF "  $f" checksums.txt || { echo "::error::$f not covered by checksums.txt"; exit 1; }
           done
 
@@ -209,6 +219,19 @@ jobs:
           DRY_RUN: ${{ steps.version.outputs.DRY_RUN }}
         run: |
           set -euo pipefail
+          shopt -s nullglob
+          # Never move @latest backwards: a backport publish (e.g. v1.2.4
+          # while v2.0.0 is @latest) must not make fresh installs resolve
+          # the older release. sort -V compares semver cores correctly;
+          # prereleases never reach this branch (they go to @next).
+          if [ "$DIST_TAG" = "latest" ]; then
+            reg_latest=$(npm view "@mininglamp-oss/octo-daemon" dist-tags.latest 2>/dev/null || true)
+            if [ -n "$reg_latest" ] && [ "$reg_latest" != "$VERSION" ] && \
+               [ "$(printf '%s\n%s\n' "$reg_latest" "$VERSION" | sort -V | tail -n1)" = "$reg_latest" ]; then
+              DIST_TAG="release-$VERSION"
+              echo "[npm-publish] $VERSION < registry latest $reg_latest — publishing under dist-tag '$DIST_TAG' instead of latest"
+            fi
+          fi
           publish_one() {
             local dir="$1"
             local name
