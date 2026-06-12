@@ -29,8 +29,11 @@ func (d *Daemon) handleBotProvision(ctx context.Context, cmd *PendingAgentComman
 		cmd.ID, cmd.WorkspaceID, cmd.BotUID)
 	log.Printf("[DEBUG] [bot.provision] command received: %s", debugDumpCommand(cmd))
 
-	if cmd.WorkspaceID == "" || cmd.BotUID == "" {
-		return d.ackBotProvision(ctx, cmd, "failed", "missing workspace_id/bot_uid")
+	if err := validateProvisionID("workspace_id", cmd.WorkspaceID); err != nil {
+		return d.ackBotProvision(ctx, cmd, "failed", err.Error())
+	}
+	if err := validateProvisionID("bot_uid", cmd.BotUID); err != nil {
+		return d.ackBotProvision(ctx, cmd, "failed", err.Error())
 	}
 
 	// PR-A.2: fleet no longer carries bot_token in the heartbeat payload
@@ -68,8 +71,12 @@ func (d *Daemon) handleBotProvision(ctx context.Context, cmd *PendingAgentComman
 		APIURL:      cmd.APIURL,
 		DisplayName: cmd.DisplayName,
 	}); err != nil {
-		log.Printf("[ERROR] [bot.provision] provision failed: %v", err)
-		return d.ackBotProvision(ctx, cmd, "failed", fmt.Sprintf("provision: %v", err))
+		msg := fmt.Sprintf("provision: %v", err)
+		if cmd.BotToken != "" {
+			msg = strings.ReplaceAll(msg, cmd.BotToken, "***redacted***")
+		}
+		log.Printf("[ERROR] [bot.provision] %s", msg)
+		return d.ackBotProvision(ctx, cmd, "failed", msg)
 	}
 
 	if _, err := d.enrichDetectAndRegister(ctx); err != nil {
@@ -77,6 +84,33 @@ func (d *Daemon) handleBotProvision(ctx context.Context, cmd *PendingAgentComman
 	}
 
 	return d.ackBotProvision(ctx, cmd, "active", "")
+}
+
+// validateProvisionID rejects a server-supplied id that is unsafe to use as a
+// filesystem path segment or a CLI argument. Allowed: ASCII letters, digits,
+// '_' and '-', first char not '-', length 1..128. This blocks path traversal
+// ("..", "/" would escape the intended dir in filepath.Join) and argument
+// injection (a leading '-' would be parsed as a flag by the runtime CLIs).
+// Validating once at this ingress means every adapter inherits the guard.
+func validateProvisionID(field, value string) error {
+	if value == "" {
+		return fmt.Errorf("%s is empty", field)
+	}
+	if len(value) > 128 {
+		return fmt.Errorf("%s too long (%d > 128)", field, len(value))
+	}
+	for i := 0; i < len(value); i++ {
+		c := value[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '_', c == '-':
+		default:
+			return fmt.Errorf("%s has invalid character %q (allowed: A-Za-z0-9_-)", field, c)
+		}
+	}
+	if value[0] == '-' {
+		return fmt.Errorf("%s must not start with '-'", field)
+	}
+	return nil
 }
 
 // Deprecated: superseded by adapter.OpenclawAdapter.Provision. Retained

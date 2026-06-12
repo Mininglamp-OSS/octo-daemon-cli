@@ -18,6 +18,11 @@ type ForbiddenError struct {
 	Message string
 }
 
+// maxResponseSize caps how much of an HTTP response body the daemon reads into
+// memory, so a misbehaving or compromised upstream cannot OOM the daemon. All
+// responses here are small JSON; 1 MiB is generous.
+const maxResponseSize = 1 << 20
+
 func (e *ForbiddenError) Error() string {
 	return fmt.Sprintf("forbidden: %s", e.Message)
 }
@@ -60,7 +65,7 @@ func (c *Client) GetBotToken(ctx context.Context, botUID string) (string, error)
 		return "", fmt.Errorf("server URL not set")
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
-		c.serverURL+"/v1/bot/"+botUID+"/token", nil)
+		c.serverURL+"/v1/bot/"+neturl.PathEscape(botUID)+"/token", nil)
 	if err != nil {
 		return "", err
 	}
@@ -70,7 +75,7 @@ func (c *Client) GetBotToken(ctx context.Context, botUID string) (string, error)
 		return "", err
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return "", fmt.Errorf("GetBotToken %d: %s", resp.StatusCode, string(body))
 	}
@@ -125,7 +130,7 @@ func (c *Client) ListMatterBotTasks(ctx context.Context, botUID string, limit in
 		return nil, fmt.Errorf("matter ListBotTasks: %w", err)
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("matter ListBotTasks %d: %s", resp.StatusCode, string(body))
 	}
@@ -170,7 +175,7 @@ func (c *Client) ListMatterBotTasksBatch(ctx context.Context, botUIDs []string, 
 		return nil, fmt.Errorf("matter ListBotTasksBatch: %w", err)
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize))
 	if resp.StatusCode == http.StatusBadRequest {
 		return nil, ErrMatterBatchUnsupported
 	}
@@ -215,7 +220,7 @@ func (c *Client) AckMatterBotTask(ctx context.Context, taskID, claimToken, statu
 		return fmt.Errorf("matter ack: %w", err)
 	}
 	defer resp.Body.Close()
-	body, _ = io.ReadAll(resp.Body)
+	body, _ = io.ReadAll(io.LimitReader(resp.Body, maxResponseSize))
 	if resp.StatusCode == http.StatusConflict {
 		return fmt.Errorf("ack 409 (claim_token stale, drop result): %s", string(body))
 	}
@@ -268,7 +273,7 @@ func (c *Client) matterInternalPost(ctx context.Context, path string, payload ma
 		return fmt.Errorf("matter post: %w", err)
 	}
 	defer resp.Body.Close()
-	rb, _ := io.ReadAll(resp.Body)
+	rb, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("matter %s %d: %s", path, resp.StatusCode, string(rb))
 	}
@@ -446,7 +451,7 @@ func (c *Client) postJSON(ctx context.Context, path string, body any, result any
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize))
 	if err != nil {
 		return fmt.Errorf("read response: %w", err)
 	}

@@ -36,8 +36,8 @@ var _ RuntimeAdapter = (*ClaudeAdapter)(nil)
 // that service and RunTask talks to the already-running sidecar rather than
 // forking a fresh CLI per task.
 //
-// SKELETON: Detect/Health are wired; Provision/Deprovision/RunTask are TODO and
-// currently return ErrUnsupported. This is 吕思佳's implementation surface.
+// Detect/Health/Provision are implemented and live; Deprovision/RunTask still
+// return ErrUnsupported. This is 吕思佳's implementation surface.
 type ClaudeAdapter struct {
 	runner CLIRunner
 }
@@ -90,7 +90,7 @@ func (a *ClaudeAdapter) Provision(ctx context.Context, req ProvisionRequest) (Pr
 		return ProvisionResult{}, fmt.Errorf("resolve home: %w", err)
 	}
 	botDir := filepath.Join(home, claudeChannelDir, req.BotUID)
-	if err := os.MkdirAll(botDir, 0o755); err != nil {
+	if err := os.MkdirAll(botDir, 0o700); err != nil {
 		return ProvisionResult{}, fmt.Errorf("mkdir %s: %w", botDir, err)
 	}
 	cfg := map[string]any{
@@ -111,9 +111,11 @@ func (a *ClaudeAdapter) Provision(ctx context.Context, req ProvisionRequest) (Pr
 		return ProvisionResult{}, err
 	}
 
-	// Best-effort: the config is the durable state; a failed restart only means
-	// the running host hasn't picked it up yet, so log and continue rather than
-	// failing the whole provision.
+	// Best-effort by design: config.json is the durable state, so a failed
+	// restart only means the running host hasn't hot-reloaded the new bot yet —
+	// the next restart (or a manual one) picks it up. We deliberately log and
+	// continue rather than fail the provision or block the active ack, so a
+	// transient restart hiccup doesn't strand an already-written bot config.
 	if err := a.restart(ctx); err != nil {
 		log.Printf("[WARN] [claude] cc-channel-octo restart failed: %v", err)
 	}

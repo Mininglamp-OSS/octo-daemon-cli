@@ -146,7 +146,7 @@ func upsertHermesEnv(path string, pairs [][2]string) error {
 	for _, kv := range pairs {
 		lines = setEnvLine(lines, kv[0], kv[1])
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("mkdir %s: %w", filepath.Dir(path), err)
 	}
 	out := strings.Join(lines, "\n") + "\n"
