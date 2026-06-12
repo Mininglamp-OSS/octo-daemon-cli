@@ -12,6 +12,12 @@ builds:
     main: .
     env:
       - CGO_ENABLED=0
+    # windows is intentionally absent: internal/upgrade.go uses Unix-only
+    # restart logic (sh -c + SysProcAttr.Setsid) with no build tags, so
+    # GOOS=windows does not compile. Re-adding windows requires the
+    # build-tag split tracked in the windows-support follow-up issue —
+    # npm/scripts/prepare-packages.js's PLATFORMS guard test will fail
+    # loudly if this matrix and the npm matrix ever drift.
     goos:
       - darwin
       - linux
@@ -27,7 +33,10 @@ builds:
 
 archives:
   - id: octo-daemon
-    name_template: "{{ .ProjectName }}-{{ .Os }}-{{ .Arch }}"
+    # Versioned archive names — consumed by npm-publish.yml's
+    # prepare-packages step (and consistent with octo-cli's convention),
+    # so the name must stay in lockstep with npm/scripts/prepare-packages.js.
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     formats: [tar.gz]
     files:
       - LICENSE*

@@ -21,7 +21,7 @@ permissions: {}
 
 jobs:
   publish:
-    uses: Mininglamp-OSS/.github/.github/workflows/reusable-release-publish.yml@main
+    uses: Mininglamp-OSS/.github/.github/workflows/reusable-release-publish.yml@v1
     with:
       tag: ${{ inputs.tag }}
       validate_run_id: ${{ inputs.validate_run_id }}
@@ -29,3 +29,78 @@ jobs:
     permissions:
       contents: write
       actions: read
+
+  # Build the GoReleaser archives for the published release, upload them as
+  # release assets, then hand off to npm-publish.yml. Mirrors octo-cli's
+  # release-publish.yml. The legacy tag-push `release.yml` is gone: it
+  # published releases with no CI-evidence gate, while this flow published
+  # releases with no binaries — one gated flow owns both halves now.
+  build-artifacts:
+    needs: publish
+    if: ${{ inputs.draft == false }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      # actions:write lets the final step dispatch npm-publish.yml. Explicit
+      # dispatch instead of `on: release: published` because the publish job
+      # flips the release state with GITHUB_TOKEN, and GitHub suppresses
+      # workflow runs for events caused by GITHUB_TOKEN — workflow_dispatch
+      # is exempt.
+      actions: write
+    steps:
+      # Validate the tag input BEFORE checkout so attacker-supplied refs
+      # never land in the workspace. Strict v-prefixed semver, same regex
+      # as npm-publish.yml's resolver.
+      - name: Validate tag input (pre-checkout)
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::inputs.tag must be v-prefixed semver (got '$TAG')."
+            exit 1
+          fi
+
+      # `refs/tags/` prefix is required: with a bare ref, actions/checkout
+      # accepts a same-named branch, letting an attacker substitute build
+      # sources while the release evidence still points at the real tag.
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: refs/tags/${{ inputs.tag }}
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: "1.26.1"
+          cache: true
+
+      - name: Run tests
+        run: go test ./...
+
+      - name: Build with GoReleaser
+        uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6.4.0
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --clean --skip=publish,announce
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload artifacts to release
+        run: gh release upload "$TAG" dist/*.tar.gz dist/checksums.txt --clobber
+        env:
+          TAG: ${{ inputs.tag }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Hand off to the npm publish workflow, sequenced after asset upload
+      # so the archives + checksums.txt are guaranteed to be on the release
+      # when prepare-packages downloads them. No `--ref`: gh dispatches the
+      # workflow definition from the default branch (trusted), while
+      # npm-publish.yml internally checks out refs/tags/<tag> for packaging.
+      - name: Trigger npm publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag }}
+        run: gh workflow run npm-publish.yml -f tag="$TAG" -f dry_run=false
