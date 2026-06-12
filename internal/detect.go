@@ -70,9 +70,22 @@ func DetectRuntimesFast() []RuntimeInfo {
 			}
 			version := detectVersion(binPath)
 			status := "online"
-			if provider == "openclaw" {
+			switch provider {
+			case "openclaw":
 				gwRunning := isOpenclawGatewayRunning(binPath)
 				log.Printf("[DEBUG] openclaw gateway running: %v", gwRunning)
+				if !gwRunning {
+					status = "offline"
+				}
+			case "claude":
+				// claude bot 实际由 cc-channel-octo gateway 接 IM WS 派发到
+				// Claude SDK; cc-channel-octo 进程死了 → claude bot 无法响应
+				// 消息. 这里探的不是 claude CLI binary (LookPath 已确认装了),
+				// 而是 cc-channel-octo gateway 进程死活. 跟 isOpenclawGatewayRunning
+				// 同模式: fork 子命令解析人类格式输出, 等 cc-channel-octo
+				// 暴露 --json 契约面后再迁结构化解析.
+				gwRunning := isCcChannelOctoRunning()
+				log.Printf("[DEBUG] cc-channel-octo gateway running: %v", gwRunning)
 				if !gwRunning {
 					status = "offline"
 				}
@@ -293,6 +306,34 @@ func isOpenclawGatewayRunning(binPath string) bool {
 
 	log.Printf("[DEBUG] openclaw gateway status: no 'Probe target' found in output")
 	return false
+}
+
+// isCcChannelOctoRunning 通过 fork `cc-channel-octo status` 解析输出判断
+// gateway 进程是否在跑. cc-channel-octo binary 不在 PATH 时直接返 false
+// (= claude bot 跑不起来 = 标 offline, 跟"cc-channel-octo 死了"语义一致).
+//
+// status 命令输出有两种 (实测纯 ASCII, 无 ANSI 转义):
+//   "cc-channel-octo: running (pid 1306), logs at /Users/.../gateway.log"
+//   "cc-channel-octo: stopped"
+// 用 ": running" 子串匹配区分死活. "not running" / "stopped" 都不含此子串.
+//
+// 跟 isOpenclawGatewayRunning 同模式 (fork 子命令 + 解析人类格式), 等
+// cc-channel-octo 加 --json 契约面后再迁结构化解析.
+func isCcChannelOctoRunning() bool {
+	binPath, err := exec.LookPath("cc-channel-octo")
+	if err != nil {
+		log.Printf("[DEBUG] cc-channel-octo not in PATH: %v", err)
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, binPath, "status")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		log.Printf("[DEBUG] cc-channel-octo status failed: %v", err)
+		return false
+	}
+	return strings.Contains(stripAnsi(string(out)), ": running")
 }
 
 func stripAnsi(s string) string {
