@@ -26,6 +26,16 @@ const maxResultSummaryBytes = 64 * 1024
 // Always acks — failure path sends status=failed + error_msg so the server
 // can surface the failure to the matter timeline.
 func (d *Daemon) handleBotTask(ctx context.Context, task *PendingBotTask) {
+	// Dispatched in a bare goroutine (daemon.go); a panic here would otherwise
+	// take down the whole daemon. Recover, then honor the "always acks" contract
+	// so the task is marked failed instead of sticking in pending forever.
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[ERROR] [bot-task] id=%d handler panic: %v", task.ID, r)
+			d.ackBotTask(ctx, task, "failed", "", fmt.Sprintf("handler panic: %v", r))
+		}
+	}()
+
 	log.Printf("[INFO] [bot-task] received id=%d agent=%s matter=%s bot=%s",
 		task.ID, task.AgentID, task.MatterID, task.BotUID)
 

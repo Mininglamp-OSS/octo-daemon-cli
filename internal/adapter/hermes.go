@@ -78,9 +78,25 @@ func (a *HermesAdapter) Provision(ctx context.Context, req ProvisionRequest) (Pr
 		return ProvisionResult{}, fmt.Errorf("resolve home: %w", err)
 	}
 	envPath := filepath.Join(home, ".hermes", ".env")
+
+	// Single-bot-per-host constraint (Phase A). The hermes gateway reads one flat
+	// OCTO_BOT_TOKEN from .env, so provisioning a second bot would silently
+	// overwrite the first bot's token and break its IM connectivity with no error.
+	// Reject a different bot; re-provisioning the same bot is allowed (idempotent
+	// token refresh). Removing the per-host multi-bot limit needs per-bot config
+	// storage (tracked separately).
+	bound, err := readEnvValue(envPath, "OCTO_BOT_UID")
+	if err != nil {
+		return ProvisionResult{}, fmt.Errorf("hermes env read: %w", err)
+	}
+	if bound != "" && req.BotUID != "" && bound != req.BotUID {
+		return ProvisionResult{}, fmt.Errorf("hermes host already bound to bot %q; refusing to provision bot %q (single-bot-per-host)", bound, req.BotUID)
+	}
+
 	if err := upsertHermesEnv(envPath, [][2]string{
 		{"OCTO_API_URL", req.APIURL},
 		{"OCTO_BOT_TOKEN", req.BotToken},
+		{"OCTO_BOT_UID", req.BotUID},
 	}); err != nil {
 		return ProvisionResult{}, fmt.Errorf("hermes env update: %w", err)
 	}
@@ -88,6 +104,25 @@ func (a *HermesAdapter) Provision(ctx context.Context, req ProvisionRequest) (Pr
 		return ProvisionResult{}, err
 	}
 	return ProvisionResult{WorkspaceID: req.WorkspaceID}, nil
+}
+
+// readEnvValue returns the value of key in a dotenv file, or "" when the file
+// or the key is absent.
+func readEnvValue(path, key string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", fmt.Errorf("read %s: %w", path, err)
+	}
+	prefix := key + "="
+	for _, ln := range strings.Split(string(data), "\n") {
+		if t := strings.TrimSpace(ln); strings.HasPrefix(t, prefix) {
+			return strings.TrimPrefix(t, prefix), nil
+		}
+	}
+	return "", nil
 }
 
 // upsertHermesEnv writes the given key/value pairs into a dotenv file: an
