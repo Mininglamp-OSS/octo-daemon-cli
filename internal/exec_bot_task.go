@@ -15,7 +15,7 @@ import (
 // agentTaskTimeout caps how long a single openclaw agent run may take. The
 // openclaw CLI itself defaults to 600s (--timeout), but the daemon enforces
 // its own hard ceiling so a stuck CLI subprocess can't pin a task forever.
-const agentTaskTimeout = 10 * time.Minute
+const agentTaskTimeout = 10 * time.Minute //nolint:unused // only the deprecated runOpenclawAgent references it
 
 // maxResultSummaryBytes bounds what we send back to the server. The bot's
 // reply is typically a few KB; the cap is just guard rail against pathological

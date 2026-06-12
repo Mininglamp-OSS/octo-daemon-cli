@@ -25,8 +25,10 @@ type Daemon struct {
 	registeredRuntimes []RegisteredRuntime
 	lastRuntimes       []RuntimeInfo
 	generation         uint64
-	managedBots        []ManagedBot    // refreshed by heartbeat handler, consumed by matterPullLoop
-	inFlightBots       map[string]bool // bot_uid currently being drained; pollMatterTasksForManagedBots skips re-claiming these
+	// managedBots is refreshed by the heartbeat handler and the SSE
+	// managed_bots_changed delta. TODO: re-add a consumer when matter-driven
+	// task pull is reintroduced (the pull loop was removed in this pass).
+	managedBots []ManagedBot
 	// exitErr is set-once by requestExit; readExitErr consumes under d.mu.
 	// Populated when the daemon wants Run() to return a specific ExitError
 	// (403 → 78, upgrade → 75). Nil means "plain graceful shutdown, exit 0".
@@ -60,16 +62,12 @@ func NewDaemon(cfg Config) (*Daemon, error) {
 	if serverURL == "" {
 		serverURL = cfg.APIURL
 	}
-	matterURL := os.Getenv("OCTO_MATTER_URL")
 	client := NewClient(fleetURL, cfg.APIKey, cfg.CLIVersion)
 	client.SetServerURL(serverURL)
-	if matterURL != "" {
-		client.SetMatterURL(matterURL)
-	}
-	// 合并 plan 决策一+二 Phase 3B: daemon 直接持 api_key 调 fleet/matter/server,
-	// 不再换 JWT。fleet/matter middleware 调 server /v1/auth/verify-api-key 验证。
+	// 合并 plan 决策一+二 Phase 3B: daemon 直接持 api_key 调 fleet/server,
+	// 不再换 JWT。fleet middleware 调 server /v1/auth/verify-api-key 验证。
 	if os.Getenv("OCTO_FLEET_URL") != "" {
-		log.Printf("[INFO] daemon api_key mode enabled (fleet=%s server=%s matter=%s)", fleetURL, serverURL, matterURL)
+		log.Printf("[INFO] daemon api_key mode enabled (fleet=%s server=%s)", fleetURL, serverURL)
 	}
 
 	// Build the runtime-adapter registry. All four kinds are registered; only
@@ -89,11 +87,10 @@ func NewDaemon(cfg Config) (*Daemon, error) {
 	}
 
 	return &Daemon{
-		cfg:          cfg,
-		client:       client,
-		registry:     reg,
-		daemonID:     daemonID,
-		inFlightBots: make(map[string]bool),
+		cfg:      cfg,
+		client:   client,
+		registry: reg,
+		daemonID: daemonID,
 	}, nil
 }
 
@@ -398,8 +395,8 @@ func (d *Daemon) Run(ctx context.Context) error {
 	d.lockFile = lockFile
 	defer func() {
 		RemovePID()
-		d.lockFile.Close()
-		os.Remove(LockFilePath())
+		_ = d.lockFile.Close()
+		_ = os.Remove(LockFilePath())
 	}()
 
 	ctx, cancel := context.WithCancel(ctx)
@@ -420,10 +417,6 @@ func (d *Daemon) Run(ctx context.Context) error {
 	defer d.deregister()
 
 	go d.slowDetectLoop(ctx)
-	// matter-task pull temporarily disabled. The whole matter subgraph
-	// (matterPullLoop → pollMatterTasks* → handleMatterBotTask → ...) is kept
-	// but unreferenced; each is tagged //nolint:unused until this is re-enabled.
-	// go d.matterPullLoop(ctx)
 	// 决策三 SSE 反向派发 (Phase A 双跑): 每 runtime 一条独立 SSE goroutine.
 	// 启失败不 fatal — heartbeat pending_* 仍兜底.
 	d.initSSEClient()
@@ -580,33 +573,6 @@ func (d *Daemon) slowDetectLoop(ctx context.Context) {
 			return
 		case <-ticker.C:
 			d.requestSlowDetect(ctx)
-		}
-	}
-}
-
-// matterPullLoop polls matter for queued bot tasks on its own cadence,
-// independent of heartbeat. Reads the latest managed_bots snapshot under
-// d.mu (refreshed by sendHeartbeats), snapshots it, then releases the
-// lock before issuing the (potentially slow) HTTP call. Decouples matter
-// pull frequency from heartbeat tuning.
-//
-//nolint:unused
-func (d *Daemon) matterPullLoop(ctx context.Context) {
-	ticker := time.NewTicker(d.cfg.MatterPullInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			d.mu.Lock()
-			snapshot := append([]ManagedBot(nil), d.managedBots...)
-			d.mu.Unlock()
-			if len(snapshot) == 0 {
-				continue
-			}
-			d.pollMatterTasksForManagedBots(ctx, snapshot)
 		}
 	}
 }

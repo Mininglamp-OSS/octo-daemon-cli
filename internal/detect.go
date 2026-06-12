@@ -298,7 +298,7 @@ func isOpenclawGatewayRunning(binPath string) bool {
 					log.Printf("[DEBUG] openclaw probe %s failed: %v", target, dialErr)
 					return false
 				}
-				conn.Close()
+				_ = conn.Close()
 				return true
 			}
 		}

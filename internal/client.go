@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -34,7 +33,6 @@ type Client struct {
 	httpClient *http.Client
 
 	serverURL string
-	matterURL string
 }
 
 func NewClient(apiURL, apiKey, cliVersion string) *Client {
@@ -50,12 +48,6 @@ func NewClient(apiURL, apiKey, cliVersion string) *Client {
 // SetServerURL points bot_token fetch at octo-server.
 func (c *Client) SetServerURL(serverURL string) {
 	c.serverURL = strings.TrimRight(serverURL, "/")
-}
-
-// SetMatterURL points bot_task pull/ack and timeline writeback at
-// octo-matter. PR-B: daemon talks to matter directly for tasks.
-func (c *Client) SetMatterURL(matterURL string) {
-	c.matterURL = strings.TrimRight(matterURL, "/")
 }
 
 // GetBotToken fetches the bot_token for the given bot_uid from
@@ -74,7 +66,7 @@ func (c *Client) GetBotToken(ctx context.Context, botUID string) (string, error)
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return "", fmt.Errorf("GetBotToken %d: %s", resp.StatusCode, string(body))
@@ -86,198 +78,6 @@ func (c *Client) GetBotToken(ctx context.Context, botUID string) (string, error)
 		return "", err
 	}
 	return r.BotToken, nil
-}
-
-// --- PR-B matter client methods ---
-
-// MatterBotTask is the daemon-side shape of GET /api/v1/internal/bot-tasks.
-type MatterBotTask struct {
-	ID          string `json:"id"`
-	MatterID    string `json:"matter_id"`
-	SpaceID     string `json:"space_id"`
-	BotUID      string `json:"bot_uid"`
-	Prompt      string `json:"prompt"`
-	MatterTitle string `json:"matter_title,omitempty"`
-	ClaimToken  string `json:"claim_token"`
-	LeaseUntil  string `json:"lease_until"`
-	// RuntimeKind selects the runtime adapter for this task; see PendingBotTask.
-	RuntimeKind string `json:"runtime_kind"`
-}
-
-// ErrMatterBatchUnsupported is returned by ListMatterBotTasksBatch when
-// matter is older than the bot_uids batch endpoint and rejects the call
-// with 400. Callers should fall back to per-bot ListMatterBotTasks.
-var ErrMatterBatchUnsupported = errors.New("matter ListBotTasksBatch unsupported (server too old)")
-
-// ListMatterBotTasks pulls up to limit queued tasks for the given bot_uid
-// from matter (api_key auth via Bearer). Returns empty slice when nothing's
-// queued. Retained as a fallback for pre-batch matter deployments.
-func (c *Client) ListMatterBotTasks(ctx context.Context, botUID string, limit int) ([]MatterBotTask, error) {
-	if c.matterURL == "" {
-		return nil, fmt.Errorf("matter URL not set")
-	}
-	q := neturl.Values{}
-	q.Set("bot_uid", botUID)
-	q.Set("limit", fmt.Sprintf("%d", limit))
-	url := fmt.Sprintf("%s/api/v1/internal/bot-tasks?%s", c.matterURL, q.Encode())
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Authorization", "Bearer "+c.apiKey)
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("matter ListBotTasks: %w", err)
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize))
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("matter ListBotTasks %d: %s", resp.StatusCode, string(body))
-	}
-	var r struct {
-		Tasks []MatterBotTask `json:"tasks"`
-	}
-	if err := json.Unmarshal(body, &r); err != nil {
-		return nil, err
-	}
-	return r.Tasks, nil
-}
-
-// ListMatterBotTasksBatch issues one HTTP call that claims up to perBotLimit
-// queued tasks per bot_uid from matter (api_key auth via Bearer). The matter
-// side runs the per-bot claims inside a single DB transaction so all-or-nothing
-// at the batch level; per-bot limit preserves fairness (a noisy bot won't
-// drown out quiet ones the way a flat limit would).
-//
-// Returned slice is flat — each MatterBotTask carries its own BotUID so
-// the caller can group client-side without an extra round trip.
-//
-// Returns ErrMatterBatchUnsupported on HTTP 400 — matter is older than
-// the bot_uids endpoint. Caller should fall back to per-bot pulls.
-func (c *Client) ListMatterBotTasksBatch(ctx context.Context, botUIDs []string, perBotLimit int) ([]MatterBotTask, error) {
-	if len(botUIDs) == 0 {
-		return nil, nil
-	}
-	if c.matterURL == "" {
-		return nil, fmt.Errorf("matter URL not set")
-	}
-	q := neturl.Values{}
-	q.Set("bot_uids", strings.Join(botUIDs, ","))
-	q.Set("limit", fmt.Sprintf("%d", perBotLimit))
-	url := fmt.Sprintf("%s/api/v1/internal/bot-tasks?%s", c.matterURL, q.Encode())
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Authorization", "Bearer "+c.apiKey)
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("matter ListBotTasksBatch: %w", err)
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize))
-	if resp.StatusCode == http.StatusBadRequest {
-		return nil, ErrMatterBatchUnsupported
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("matter ListBotTasksBatch %d: %s", resp.StatusCode, string(body))
-	}
-	var r struct {
-		Tasks []MatterBotTask `json:"tasks"`
-	}
-	if err := json.Unmarshal(body, &r); err != nil {
-		return nil, err
-	}
-	return r.Tasks, nil
-}
-
-// AckMatterBotTask reports the outcome of a claimed task back to matter.
-// Status must be "succeeded" or "failed". 409 = claim_token mismatch
-// (daemon should drop result, not retry).
-func (c *Client) AckMatterBotTask(ctx context.Context, taskID, claimToken, status, errMsg, resultSummary string, elapsedMs int64) error {
-	if c.matterURL == "" {
-		return fmt.Errorf("matter URL not set")
-	}
-	body, err := json.Marshal(map[string]any{
-		"claim_token":    claimToken,
-		"status":         status,
-		"error_msg":      errMsg,
-		"result_summary": resultSummary,
-		"elapsed_ms":     elapsedMs,
-	})
-	if err != nil {
-		return err
-	}
-	url := fmt.Sprintf("%s/api/v1/internal/bot-tasks/%s/ack", c.matterURL, taskID)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Authorization", "Bearer "+c.apiKey)
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("matter ack: %w", err)
-	}
-	defer resp.Body.Close()
-	body, _ = io.ReadAll(io.LimitReader(resp.Body, maxResponseSize))
-	if resp.StatusCode == http.StatusConflict {
-		return fmt.Errorf("ack 409 (claim_token stale, drop result): %s", string(body))
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("matter ack %d: %s", resp.StatusCode, string(body))
-	}
-	return nil
-}
-
-// WriteMatterTimeline posts a bot reply to matter timeline using the
-// daemon's api_key Bearer (合并 plan 决策一+二 Phase 4 — DualAuth + AU5
-// 已删, matter 端 AuthMiddleware + RequireKind(apikey) 验权).
-func (c *Client) WriteMatterTimeline(ctx context.Context, matterID, actorUID, spaceID, content string) error {
-	return c.matterInternalPost(ctx, fmt.Sprintf("/api/v1/internal/matters/%s/timeline", matterID),
-		map[string]any{
-			"actor_uid": actorUID,
-			"space_id":  spaceID,
-			"content":   content,
-		})
-}
-
-// WriteMatterActivity posts an agent_task_* activity to matter via the
-// api_key Bearer (合并 plan 决策一+二 Phase 4 — 同 WriteMatterTimeline).
-func (c *Client) WriteMatterActivity(ctx context.Context, matterID, actorUID, action string, detail map[string]any, spaceID string) error {
-	return c.matterInternalPost(ctx, fmt.Sprintf("/api/v1/internal/matters/%s/activities", matterID),
-		map[string]any{
-			"actor_uid": actorUID,
-			"action":    action,
-			"detail":    detail,
-			"space_id":  spaceID,
-		})
-}
-
-func (c *Client) matterInternalPost(ctx context.Context, path string, payload map[string]any) error {
-	if c.matterURL == "" {
-		return fmt.Errorf("matter URL not set")
-	}
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.matterURL+path, bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+c.apiKey)
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("matter post: %w", err)
-	}
-	defer resp.Body.Close()
-	rb, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize))
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("matter %s %d: %s", path, resp.StatusCode, string(rb))
-	}
-	return nil
 }
 
 type RegisterRequest struct {
@@ -449,7 +249,7 @@ func (c *Client) postJSON(ctx context.Context, path string, body any, result any
 	if err != nil {
 		return fmt.Errorf("http request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize))
 	if err != nil {

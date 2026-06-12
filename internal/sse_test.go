@@ -199,7 +199,7 @@ func TestDispatch_RecordsEventIDForReconnect(t *testing.T) {
 	bp := &mockBP{}
 	up := &mockUp{}
 	mb := &mockMB{}
-	c.dispatch(context.Background(), 99, ev, bp, up, mb)
+	_ = c.dispatch(context.Background(), 99, ev, bp, up, mb)
 
 	if got := d.lastEventID(99); got != 500 {
 		t.Errorf("dispatch should recordEventID(99, 500), got %d", got)
@@ -223,14 +223,14 @@ func TestDispatch_HandlerErrorLeavesDedupUnmarked(t *testing.T) {
 		Type: sseEventUpgrade,
 		Data: `{"task_id":"upg_fail","component":"octo-daemon"}`,
 	}
-	c.dispatch(context.Background(), 1, ev, bp, failUp, mb)
+	_ = c.dispatch(context.Background(), 1, ev, bp, failUp, mb)
 	if d.seen(sseEventUpgrade, "upg_fail") {
 		t.Error("handler err should NOT mark dedup (H3 fix: replay 应重试)")
 	}
 
 	// 然后改成 ok handler, 再 dispatch — 现在该 mark.
 	okUp := &mockUp{}
-	c.dispatch(context.Background(), 1, ev, bp, okUp, mb)
+	_ = c.dispatch(context.Background(), 1, ev, bp, okUp, mb)
 	if !d.seen(sseEventUpgrade, "upg_fail") {
 		t.Error("handler ok should mark dedup")
 	}
@@ -260,7 +260,7 @@ func TestDispatch_BotProvisionHandlerErrorLeavesDedupUnmarked(t *testing.T) {
 	up := &mockUp{}
 	mb := &mockMB{}
 	ev := sseEvent{ID: "2", Type: sseEventBotProvision, Data: `{"command_id":"42"}`}
-	c.dispatch(context.Background(), 1, ev, failBP, up, mb)
+	_ = c.dispatch(context.Background(), 1, ev, failBP, up, mb)
 	if d.seen(sseEventBotProvision, "42") {
 		t.Error("bot_provision handler err should NOT mark dedup (H3)")
 	}
@@ -877,9 +877,9 @@ func TestSSEClient_ConnectOnce_DispatchUpgradeEvent(t *testing.T) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		flusher := w.(http.Flusher)
-		fmt.Fprint(w, "event: upgrade\nid: 100\ndata: {\"task_id\":\"upg_99\",\"component\":\"octo-daemon\",\"download_url\":\"https://example\",\"target_version\":\"2.0.0\"}\n\n")
+		_, _ = fmt.Fprint(w, "event: upgrade\nid: 100\ndata: {\"task_id\":\"upg_99\",\"component\":\"octo-daemon\",\"download_url\":\"https://example\",\"target_version\":\"2.0.0\"}\n\n")
 		flusher.Flush()
-		fmt.Fprint(w, "event: close\ndata: bye\n\n")
+		_, _ = fmt.Fprint(w, "event: close\ndata: bye\n\n")
 		flusher.Flush()
 	}))
 	defer srv.Close()
