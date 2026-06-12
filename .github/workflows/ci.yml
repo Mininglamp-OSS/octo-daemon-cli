@@ -70,6 +70,25 @@ jobs:
       - name: Test
         run: go test -race -shuffle=on -count=1 -timeout 5m ./...
 
+  # npm packaging is part of the release path (npm-publish.yml runs these
+  # same tests as a publish gate); running them on every PR surfaces
+  # packaging regressions before a release tag is cut.
+  npm-packaging:
+    name: npm packaging tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "20"
+
+      - name: Packaging tests
+        run: node --test npm/scripts/prepare-packages.test.js
+
   vet:
     name: Vet
     runs-on: ubuntu-latest

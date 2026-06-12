@@ -211,9 +211,16 @@ jobs:
       # after a partial failure (e.g. network blip on package 4 of 7) must
       # not die on "cannot publish over previously published version" for
       # the packages that already made it.
+      # NPM_TOKEN is injected ONLY on real publishes. Dry runs skip both
+      # gates by design (plumbing tests against arbitrary semver tags), so
+      # the checked-out tree is untrusted in that mode — a token in the env
+      # of a step that executes tag-controlled code (node -p on generated
+      # manifests, npm lifecycle hooks) would let a crafted tag exfiltrate
+      # it. Empty-string env (not unset) keeps setup-node's
+      # `_authToken=${NODE_AUTH_TOKEN}` .npmrc substitution from erroring.
       - name: Publish to npm
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ steps.version.outputs.DRY_RUN == '' && secrets.NPM_TOKEN || '' }}
           VERSION: ${{ steps.version.outputs.VERSION }}
           DIST_TAG: ${{ steps.version.outputs.DIST_TAG }}
           DRY_RUN: ${{ steps.version.outputs.DRY_RUN }}
@@ -241,10 +248,13 @@ jobs:
               return 0
             fi
             echo "[npm-publish] publishing $name@$VERSION"
+            # --ignore-scripts: none of our packages carry lifecycle
+            # scripts (prepare-packages strips them), so refusing to run
+            # any closes the npm-hook code-execution class outright.
             if [ -n "$DRY_RUN" ]; then
-              npm publish "$dir" --access public --tag "$DIST_TAG" --dry-run
+              npm publish "$dir" --access public --tag "$DIST_TAG" --ignore-scripts --dry-run
             else
-              npm publish "$dir" --access public --tag "$DIST_TAG"
+              npm publish "$dir" --access public --tag "$DIST_TAG" --ignore-scripts
             fi
           }
           for dir in build/octo-daemon-*; do
