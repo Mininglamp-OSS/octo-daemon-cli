@@ -120,9 +120,28 @@ func (a *OpenclawAdapter) addWorkspace(ctx context.Context, req ProvisionRequest
 	log.Printf("[DEBUG] [openclaw] exec: openclaw %s", strings.Join(args, " "))
 	out, err := a.runner.Run(cctx, openclawBin, args, nil)
 	if err != nil {
+		if isAlreadyExists(out, err) {
+			log.Printf("[DEBUG] [openclaw] agents add: workspace %q already exists, treating as success (replay)", req.WorkspaceID)
+			return nil
+		}
 		return fmt.Errorf("openclaw agents add: %w (output: %s)", err, truncate(string(out), 800))
 	}
 	return nil
+}
+
+// isAlreadyExists reports whether a failed openclaw subprocess failed only
+// because the workspace/agent/binding it tried to create already exists. The
+// daemon re-runs Provision when a provision ack is lost, so a replay hits this
+// against an already-provisioned bot; it must be treated as success, otherwise
+// an already-provisioned bot is acked failed and daemon/server state drifts.
+func isAlreadyExists(out []byte, err error) bool {
+	hay := strings.ToLower(string(out))
+	if err != nil {
+		hay += " " + strings.ToLower(err.Error())
+	}
+	return strings.Contains(hay, "already exists") ||
+		strings.Contains(hay, "already registered") ||
+		strings.Contains(hay, "already bound")
 }
 
 func (a *OpenclawAdapter) patchOctoAccount(ctx context.Context, req ProvisionRequest) error {
@@ -176,6 +195,10 @@ func (a *OpenclawAdapter) bindBot(ctx context.Context, req ProvisionRequest) err
 	log.Printf("[DEBUG] [openclaw] exec: openclaw %s", strings.Join(args, " "))
 	out, err := a.runner.Run(cctx, openclawBin, args, nil)
 	if err != nil {
+		if isAlreadyExists(out, err) {
+			log.Printf("[DEBUG] [openclaw] agents bind: binding %q already exists, treating as success (replay)", bind)
+			return nil
+		}
 		return fmt.Errorf("openclaw agents bind: %w (output: %s)", err, truncate(string(out), 800))
 	}
 	return nil

@@ -39,19 +39,32 @@ func TestOpenclawProvisionRunsAllStepsInOrder(t *testing.T) {
 	}
 }
 
-// TestOpenclawProvisionReplayIsIdempotent pins the ack-failure replay contract.
-// When a provision ack is lost, the fleet re-delivers the identical command and
-// Provision runs a second time. The openclaw CLI treats a repeated `agents add`
-// / `agents bind` as a no-op on existing state (verified manually 2026-06-12),
-// so the daemon delegates idempotency to the CLI: a replay must re-run the full
-// step sequence and succeed, never short-circuiting to a local "already
-// provisioned -> failed" decision. This test fails if anyone introduces such a
-// decision or changes the command shape between runs.
-func TestOpenclawProvisionReplayIsIdempotent(t *testing.T) {
+// alreadyExistsRunner records calls and, once armed, returns an "already exists"
+// error for `agents add` / `agents bind` — simulating a replayed Provision
+// against an already-provisioned bot after a lost ack.
+type alreadyExistsRunner struct {
+	calls [][]string
+	armed bool
+}
+
+func (r *alreadyExistsRunner) Run(_ context.Context, name string, args []string, _ []byte) ([]byte, error) {
+	r.calls = append(r.calls, append([]string{name}, args...))
+	if r.armed && len(args) >= 2 && args[0] == "agents" && (args[1] == "add" || args[1] == "bind") {
+		return []byte("Error: agent already exists"), errors.New("exit status 1")
+	}
+	return nil, nil
+}
+
+// TestOpenclawProvisionToleratesAlreadyExistsOnReplay exercises the ack-failure
+// replay path: after a successful provision, a lost ack makes the daemon re-run
+// Provision against the now-existing bot, so `agents add`/`agents bind` fail with
+// "already exists". Provision must treat that as success rather than ack the bot
+// failed and drift daemon/server state.
+func TestOpenclawProvisionToleratesAlreadyExistsOnReplay(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
-	runner := &recordingRunner{}
+	runner := &alreadyExistsRunner{}
 	a := NewOpenclawAdapter(runner)
 	req := ProvisionRequest{
 		WorkspaceID: "ws-1",
@@ -60,18 +73,29 @@ func TestOpenclawProvisionReplayIsIdempotent(t *testing.T) {
 		APIURL:      "https://api.example",
 	}
 
-	for i := 1; i <= 2; i++ {
-		if _, err := a.Provision(context.Background(), req); err != nil {
-			t.Fatalf("Provision run %d: %v", i, err)
-		}
+	if _, err := a.Provision(context.Background(), req); err != nil {
+		t.Fatalf("first Provision: %v", err)
 	}
 
-	const stepsPerRun = 4
-	if len(runner.calls) != 2*stepsPerRun {
-		t.Fatalf("calls = %d, want %d (replay must re-run all steps)", len(runner.calls), 2*stepsPerRun)
+	runner.armed = true // bot now exists; replayed add/bind return "already exists"
+	if _, err := a.Provision(context.Background(), req); err != nil {
+		t.Fatalf("replay Provision must tolerate already-exists, got %v", err)
 	}
-	if first, second := runner.calls[:stepsPerRun], runner.calls[stepsPerRun:]; !reflect.DeepEqual(first, second) {
-		t.Errorf("replay diverged:\nrun1=%v\nrun2=%v", first, second)
+}
+
+// TestOpenclawProvisionPropagatesRealError guards the tolerance from swallowing
+// genuine failures: a non-already-exists error must still fail Provision.
+func TestOpenclawProvisionPropagatesRealError(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	a := NewOpenclawAdapter(&recordingRunner{err: errors.New("permission denied")})
+
+	if _, err := a.Provision(context.Background(), ProvisionRequest{
+		WorkspaceID: "ws-1",
+		BotUID:      "bot-1",
+		BotToken:    "bf_x",
+		APIURL:      "https://api.example",
+	}); err == nil {
+		t.Fatal("Provision should propagate a non-already-exists error")
 	}
 }
 
