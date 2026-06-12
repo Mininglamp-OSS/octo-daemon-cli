@@ -51,16 +51,16 @@ func TestRuntimesChanged_BindingsChange(t *testing.T) {
 }
 
 func TestRuntimesChanged_PluginVersionChange(t *testing.T) {
-	a := []RuntimeInfo{{Provider: "openclaw", Version: "1.0", Status: "online", Plugins: []PluginInfo{{Name: "openclaw-channel-dmwork", Version: "0.6.1"}}}}
-	b := []RuntimeInfo{{Provider: "openclaw", Version: "1.0", Status: "online", Plugins: []PluginInfo{{Name: "openclaw-channel-dmwork", Version: "0.7.0"}}}}
+	a := []RuntimeInfo{{Provider: "openclaw", Version: "1.0", Status: "online", Plugins: []PluginInfo{{Name: "octo", Version: "0.6.1"}}}}
+	b := []RuntimeInfo{{Provider: "openclaw", Version: "1.0", Status: "online", Plugins: []PluginInfo{{Name: "octo", Version: "0.7.0"}}}}
 	if !runtimesChanged(a, b) {
 		t.Fatal("expected change on plugin version")
 	}
 }
 
 func TestRuntimesChanged_PluginAdded(t *testing.T) {
-	a := []RuntimeInfo{{Provider: "openclaw", Version: "1.0", Status: "online", Plugins: []PluginInfo{{Name: "openclaw-channel-dmwork", Version: "0.6.1"}}}}
-	b := []RuntimeInfo{{Provider: "openclaw", Version: "1.0", Status: "online", Plugins: []PluginInfo{{Name: "openclaw-channel-dmwork", Version: "0.6.1"}, {Name: "openclaw-lark", Version: "1.0.0"}}}}
+	a := []RuntimeInfo{{Provider: "openclaw", Version: "1.0", Status: "online", Plugins: []PluginInfo{{Name: "octo", Version: "0.6.1"}}}}
+	b := []RuntimeInfo{{Provider: "openclaw", Version: "1.0", Status: "online", Plugins: []PluginInfo{{Name: "octo", Version: "0.6.1"}, {Name: "openclaw-lark", Version: "1.0.0"}}}}
 	if !runtimesChanged(a, b) {
 		t.Fatal("expected change on plugin count")
 	}

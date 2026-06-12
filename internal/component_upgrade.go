@@ -71,23 +71,22 @@ func openclawPostUpgradeGatewayCheck(_ context.Context, _ *Daemon) error {
 //  4. 同步 enrichDetectAndRegister（带重试），让 register handler 走 provider 关单
 //  5. 比对 pre/post 版本：如果 exec exit 0 但版本没变，主动 report failed，
 //     避免服务端假 timeout
-func (d *Daemon) handleComponentUpgrade(ctx context.Context, up *PendingUpgrade) {
+func (d *Daemon) handleComponentUpgrade(ctx context.Context, up *PendingUpgrade) error {
 	spec, ok := componentUpgradeSpecs[up.Component]
 	if !ok {
-		d.reportUpgrade(ctx, up.TaskID, "failed", fmt.Sprintf("unsupported component: %s", up.Component))
-		return
+		return d.reportUpgrade(ctx, up.TaskID, "failed", fmt.Sprintf("unsupported component: %s", up.Component))
 	}
 	log.Printf("[INFO] component upgrade task: %s → %s (task=%s)", up.Component, up.TargetVersion, up.TaskID)
 
 	// 记录升级前版本（用于事后校验）
 	preVersion := d.getRuntimeVersion(up.Component)
 
-	d.reportUpgrade(ctx, up.TaskID, "installing", "")
+	// progress — 失败 swallow, 后续 terminal 会覆盖
+	_ = d.reportUpgrade(ctx, up.TaskID, "installing", "")
 
 	argv := spec.Command(up.TargetVersion)
 	if len(argv) == 0 {
-		d.reportUpgrade(ctx, up.TaskID, "failed", "empty update command")
-		return
+		return d.reportUpgrade(ctx, up.TaskID, "failed", "empty update command")
 	}
 
 	execCtx, cancel := context.WithTimeout(ctx, spec.ExecTimeout)
@@ -99,15 +98,13 @@ func (d *Daemon) handleComponentUpgrade(ctx context.Context, up *PendingUpgrade)
 	if err != nil {
 		msg := fmt.Sprintf("%s update failed: %v\noutput: %s", up.Component, err, truncateOutput(string(out), 2000))
 		log.Printf("[ERROR] component upgrade failed: %s", msg)
-		d.reportUpgrade(ctx, up.TaskID, "failed", msg)
-		return
+		return d.reportUpgrade(ctx, up.TaskID, "failed", msg)
 	}
 	log.Printf("[INFO] %s update exited cleanly (task=%s)", up.Component, up.TaskID)
 
 	if spec.PostHook != nil {
 		if err := spec.PostHook(ctx, d); err != nil {
-			d.reportUpgrade(ctx, up.TaskID, "failed", err.Error())
-			return
+			return d.reportUpgrade(ctx, up.TaskID, "failed", err.Error())
 		}
 	}
 
@@ -121,7 +118,7 @@ func (d *Daemon) handleComponentUpgrade(ctx context.Context, up *PendingUpgrade)
 			select {
 			case <-ctx.Done():
 				log.Printf("[WARN] post-upgrade enrich register aborted: %v", ctx.Err())
-				return
+				return nil
 			case <-time.After(backoff):
 			}
 		}
@@ -139,7 +136,7 @@ func (d *Daemon) handleComponentUpgrade(ctx context.Context, up *PendingUpgrade)
 		// register 失败时 d.lastRuntimes 还是旧版本，读出来做 pre/post
 		// 会误报 failed。后续 slow detect 成功注册会让服务端 register
 		// 关单；最坏情况走 sweeper timeout。这里直接返回。
-		return
+		return nil
 	}
 
 	// 版本校验（仅 register 成功后执行，lastRuntimes 此时是权威新版本）：
@@ -149,22 +146,21 @@ func (d *Daemon) handleComponentUpgrade(ctx context.Context, up *PendingUpgrade)
 	postVersion := d.getRuntimeVersion(up.Component)
 	if postVersion == "" {
 		log.Printf("[WARN] could not detect %s version post-upgrade, relying on server close-out", up.Component)
-		return
+		return nil
 	}
 	if preVersion != "" && postVersion == preVersion {
 		msg := fmt.Sprintf("%s update exit 0 but version did not change (still %s)", up.Component, postVersion)
 		log.Printf("[WARN] %s", msg)
-		d.reportUpgrade(ctx, up.TaskID, "failed", msg)
-		return
+		return d.reportUpgrade(ctx, up.TaskID, "failed", msg)
 	}
 	if up.TargetVersion != "" && isVersionOlder(postVersion, up.TargetVersion) {
 		msg := fmt.Sprintf("%s update reached version %s but target was %s", up.Component, postVersion, up.TargetVersion)
 		log.Printf("[WARN] %s", msg)
-		d.reportUpgrade(ctx, up.TaskID, "failed", msg)
-		return
+		return d.reportUpgrade(ctx, up.TaskID, "failed", msg)
 	}
 	log.Printf("[INFO] %s post-upgrade version=%s (target=%s, pre=%s); server register will close task on match",
 		up.Component, postVersion, up.TargetVersion, preVersion)
+	return nil
 }
 
 // getRuntimeVersion 读 d.lastRuntimes 中指定 provider 的 Version。

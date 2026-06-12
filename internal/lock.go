@@ -28,7 +28,7 @@ func TryLock() (*os.File, error) {
 	}
 
 	if err := lockFile(f); err != nil {
-		f.Close()
+		_ = f.Close()
 		return nil, fmt.Errorf("another daemon is already running. Use 'octo-daemon stop' first")
 	}
 
@@ -45,7 +45,7 @@ func WritePID() {
 
 // RemovePID removes the PID file.
 func RemovePID() {
-	os.Remove(pidFilePath())
+	_ = os.Remove(pidFilePath())
 }
 
 // IsLocked checks if the daemon lock is held (non-destructive).
@@ -55,7 +55,7 @@ func IsLocked() bool {
 	if err != nil {
 		return false
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	if err := lockFile(f); err != nil {
 		return true
