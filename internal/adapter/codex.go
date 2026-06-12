@@ -63,7 +63,9 @@ func (a *CodexAdapter) Deprovision(_ context.Context, _ string) error {
 	return fmt.Errorf("codex deprovision: %w", ErrUnsupported)
 }
 
-// RunTask dispatches a prompt to the bot's running sidecar. TODO.
+// RunTask is a reserved placeholder. The codex runtime is not implemented yet;
+// it returns ErrUnsupported so a task routed here fails cleanly. Will be
+// implemented in a follow-up — ignore in code review until then.
 func (a *CodexAdapter) RunTask(_ context.Context, _ RunTaskRequest) (RunTaskResult, error) {
 	return RunTaskResult{}, fmt.Errorf("codex run task: %w", ErrUnsupported)
 }

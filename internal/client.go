@@ -95,6 +95,8 @@ type MatterBotTask struct {
 	MatterTitle string `json:"matter_title,omitempty"`
 	ClaimToken  string `json:"claim_token"`
 	LeaseUntil  string `json:"lease_until"`
+	// RuntimeKind selects the runtime adapter for this task; see PendingBotTask.
+	RuntimeKind string `json:"runtime_kind"`
 }
 
 // ErrMatterBatchUnsupported is returned by ListMatterBotTasksBatch when
@@ -362,6 +364,10 @@ type PendingBotTask struct {
 	MatterID   string `json:"matter_id"`
 	BotUID     string `json:"bot_uid"`
 	ClaimToken string `json:"claim_token"`
+	// RuntimeKind selects which runtime adapter executes this task
+	// (openclaw|claude|codex|hermes). Empty on pre-runtime-kind fleet builds,
+	// where Registry.Get normalizes it to openclaw for backward compatibility.
+	RuntimeKind string `json:"runtime_kind"`
 }
 
 func (c *Client) Heartbeat(ctx context.Context, runtimeID int64) (*HeartbeatResponse, error) {

@@ -38,7 +38,7 @@ func (d *Daemon) handleBotTask(ctx context.Context, task *PendingBotTask) {
 		return
 	}
 
-	ad, err := d.runtimeAdapter("")
+	ad, err := d.runtimeAdapter(task.RuntimeKind)
 	if err != nil {
 		d.ackBotTask(ctx, task, "failed", "", fmt.Sprintf("resolve adapter: %v", err))
 		return

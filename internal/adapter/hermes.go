@@ -152,7 +152,9 @@ func (a *HermesAdapter) Deprovision(_ context.Context, _ string) error {
 	return fmt.Errorf("hermes deprovision: %w", ErrUnsupported)
 }
 
-// RunTask dispatches a prompt to the hermes host for one bot. TODO.
+// RunTask is a reserved placeholder. The hermes runtime is not implemented yet;
+// it returns ErrUnsupported so a task routed here fails cleanly. Will be
+// implemented in a follow-up — ignore in code review until then.
 func (a *HermesAdapter) RunTask(_ context.Context, _ RunTaskRequest) (RunTaskResult, error) {
 	return RunTaskResult{}, fmt.Errorf("hermes run task: %w", ErrUnsupported)
 }

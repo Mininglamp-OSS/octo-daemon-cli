@@ -32,7 +32,7 @@ func (d *Daemon) handleMatterBotTask(parent context.Context, workspaceID string,
 	}
 
 	start := time.Now()
-	ad, err := d.runtimeAdapter("")
+	ad, err := d.runtimeAdapter(task.RuntimeKind)
 	if err != nil {
 		d.ackMatterTask(parent, task, "failed", "", fmt.Sprintf("resolve adapter: %v", err))
 		return
