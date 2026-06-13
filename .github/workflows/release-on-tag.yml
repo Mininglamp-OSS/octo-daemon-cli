@@ -108,7 +108,12 @@ jobs:
           RUN_ID: ${{ steps.resolve.outputs.run_id }}
         run: |
           set -euo pipefail
+          # -R is REQUIRED: this job has no actions/checkout, so there is no
+          # local git repo for `gh workflow run` to infer the target from —
+          # without it gh fails with "not a git repository". Pass the repo
+          # explicitly from the GITHUB_REPOSITORY context.
           gh workflow run release-publish.yml \
+            -R "$GITHUB_REPOSITORY" \
             -f tag="$TAG" \
             -f validate_run_id="$RUN_ID" \
             -f draft=false
