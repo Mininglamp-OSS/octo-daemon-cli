@@ -89,6 +89,31 @@ jobs:
       - name: Packaging tests
         run: node --test npm/scripts/prepare-packages.test.js
 
+      # Guards the exact failure that broke the first v0.0.1 publish: npm
+      # parses a bare relative dir like `build/octo-daemon-x` as a GitHub
+      # user/repo shorthand and runs `git ls-remote`, not a local publish.
+      # npm-publish.yml uses the `./`-prefixed form; this asserts that form
+      # works AND that the bare form is still misresolved, so a regression
+      # that drops the `./` is caught here at PR time.
+      - name: Publish invocation smoke test
+        run: |
+          set -euo pipefail
+          mkdir -p smoke/octo-daemon-pkg
+          cat > smoke/octo-daemon-pkg/package.json <<'JSON'
+          { "name": "@mininglamp-oss/octo-daemon-smoke", "version": "0.0.0-smoke", "files": ["index.js"] }
+          JSON
+          echo "module.exports = {}" > smoke/octo-daemon-pkg/index.js
+          # Fix form: ./-prefixed relative path publishes (dry-run) cleanly.
+          npm publish --dry-run --ignore-scripts ./smoke/octo-daemon-pkg
+          # Bug form: bare `dir/subdir` is github:dir/subdir → npm shells out
+          # to `git ls-remote`. Wrap in timeout + GIT_TERMINAL_PROMPT=0 so a
+          # credential prompt can never hang the job; it must fail, not publish.
+          if GIT_TERMINAL_PROMPT=0 timeout 60 npm publish --dry-run --ignore-scripts smoke/octo-daemon-pkg >/dev/null 2>&1; then
+            echo "::error::bare relative path published as a local dir — path-spec guard ineffective"
+            exit 1
+          fi
+          echo "publish invocation smoke test OK"
+
   vet:
     name: Vet
     runs-on: ubuntu-latest
