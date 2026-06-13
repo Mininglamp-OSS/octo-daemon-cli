@@ -248,13 +248,17 @@ jobs:
               return 0
             fi
             echo "[npm-publish] publishing $name@$VERSION"
+            # ./-prefix is REQUIRED: npm parses a bare relative path like
+            # `build/octo-daemon-darwin-arm64` as a GitHub user/repo
+            # shorthand and tries `git ls-remote ssh://git@github.com/...`,
+            # not a local directory. `./$dir` forces local-path resolution.
             # --ignore-scripts: none of our packages carry lifecycle
             # scripts (prepare-packages strips them), so refusing to run
             # any closes the npm-hook code-execution class outright.
             if [ -n "$DRY_RUN" ]; then
-              npm publish "$dir" --access public --tag "$DIST_TAG" --ignore-scripts --dry-run
+              npm publish "./$dir" --access public --tag "$DIST_TAG" --ignore-scripts --dry-run
             else
-              npm publish "$dir" --access public --tag "$DIST_TAG" --ignore-scripts
+              npm publish "./$dir" --access public --tag "$DIST_TAG" --ignore-scripts
             fi
           }
           for dir in build/octo-daemon-*; do
