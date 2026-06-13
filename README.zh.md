@@ -54,6 +54,17 @@ npm install -g @mininglamp-oss/octo-daemon
 linux，x64 / arm64）——没有 postinstall 下载，npm 镜像源
 （如 npmmirror）开箱即用。其他平台（含 Windows）请从源码构建（见下文）。
 
+`npm install -g` 会把 `octo-daemon` 命令自动放进 npm 全局 bin 目录的
+PATH 软链里——**无需手动改 PATH**。验证：
+
+```bash
+octo-daemon --version
+```
+
+> **报 `octo-daemon: command not found`？** 说明 npm 全局 bin 目录不在
+> PATH 上（nvm 或自定义 prefix 常见）。用 `echo "$(npm config get prefix)/bin"`
+> 打印该目录，加进 `PATH` 即可。
+
 ### 2. 拿 API key
 
 在 OCTO 里向 BotFather 发 `/daemon`，会返回完整启动命令（含 API
@@ -64,6 +75,14 @@ key 和服务器地址）。
 ```bash
 octo-daemon start --api-key "uk_xxx" --api-url "http://your-server:8090"
 ```
+
+`start` 默认**前台运行**（占住终端）——首次跑时方便观察注册过程。要常驻
+后台，用第 4 步的系统服务。
+
+> 单机部署 `--api-key` + `--api-url` 即可。**服务拆分部署**（fleet
+> 独立）时还需设 `OCTO_FLEET_URL` / `OCTO_SERVER_URL`——见下方
+> [环境变量](#-环境变量)。BotFather 的 `/daemon` 回复会给出适配你这套
+> 部署的完整命令，照抄即可。
 
 ### 4.（推荐）装为系统服务
 
@@ -81,6 +100,24 @@ macOS 上会注册一个用户级 `launchd` agent（`ai.octo.daemon`）；Linux
 octo-daemon status            # 进程 / 版本
 octo-daemon service status    # 服务安装状态 + 最后一条日志
 ```
+
+## ⚙️ 环境变量
+
+单机部署只需 `--api-key` 和 `--api-url`。下面这些是可选的，daemon 从环境
+变量读取（在 `start` 前设好，或写进服务的 env 文件）。BotFather 的
+`/daemon` 回复已经会带上你这套部署所需的 URL——这里列出供自定义 / 拆分
+部署参考。
+
+| 变量 | 默认 | 何时设置 |
+|---|---|---|
+| `OCTO_FLEET_URL` | `--api-url` | **服务拆分部署**——fleet（runtime/bot 端点）地址与主 API 不同。 |
+| `OCTO_SERVER_URL` | `--api-url` | **服务拆分部署**——auth / bot-token 端点地址与主 API 不同。 |
+| `OCTO_SSE_DISABLED` | 未设 | 设为 `1` 关闭 SSE 反向派发，回退到 heartbeat 轮询（回滚开关）。 |
+| `OCTO_SLOW_DETECT_SECONDS` | `60` | 深度 agent 探测的重扫间隔——仅调优用。 |
+
+> daemon 通过上面的 fleet/server 端点够到 matter（任务 ack/拉取），**没有**
+> 单独的 matter URL 变量。（旧版 BotFather 输出里的 `OCTO_MATTER_URL`
+> daemon 并不读取。）
 
 ## 📦 支持的 Agent
 
