@@ -31,7 +31,7 @@ octo-daemon service install
 octo-daemon status
 ```
 
-A single-host deployment needs only `--api-key` and `--api-url` (BotFather's `/daemon` reply gives you both). **Split-service deployments** also set `OCTO_FLEET_URL` / `OCTO_SERVER_URL` (both default to `--api-url`); these and other env vars are documented in the [full README](https://github.com/Mininglamp-OSS/octo-daemon-cli#%EF%B8%8F-environment-variables).
+A single-host deployment needs only `--api-key` and `--api-url` (BotFather's `/daemon` reply gives you both). **Split-service deployments** also set `OCTO_FLEET_URL` / `OCTO_SERVER_URL` (both default to `--api-url`); these and other env vars are documented in the [full README](https://github.com/Mininglamp-OSS/octo-daemon-cli#-environment-variables).
 
 Full documentation: <https://github.com/Mininglamp-OSS/octo-daemon-cli>
 

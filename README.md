@@ -176,9 +176,46 @@ GOOS=linux  GOARCH=amd64 make build
 GOOS=darwin GOARCH=arm64 make build
 ```
 
-Released binaries are built by GoReleaser inside the
-`release-publish.yml` workflow (org-standard gated release flow), which
-then repacks them into the npm packages via `npm-publish.yml`.
+## 🚢 Releasing (maintainers)
+
+Releases are fully automated from a single tag push. Tag a commit that is
+**already merged and green on `main`**, then push the tag:
+
+```bash
+git tag v1.2.3 <commit-on-main>
+git push origin v1.2.3
+```
+
+That is the only manual step. It triggers, in order:
+
+1. **`release-on-tag.yml`** — checks the tag is semver, resolves the
+   successful `CI` run for the tagged commit (fail-fast if the commit has no
+   green CI run on `main`), and dispatches the gated release flow.
+2. **`release-publish.yml`** — re-validates the CI evidence (org-standard
+   gate), creates the GitHub Release, and builds the platform binaries with
+   GoReleaser.
+3. **`npm-publish.yml`** — downloads the release archives, verifies
+   `checksums.txt`, repacks them into the npm packages, and publishes
+   `@mininglamp-oss/octo-daemon` + the four `*-<os>-<cpu>` platform
+   sub-packages.
+
+Version → npm dist-tag: `v1.2.3` → `@latest`; a prerelease (`v1.2.3-rc.1`) →
+`@next`; a backport older than the current `@latest` is published under a
+non-`latest` tag rather than moving `@latest` backwards.
+
+**Prerequisites**
+
+- The tagged commit must have a passing `CI` run on `main` — the evidence gate
+  refuses to publish without it.
+- The `NPM_TOKEN` repo/org secret must be authorized to publish (and create)
+  the `@mininglamp-oss/octo-daemon*` packages.
+
+**Manual / recovery**
+
+`release-publish.yml` and `npm-publish.yml` stay dispatchable from the Actions
+tab (`workflow_dispatch`) for re-runs after a transient failure.
+`npm-publish.yml` defaults to `dry_run=true` for safe plumbing checks and
+skips packages already on the registry, so re-runs are idempotent.
 
 ## 🔗 OCTO Ecosystem
 
