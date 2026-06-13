@@ -61,7 +61,7 @@ platforms (including Windows): build from source (see below).
 Confirm it resolves:
 
 ```bash
-octo-daemon --version
+octo-daemon version
 ```
 
 > **`octo-daemon: command not found`?** npm's global bin dir is not on your

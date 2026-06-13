@@ -58,7 +58,7 @@ linux，x64 / arm64）——没有 postinstall 下载，npm 镜像源
 PATH 软链里——**无需手动改 PATH**。验证：
 
 ```bash
-octo-daemon --version
+octo-daemon version
 ```
 
 > **报 `octo-daemon: command not found`？** 说明 npm 全局 bin 目录不在

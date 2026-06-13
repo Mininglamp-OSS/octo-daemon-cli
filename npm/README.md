@@ -13,7 +13,7 @@ The matching prebuilt Go binary ships inside a platform sub-package (`@mininglam
 The `octo-daemon` command goes on your PATH automatically (npm symlinks it into its global bin dir — no manual PATH editing). Verify:
 
 ```bash
-octo-daemon --version
+octo-daemon version
 ```
 
 If you get `octo-daemon: command not found`, npm's global bin dir is not on your PATH (common with nvm / a custom prefix) — print it with `echo "$(npm config get prefix)/bin"` and add it to `PATH`.
