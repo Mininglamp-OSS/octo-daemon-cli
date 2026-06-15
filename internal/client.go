@@ -284,3 +284,39 @@ func normalizeOS() string {
 		return runtime.GOOS
 	}
 }
+
+// listProvidersResp 对齐 fleet GET /v1/daemon/runtime-providers 响应。
+type listProvidersResp struct {
+	Providers []fleetProvider `json:"providers"`
+}
+
+// ListProviders 拉 fleet active provider 列表(PR-A 端点)。
+// 老 fleet 无此端点会 404 → 返错,调用方保留上次快照 / 编译期 fallback。
+func (c *Client) ListProviders(ctx context.Context) ([]fleetProvider, error) {
+	url := c.baseURL + "/v1/daemon/runtime-providers"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	req.Header.Set("X-Client-Platform", "daemon")
+	req.Header.Set("X-Client-Version", c.cliVersion)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize))
+	if resp.StatusCode == http.StatusForbidden {
+		// 与 postJSON 一致:403 → ForbiddenError,daemon checkForbidden 退出。
+		return nil, &ForbiddenError{Message: string(body)}
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("list providers status %d: %s", resp.StatusCode, string(body))
+	}
+	var out listProvidersResp
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, fmt.Errorf("unmarshal providers: %w", err)
+	}
+	return out.Providers, nil
+}
