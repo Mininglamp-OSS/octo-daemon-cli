@@ -44,13 +44,6 @@ func GetDeviceInfo() string {
 	return string(data)
 }
 
-var providers = map[string]string{
-	"claude":   "claude",
-	"codex":    "codex",
-	"openclaw": "openclaw",
-	"hermes":   "hermes",
-}
-
 // DetectRuntimesFast does quick detection only (LookPath + version + gateway port probe).
 // Returns immediately without waiting for slow operations like `openclaw agents list`.
 func DetectRuntimesFast() []RuntimeInfo {
@@ -59,9 +52,10 @@ func DetectRuntimesFast() []RuntimeInfo {
 		found bool
 	}
 
-	ch := make(chan result, len(providers))
+	provs := currentProviders()
+	ch := make(chan result, len(provs))
 
-	for provider, binary := range providers {
+	for provider, binary := range provs {
 		go func(provider, binary string) {
 			binPath, err := exec.LookPath(binary)
 			if err != nil {
@@ -104,7 +98,7 @@ func DetectRuntimesFast() []RuntimeInfo {
 	}
 
 	var runtimes []RuntimeInfo
-	for range providers {
+	for range provs {
 		r := <-ch
 		if r.found {
 			runtimes = append(runtimes, r.rt)
