@@ -26,7 +26,6 @@ import (
 // channel 也是 per-runtime, key = runtime_id.
 //
 // 事件类型 (跟 fleet sse.go eventType* 常量对齐):
-//   - ping            → call client.ReportPing (复用现有 handler)
 //   - upgrade         → call d.handleUpgrade
 //   - bot_provision   → fetch GET /v1/daemon/bot-provisions/:id → handleBotProvision
 //   - managed_bots_changed → apply delta (idempotent, 不走 dedup)
@@ -38,7 +37,6 @@ import (
 //     - 防 daemon 重启重做 (file atomic write tmp + rename, crash-safe)
 //     - dedup key = (event_type, source_pk) 不用 event_log id, 因为
 //       同 source 可能来 multiple runtimes 各自的 event_log row
-//       (e.g. daemon-level ping 推到任一 runtime, fleet 端可能不同 id)
 //     - lazy prune on read: 读 file 时清 ts < now-24h, 不开后台 ticker
 //
 //   A3 bot_provision secret fetch:
@@ -87,7 +85,6 @@ type sseEvent struct {
 // + R4 round 4 inflight/done 拆分):
 //
 //	{
-//	  "ping": [{"id":"ping_42","ts":1717891200000,"phase":"done"}, ...],
 //	  "upgrade": [...],
 //	  "bot_provision": [...],
 //	  "last_event_id_per_runtime": {"42": 123, "43": 456}
@@ -147,7 +144,6 @@ type dedupEntry struct {
 // dedupFile 是落盘 JSON schema (用 string-keyed map 因为 JSON object
 // key 必须是 string; load/persist 时转 int64 ↔ string).
 type dedupFile struct {
-	Ping             []dedupEntry     `json:"ping,omitempty"`
 	Upgrade          []dedupEntry     `json:"upgrade,omitempty"`
 	BotProvision     []dedupEntry     `json:"bot_provision,omitempty"`
 	LastEventIDPerRT map[string]int64 `json:"last_event_id_per_runtime,omitempty"`
@@ -182,7 +178,6 @@ func (d *dedupState) load() error {
 		// 旧 map[string][]dedupEntry. 如果两个 schema 都失败 = 真损坏.
 		var raw map[string][]dedupEntry
 		if err2 := json.Unmarshal(data, &raw); err2 == nil {
-			df.Ping = raw[sseEventPing]
 			df.Upgrade = raw[sseEventUpgrade]
 			df.BotProvision = raw[sseEventBotProvision]
 		} else {
@@ -226,7 +221,6 @@ func (d *dedupState) load() error {
 			d.phases[et] = phaseBucket
 		}
 	}
-	loadBucket(sseEventPing, df.Ping)
 	loadBucket(sseEventUpgrade, df.Upgrade)
 	loadBucket(sseEventBotProvision, df.BotProvision)
 
@@ -460,9 +454,6 @@ func (d *dedupState) snapshotLocked() dedupFile {
 		return list
 	}
 	df := dedupFile{}
-	if b := d.entries[sseEventPing]; len(b) > 0 {
-		df.Ping = mkList(sseEventPing, b)
-	}
 	if b := d.entries[sseEventUpgrade]; len(b) > 0 {
 		df.Upgrade = mkList(sseEventUpgrade, b)
 	}
