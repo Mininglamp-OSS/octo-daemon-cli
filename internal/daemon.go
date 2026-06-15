@@ -749,15 +749,6 @@ func (d *Daemon) sendHeartbeats(ctx context.Context) {
 			continue
 		}
 		anyHeartbeatOK = true
-		// Handle pending ping request from server.
-		// B1 (caster review final from codex): claim dedup 跟 SSE path 共享, 防
-		// Phase A 双跑期 SSE 收到同 event 重复处理 (e.g. SSE 中 reconnect 时
-		// heartbeat 抢先 → SSE replay 再收 → 不应再 ReportPing). sseClient
-		// 可能 nil (OCTO_SSE_DISABLED), 那种情况 heartbeat 是唯一路径, 不需要
-		// dedup.
-		if resp.PendingPing != nil {
-			go d.runHeartbeatPing(ctx, resp.PendingPing)
-		}
 		// Handle pending upgrade task from server
 		if resp.PendingUpgrade != nil {
 			go d.runHeartbeatUpgrade(ctx, resp.PendingUpgrade)

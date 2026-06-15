@@ -778,49 +778,6 @@ func (c *SSEClient) dispatch(
 	}
 
 	switch ev.Type {
-	case sseEventPing:
-		var p struct {
-			PingID string `json:"ping_id"`
-		}
-		if err := json.Unmarshal([]byte(ev.Data), &p); err != nil {
-			log.Printf("[WARN] SSE ping (runtime=%d): bad payload: %v", runtimeID, err)
-			advance() // MINOR (codex r4): 毒消息也 advance, 防 cursor 卡死反复 replay 同坏帧
-			return nil
-		}
-		if p.PingID == "" {
-			log.Printf("[WARN] SSE ping (runtime=%d): empty ping_id", runtimeID)
-			advance()
-			return nil
-		}
-		claimed, alreadyDone, cerr := c.dedup.claim(ev.Type, p.PingID)
-		if cerr != nil {
-			log.Printf("[WARN] SSE ping (runtime=%d id=%s) claim persist failed: %v", runtimeID, p.PingID, cerr)
-			return cerr // dedup 写盘失败, 断流重连
-		}
-		if alreadyDone {
-			advance() // 已成功处理过, 安全推进
-			return nil
-		}
-		if !claimed {
-			// R4 (codex r4 BLOCKER): inflight elsewhere — 不能 advance,
-			// 必须断流让 owner 完成. 重连后 owner 已 markDone (advance) 或
-			// unclaim (重新 claim 处理).
-			return fmt.Errorf("ping %s in-flight by another path, reconnect to retry", p.PingID)
-		}
-		if err := c.apiClient.ReportPing(ctx, p.PingID); err != nil {
-			log.Printf("[WARN] SSE ping (runtime=%d id=%s) report failed: %v — unclaim + reconnect", runtimeID, p.PingID, err)
-			if uerr := c.dedup.unclaim(ev.Type, p.PingID); uerr != nil {
-				log.Printf("[WARN] SSE ping (runtime=%d id=%s) unclaim: %v", runtimeID, p.PingID, uerr)
-			}
-			return err
-		}
-		log.Printf("[INFO] SSE ping (runtime=%d) reported (id=%s)", runtimeID, p.PingID)
-		if merr := c.dedup.markDone(ev.Type, p.PingID); merr != nil {
-			log.Printf("[WARN] SSE ping (runtime=%d id=%s) markDone: %v", runtimeID, p.PingID, merr)
-		}
-		advance()
-		return nil
-
 	case sseEventUpgrade:
 		var u PendingUpgrade
 		if err := json.Unmarshal([]byte(ev.Data), &u); err != nil {
