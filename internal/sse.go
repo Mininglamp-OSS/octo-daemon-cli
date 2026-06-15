@@ -64,7 +64,6 @@ const (
 
 	// SSE 事件类型字符串 — 必须跟 fleet modules/runtime/sse.go 的
 	// eventType* 常量字面值一致.
-	sseEventPing               = "ping"
 	sseEventUpgrade            = "upgrade"
 	sseEventBotProvision       = "bot_provision"
 	sseEventManagedBotsChanged = "managed_bots_changed"
