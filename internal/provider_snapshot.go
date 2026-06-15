@@ -42,13 +42,14 @@ func init() {
 }
 
 // resetProvidersForTest 把快照重置为编译期 fallback(init + 测试用)。
+// 快照与序号在同一 refreshMu 临界区内重置,与 setProvidersIfNewer 保持一致。
 func resetProvidersForTest() {
 	cp := make(map[string]string, len(fallbackProviders))
 	for k, v := range fallbackProviders {
 		cp[k] = v
 	}
-	providerSnapshot.Store(cp)
 	refreshMu.Lock()
+	providerSnapshot.Store(cp)
 	lastWrittenSeq = 0
 	providerRefreshSeq.Store(0)
 	refreshMu.Unlock()
