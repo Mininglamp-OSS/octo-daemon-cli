@@ -2,6 +2,7 @@ package internal
 
 import (
 	"log"
+	"sync"
 	"sync/atomic"
 )
 
@@ -20,9 +21,14 @@ type fleetProvider struct {
 var providerSnapshot atomic.Value // map[string]string
 
 // providerRefreshSeq 是刷新版本门禁:多个挂点并发 refreshProviders 时,各自
-// 在发请求前 Add(1) 拿一个递增序号,只有"最新开始"的那次刷新允许写快照,
-// 防止较早发出但较晚返回的响应覆盖更新的快照(codex MAJOR:stale 覆盖)。
+// 在发请求前 Add(1) 拿一个递增序号。写快照时在 refreshMu 临界区内比较序号,
+// 只有"最新开始"的那次刷新允许写,避免较早发出但较晚返回的响应覆盖更新的快照。
 var providerRefreshSeq atomic.Uint64
+
+// refreshMu 保护 setProvidersIfNewer 的"比较序号 + 写快照"为原子操作。
+// 否则 Load 检查与 Store 之间会有 TOCTOU 窗口:seq2 通过检查 → seq3 写入 →
+// seq2 才 Store 覆盖掉 seq3。
+var refreshMu sync.Mutex
 
 // fallbackProviders 是编译期兜底:fleet 不可达 / 老 fleet 无端点时使用。
 // 本期只放行 claude + openclaw(去掉 codex/hermes)。
@@ -42,6 +48,10 @@ func resetProvidersForTest() {
 		cp[k] = v
 	}
 	providerSnapshot.Store(cp)
+	refreshMu.Lock()
+	lastWrittenSeq = 0
+	providerRefreshSeq.Store(0)
+	refreshMu.Unlock()
 }
 
 // currentProviders 返回当前快照的防御性拷贝(调用方改返回值不污染内部)。
@@ -63,18 +73,25 @@ func setProviders(m map[string]string) {
 	providerSnapshot.Store(cp)
 }
 
+// lastWrittenSeq 是已写入快照的最大刷新序号(refreshMu 保护)。
+var lastWrittenSeq uint64
+
 // nextRefreshSeq 在每次 refresh 发请求前调用,返回本次刷新的版本号。
 func nextRefreshSeq() uint64 {
 	return providerRefreshSeq.Add(1)
 }
 
-// setProvidersIfNewer 仅当 mySeq 仍是已观察到的最大序号时才写快照。并发刷新下
-// 较早开始(mySeq 较小)但较晚返回的响应会被丢弃,避免覆盖更新的快照。
+// setProvidersIfNewer 在 refreshMu 临界区内比较序号:仅当 mySeq 大于已写入的
+// 最大序号时才写快照,并推进 lastWrittenSeq。并发刷新下,较早开始(mySeq 较小)
+// 但较晚返回的响应会被丢弃,保证写入按 seq 单调推进、不被旧响应覆盖。
 // 返回是否实际写入。
 func setProvidersIfNewer(m map[string]string, mySeq uint64) bool {
-	if mySeq < providerRefreshSeq.Load() {
-		return false // 已有更新的刷新开始,放弃写入
+	refreshMu.Lock()
+	defer refreshMu.Unlock()
+	if mySeq <= lastWrittenSeq {
+		return false // 已有同序或更新的刷新写过,放弃
 	}
+	lastWrittenSeq = mySeq
 	setProviders(m)
 	return true
 }

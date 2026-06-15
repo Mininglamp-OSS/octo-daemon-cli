@@ -120,6 +120,38 @@ func TestSetProvidersIfNewer_StaleResponseDropped(t *testing.T) {
 	}
 }
 
+// TestSetProvidersIfNewer_ConcurrentInterleaving 用 barrier 复现真实并发交错:
+// 旧 seq 通过检查后、写入前,被新 seq 插队写入,旧 seq 不得覆盖新 seq。
+// refreshMu 把"比较+写"做成原子,所以无论调度顺序,最终快照都属于最大 seq。
+func TestSetProvidersIfNewer_ConcurrentInterleaving(t *testing.T) {
+	t.Cleanup(resetProvidersForTest)
+	resetProvidersForTest()
+	const n = 100
+	seqs := make([]uint64, n)
+	for i := range seqs {
+		seqs[i] = nextRefreshSeq()
+	}
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start // 同时起跑,最大化交错
+			setProvidersIfNewer(map[string]string{"p": string(rune('a' + i%26))}, seqs[i])
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	// 最大 seq 是 seqs[n-1];最终 lastWrittenSeq 必须 == 它,快照属于它。
+	if !setProvidersIfNewer(map[string]string{"final": "x"}, seqs[n-1]+1) {
+		t.Fatal("a strictly greater seq must always win")
+	}
+	if got := currentProviders(); got["final"] != "x" {
+		t.Errorf("expected final write to win, got %v", got)
+	}
+}
+
 func TestCurrentProviders_ConcurrentSafe(t *testing.T) {
 	t.Cleanup(resetProvidersForTest)
 	resetProvidersForTest()
