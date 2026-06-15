@@ -70,16 +70,13 @@ func NewDaemon(cfg Config) (*Daemon, error) {
 		log.Printf("[INFO] daemon api_key mode enabled (fleet=%s server=%s)", fleetURL, serverURL)
 	}
 
-	// Build the runtime-adapter registry. All four kinds are registered; only
-	// openclaw and hermes are implemented today, claude/codex are skeletons
-	// returning ErrUnsupported. Commands carry runtime_kind (fleet populates
-	// it); an empty kind falls back to openclaw via Registry.Get("").
+	// Build the runtime-adapter registry. openclaw is implemented today; claude
+	// is a skeleton returning ErrUnsupported. Commands carry runtime_kind (fleet
+	// populates it); an empty kind falls back to openclaw via Registry.Get("").
 	reg := adapter.NewRegistry()
 	for _, a := range []adapter.RuntimeAdapter{
 		adapter.NewOpenclawAdapter(nil),
 		adapter.NewClaudeAdapter(nil),
-		adapter.NewCodexAdapter(nil),
-		adapter.NewHermesAdapter(nil),
 	} {
 		if err := reg.Register(a); err != nil {
 			return nil, fmt.Errorf("register runtime adapter: %w", err)

@@ -170,7 +170,7 @@ type PendingBotTask struct {
 	BotUID     string `json:"bot_uid"`
 	ClaimToken string `json:"claim_token"`
 	// RuntimeKind selects which runtime adapter executes this task
-	// (openclaw|claude|codex|hermes). Empty on pre-runtime-kind fleet builds,
+	// (openclaw|claude). Empty on pre-runtime-kind fleet builds,
 	// where Registry.Get normalizes it to openclaw for backward compatibility.
 	RuntimeKind string `json:"runtime_kind"`
 }

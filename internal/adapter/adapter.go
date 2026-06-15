@@ -1,5 +1,5 @@
 // Package adapter defines the RuntimeAdapter abstraction that lets the daemon
-// drive multiple agent runtimes (openclaw, claude, codex, hermes) through one
+// drive multiple agent runtimes (openclaw, claude) through one
 // interface for the two daemon-owned lifecycles: bot provision/deprovision and
 // matter task execution. IM private/group chat is each runtime's own concern
 // and is intentionally absent from this interface.
