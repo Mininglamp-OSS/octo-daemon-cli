@@ -229,9 +229,9 @@ func TestDispatch_HistoricalPingSkippedAndAdvances(t *testing.T) {
 	}
 
 	// 不调任何 handler.
-	if bp.calls.Load() != 0 || up.calls.Load() != 0 || mb.added.Load() != 0 {
+	if bp.calls.Load() != 0 || up.calls.Load() != 0 || mb.calls.Load() != 0 {
 		t.Errorf("historical ping 不该触发任何 handler, bp=%d up=%d mb=%d",
-			bp.calls.Load(), up.calls.Load(), mb.added.Load())
+			bp.calls.Load(), up.calls.Load(), mb.calls.Load())
 	}
 	// 被 default 当 unknown event advance — cursor 推进到 123, 不卡.
 	if got := d.lastEventID(7); got != 123 {
@@ -969,11 +969,13 @@ type mockMB struct {
 	mu      sync.Mutex
 	added   atomic.Int64
 	removed atomic.Int64
+	calls   atomic.Int64
 }
 
 func (m *mockMB) ApplyManagedBotsDelta(added, removed []string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.calls.Add(1)
 	m.added.Add(int64(len(added)))
 	m.removed.Add(int64(len(removed)))
 }
