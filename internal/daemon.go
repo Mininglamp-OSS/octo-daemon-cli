@@ -467,6 +467,7 @@ func (d *Daemon) addDeviceName(runtimes []RuntimeInfo) {
 // fastDetectAndRegister does quick detection + immediate register.
 // Returns the generation after successful register.
 func (d *Daemon) fastDetectAndRegister(ctx context.Context) (uint64, error) {
+	d.refreshProviders(ctx)
 	runtimes := DetectRuntimesFast()
 	d.addDeviceName(runtimes)
 
@@ -491,6 +492,7 @@ func (d *Daemon) fastDetectAndRegister(ctx context.Context) (uint64, error) {
 // sees the new plugin version in metadata.plugins immediately (required by the
 // close-out path in modules/runtime/api.go::completeUpgradeIfMatchedWithRuntime).
 func (d *Daemon) enrichDetectAndRegister(ctx context.Context) (uint64, error) {
+	d.refreshProviders(ctx)
 	runtimes := DetectRuntimesFast()
 	d.addDeviceName(runtimes)
 	runtimes = EnrichOpenclawRuntime(runtimes)
@@ -511,7 +513,26 @@ func (d *Daemon) enrichDetectAndRegister(ctx context.Context) (uint64, error) {
 	return gen, nil
 }
 
+// refreshProviders 从 fleet 拉 active provider 列表刷新本地快照。
+//   - 403:API key 被撤销 → checkForbidden 触发退出(不 fallback)。
+//   - 404 / 网络错误:老 fleet 无端点或抖动 → 保留上次快照。
+//   - 200(含空列表):以 fleet 为权威整体替换;空列表清空快照
+//     (fleet 把全部 provider disable 的合法语义,不能退化成旧快照)。
+func (d *Daemon) refreshProviders(ctx context.Context) {
+	rows, err := d.client.ListProviders(ctx)
+	if err != nil {
+		if d.checkForbidden(err) {
+			return // 已 requestExit,Run() 会带 ExitError 退出
+		}
+		log.Printf("[INFO] refresh providers skipped (keep last snapshot): %v", err)
+		return
+	}
+	setProviders(providersFromFleet(rows)) // 200:权威替换,空列表 → 清空
+	log.Printf("[INFO] provider snapshot refreshed: %d active", len(rows))
+}
+
 func (d *Daemon) register(ctx context.Context) error {
+	d.refreshProviders(ctx)
 	runtimes := DetectRuntimesFast()
 	d.addDeviceName(runtimes)
 
@@ -604,6 +625,7 @@ func (d *Daemon) runSlowDetect(ctx context.Context) {
 	baseGen := d.generation
 	d.mu.Unlock()
 
+	d.refreshProviders(ctx)
 	current := DetectRuntimesFast()
 	d.addDeviceName(current)
 	current = EnrichOpenclawRuntime(current)
