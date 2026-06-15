@@ -27,7 +27,7 @@
 
 # 🛰 Octo Daemon CLI
 
-> **The local agent runtime reporter** for the OCTO platform. Detects installed AI agent CLIs (Claude Code, Codex, OpenClaw, Hermes), reports status, agent bindings and plugin versions, supports remote one-click upgrades.
+> **The local agent runtime reporter** for the OCTO platform. Detects installed AI agent CLIs (Claude Code, OpenClaw), reports status, agent bindings and plugin versions, supports remote one-click upgrades.
 
 `octo-daemon` is the small Go binary that lives on every developer
 machine and server in your fleet. It runs as a `launchd` / `systemd`
@@ -39,8 +39,8 @@ upgrades.
 
 ## 🌟 Why Octo Daemon
 
-- **Zero-config inventory.** Drop the binary on a box, run `octo-daemon service install`, and every Claude / Codex / OpenClaw / Hermes install on that machine appears on the OCTO Runtimes page within seconds.
-- **Remote upgrades, no SSH.** Daemon, OpenClaw plugins, and provider CLIs (Claude, Codex, Hermes, OpenClaw itself) can all be upgraded from the OCTO web UI — atomic claim on the server, version-pinned downloads, register-time close-out.
+- **Zero-config inventory.** Drop the binary on a box, run `octo-daemon service install`, and every Claude / OpenClaw install on that machine appears on the OCTO Runtimes page within seconds.
+- **Remote upgrades, no SSH.** Daemon, OpenClaw plugins, and provider CLIs (Claude, OpenClaw itself) can all be upgraded from the OCTO web UI — atomic claim on the server, version-pinned downloads, register-time close-out.
 - **Self-healing by design.** Two-stage detection (fast register + async deep probe), 60s rescan, 30s server-side sweeper, exit-code-driven service respawn. A crashed daemon is back online in 10 seconds; an evicted API key shuts itself down cleanly.
 
 ## 🚀 Quickstart
@@ -89,9 +89,7 @@ octo-daemon service status    # service install state + last log line
 
 | Agent | Probe | Status rule | Extra data |
 |-------|-------|-------------|------------|
-| Claude Code | `claude --version` | Installed = online | — |
-| Codex | `codex --version` | Installed = online | — |
-| Hermes | `hermes --version` | Installed = online | — |
+| Claude Code | `claude --version` + cc-channel-octo gateway probe | Gateway running = online | — |
 | OpenClaw | `openclaw --version` + gateway port probe | Gateway listening = online | Agent list, bindings, plugins |
 
 ## 🧬 How it works

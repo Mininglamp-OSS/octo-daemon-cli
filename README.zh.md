@@ -27,7 +27,7 @@
 
 # 🛰 Octo Daemon CLI（简体中文）
 
-> **OCTO 平台的本机 Agent Runtime 上报守护进程**。自动检测本机已安装的 AI Agent CLI（Claude Code、Codex、OpenClaw、Hermes），上报版本、agent 绑定和插件状态，支持远程一键升级。
+> **OCTO 平台的本机 Agent Runtime 上报守护进程**。自动检测本机已安装的 AI Agent CLI（Claude Code、OpenClaw），上报版本、agent 绑定和插件状态，支持远程一键升级。
 
 `octo-daemon` 是一个轻量级 Go 二进制，安装在团队成员的开发机或
 服务器上，以 `launchd` / `systemd` 服务方式运行，自动探测本机 AI
@@ -38,8 +38,8 @@ Agent，并把实时清单上报给
 
 ## 🌟 为什么用 Octo Daemon
 
-- **零配置清单。** 把二进制放到机器上，执行 `octo-daemon service install`，本机上所有 Claude / Codex / OpenClaw / Hermes 都会在数秒内出现在 OCTO Runtimes 页面。
-- **远程升级，无需 SSH。** Daemon 本身、OpenClaw 插件以及四个 provider CLI（Claude / Codex / Hermes / OpenClaw）都可以从 OCTO Web 一键升级 —— 服务端 atomic claim、版本 pin、register 时自动关单。
+- **零配置清单。** 把二进制放到机器上，执行 `octo-daemon service install`，本机上所有 Claude / OpenClaw 都会在数秒内出现在 OCTO Runtimes 页面。
+- **远程升级，无需 SSH。** Daemon 本身、OpenClaw 插件以及 provider CLI（Claude / OpenClaw）都可以从 OCTO Web 一键升级 —— 服务端 atomic claim、版本 pin、register 时自动关单。
 - **天然自愈。** 两阶段探测（快注册 + 异步深探）、60s 周期重扫、服务端 30s sweeper、exit-code 驱动 service 重启。崩溃 10 秒内回来；API key 被踢则干净退出不无限重启。
 
 ## 🚀 快速开始
@@ -86,9 +86,7 @@ octo-daemon service status    # 服务安装状态 + 最后一条日志
 
 | Agent | 检测方式 | 状态判定 | 附加信息 |
 |-------|---------|---------|---------|
-| Claude Code | `claude --version` | 安装即在线 | — |
-| Codex | `codex --version` | 安装即在线 | — |
-| Hermes | `hermes --version` | 安装即在线 | — |
+| Claude Code | `claude --version` + cc-channel-octo gateway 探测 | Gateway 运行 = 在线 | — |
 | OpenClaw | `openclaw --version` + gateway 端口探测 | Gateway 在监听 = 在线 | Agent 列表、bindings、插件 |
 
 ## 🧬 工作原理
