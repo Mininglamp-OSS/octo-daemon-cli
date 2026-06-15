@@ -49,6 +49,16 @@ func (r *Registry) All() []RuntimeAdapter {
 	return out
 }
 
+// Kinds returns the set of registered runtime_kind strings. The daemon uses it
+// as the authoritative allowlist when filtering provider lists pushed by fleet.
+func (r *Registry) Kinds() map[string]struct{} {
+	out := make(map[string]struct{}, len(r.adapters))
+	for k := range r.adapters {
+		out[k] = struct{}{}
+	}
+	return out
+}
+
 // normalizeRuntimeKind defaults an empty kind to openclaw.
 func normalizeRuntimeKind(kind string) string {
 	if kind == "" {

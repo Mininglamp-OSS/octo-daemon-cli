@@ -70,9 +70,10 @@ func NewDaemon(cfg Config) (*Daemon, error) {
 		log.Printf("[INFO] daemon api_key mode enabled (fleet=%s server=%s)", fleetURL, serverURL)
 	}
 
-	// Build the runtime-adapter registry. openclaw is implemented today; claude
-	// is a skeleton returning ErrUnsupported. Commands carry runtime_kind (fleet
-	// populates it); an empty kind falls back to openclaw via Registry.Get("").
+	// Build the runtime-adapter registry. openclaw is fully implemented; claude
+	// implements Detect/Health/Provision (Deprovision/RunTask still return
+	// ErrUnsupported). Commands carry runtime_kind (fleet populates it); an empty
+	// kind falls back to openclaw via Registry.Get("").
 	reg := adapter.NewRegistry()
 	for _, a := range []adapter.RuntimeAdapter{
 		adapter.NewOpenclawAdapter(nil),
@@ -464,7 +465,9 @@ func (d *Daemon) addDeviceName(runtimes []RuntimeInfo) {
 // fastDetectAndRegister does quick detection + immediate register.
 // Returns the generation after successful register.
 func (d *Daemon) fastDetectAndRegister(ctx context.Context) (uint64, error) {
-	d.refreshProviders(ctx)
+	if err := d.refreshProviders(ctx); err != nil {
+		return 0, err // 403 终态:不再 detect/register
+	}
 	runtimes := DetectRuntimesFast()
 	d.addDeviceName(runtimes)
 
@@ -489,7 +492,9 @@ func (d *Daemon) fastDetectAndRegister(ctx context.Context) (uint64, error) {
 // sees the new plugin version in metadata.plugins immediately (required by the
 // close-out path in modules/runtime/api.go::completeUpgradeIfMatchedWithRuntime).
 func (d *Daemon) enrichDetectAndRegister(ctx context.Context) (uint64, error) {
-	d.refreshProviders(ctx)
+	if err := d.refreshProviders(ctx); err != nil {
+		return 0, err // 403 终态:不再 detect/register(本路径可能用 background ctx)
+	}
 	runtimes := DetectRuntimesFast()
 	d.addDeviceName(runtimes)
 	runtimes = EnrichOpenclawRuntime(runtimes)
@@ -511,25 +516,35 @@ func (d *Daemon) enrichDetectAndRegister(ctx context.Context) (uint64, error) {
 }
 
 // refreshProviders 从 fleet 拉 active provider 列表刷新本地快照。
-//   - 403:API key 被撤销 → checkForbidden 触发退出(不 fallback)。
-//   - 404 / 网络错误:老 fleet 无端点或抖动 → 保留上次快照。
-//   - 200(含空列表):以 fleet 为权威整体替换;空列表清空快照
-//     (fleet 把全部 provider disable 的合法语义,不能退化成旧快照)。
-func (d *Daemon) refreshProviders(ctx context.Context) {
+//   - 403:API key 被撤销 → checkForbidden 触发退出;返回 err,挂点应中止
+//     后续 detect/register(尤其 handleComponentUpgrade 用脱离 daemon ctx 的
+//     background context,不靠 ctx cancel 兜底)。
+//   - 404 / 网络错误:老 fleet 无端点或抖动 → 保留上次快照,返回 nil(非终态)。
+//   - 200(含空列表):以 fleet 为权威整体替换(按本地支持集过滤);空列表清空
+//     快照(fleet 把全部 provider disable 的合法语义,不能退化成旧快照)。
+//
+// 并发刷新用版本门禁:发请求前拿递增序号,只有最新开始的刷新允许写快照,
+// 避免较早发出但较晚返回的响应覆盖更新的快照。
+func (d *Daemon) refreshProviders(ctx context.Context) error {
+	mySeq := nextRefreshSeq()
 	rows, err := d.client.ListProviders(ctx)
 	if err != nil {
 		if d.checkForbidden(err) {
-			return // 已 requestExit,Run() 会带 ExitError 退出
+			return err // 已 requestExit,挂点据此中止后续 detect/register
 		}
 		log.Printf("[INFO] refresh providers skipped (keep last snapshot): %v", err)
-		return
+		return nil
 	}
-	setProviders(providersFromFleet(rows)) // 200:权威替换,空列表 → 清空
-	log.Printf("[INFO] provider snapshot refreshed: %d active", len(rows))
+	if setProvidersIfNewer(providersFromFleet(rows, d.registry.Kinds()), mySeq) {
+		log.Printf("[INFO] provider snapshot refreshed: %d active", len(rows))
+	}
+	return nil
 }
 
 func (d *Daemon) register(ctx context.Context) error {
-	d.refreshProviders(ctx)
+	if err := d.refreshProviders(ctx); err != nil {
+		return err // 403 终态:不再 detect/register
+	}
 	runtimes := DetectRuntimesFast()
 	d.addDeviceName(runtimes)
 
@@ -622,7 +637,9 @@ func (d *Daemon) runSlowDetect(ctx context.Context) {
 	baseGen := d.generation
 	d.mu.Unlock()
 
-	d.refreshProviders(ctx)
+	if err := d.refreshProviders(ctx); err != nil {
+		return // 403 终态:已 requestExit,不再 detect/register
+	}
 	current := DetectRuntimesFast()
 	d.addDeviceName(current)
 	current = EnrichOpenclawRuntime(current)
