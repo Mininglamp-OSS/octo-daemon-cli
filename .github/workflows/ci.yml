@@ -89,6 +89,43 @@ jobs:
       - name: Packaging tests
         run: node --test npm/scripts/prepare-packages.test.js
 
+      # Guards the exact failure that broke the first v0.0.1 publish: npm
+      # parses a bare relative dir like `build/octo-daemon-x` as a GitHub
+      # user/repo shorthand and runs `git ls-remote`, not a local publish.
+      # npm-publish.yml uses the `./`-prefixed form; this asserts that form
+      # works AND that the bare form is still misresolved, so a regression
+      # that drops the `./` is caught here at PR time.
+      - name: Publish invocation smoke test
+        run: |
+          set -euo pipefail
+          mkdir -p smoke/octo-daemon-pkg
+          # printf, not a heredoc: a heredoc closing delimiter inside a YAML
+          # block scalar is easy to misread (the indentation is stripped by
+          # YAML before bash sees it, but reviewers and linters trip on it).
+          # One obvious line removes the footgun.
+          printf '%s\n' '{ "name": "@mininglamp-oss/octo-daemon-smoke", "version": "0.0.0-smoke", "files": ["index.js"] }' \
+            > smoke/octo-daemon-pkg/package.json
+          printf 'module.exports = {}\n' > smoke/octo-daemon-pkg/index.js
+
+          # Fix form: ./-prefixed relative path publishes (dry-run) cleanly.
+          npm publish --dry-run --ignore-scripts ./smoke/octo-daemon-pkg
+
+          # Bug form: bare `dir/subdir` is github:dir/subdir → npm shells out
+          # to `git ls-remote`. Capture the output and require that exact
+          # signature: a bare non-zero exit is not enough (a transient
+          # network/registry error would also satisfy it, and a future npm
+          # that parses the path correctly would publish — both must fail the
+          # test for the RIGHT reason, not pass it). timeout +
+          # GIT_TERMINAL_PROMPT=0 keep a credential prompt from hanging.
+          bare_out=$(GIT_TERMINAL_PROMPT=0 timeout 60 \
+            npm publish --dry-run --ignore-scripts smoke/octo-daemon-pkg 2>&1 || true)
+          if ! printf '%s' "$bare_out" | grep -q 'ls-remote'; then
+            echo "::error::bare path did not misresolve as a git shorthand (no 'ls-remote' in output) — npm path-spec behavior changed or the publish failed for an unrelated reason; review the smoke test premise"
+            printf '%s\n' "$bare_out"
+            exit 1
+          fi
+          echo "publish invocation smoke test OK"
+
   vet:
     name: Vet
     runs-on: ubuntu-latest

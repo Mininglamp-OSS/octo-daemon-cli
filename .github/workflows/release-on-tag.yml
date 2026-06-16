@@ -1,0 +1,120 @@
+# One-action release: push a `v*` tag and the whole pipeline runs.
+#
+#   git push origin v1.2.3
+#     → this workflow resolves the green CI run for the tagged commit
+#     → dispatches release-publish.yml (org-gated: CI evidence + GitHub
+#       Release + GoReleaser artifacts)
+#     → which chains to npm-publish.yml (download, verify, repack, publish)
+#
+# Why resolve a CI run id at all: release-publish.yml delegates to the org
+# reusable workflow, whose `validate_run_id` input is REQUIRED — every
+# publish must cite a successful CI run on the tagged commit as evidence.
+# This workflow auto-resolves that id instead of asking a human to find it;
+# it does NOT remove or weaken the gate.
+#
+# Evidence comes from main, not from this tag: a tag push does NOT trigger
+# ci.yml (that workflow is branch-scoped to main + PRs), so the run we cite
+# is the one that ran when the commit landed on main. Hence the discipline:
+# tag a commit that is already merged and green on main. If no green ci.yml
+# run exists for the commit, we FAIL FAST with that instruction — we do not
+# wait for CI to run. The short retry below only absorbs GitHub API
+# read-after-write lag (the run is green but the list endpoint is briefly
+# stale), never CI execution time.
+name: Release on Tag
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions: {}
+
+# Serialize per tag: a rapid re-push of the same tag must not fan out two
+# parallel dispatches of release-publish. Keyed on the tag, not cancel-in-
+# progress, so an in-flight release for this tag runs to completion.
+concurrency:
+  group: release-on-tag-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  dispatch:
+    name: Resolve CI evidence and dispatch release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: write # dispatch release-publish.yml
+      contents: read # read the tag ref / commit
+    steps:
+      - name: Resolve tag, commit, and green CI run
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          TAG_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          # Strict v-prefixed semver — same shape release-publish.yml and
+          # npm-publish.yml enforce. Reject anything else before dispatching.
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Tag '$TAG' is not v-prefixed semver (vMAJOR.MINOR.PATCH[-prerelease]). Not releasing."
+            exit 1
+          fi
+
+          # github.sha on a tag push is the commit the tag points to
+          # (lightweight) or the commit a tag object dereferences to
+          # (annotated) — GitHub resolves it for us, so no manual deref.
+          echo "Tag $TAG → commit $TAG_SHA"
+
+          # Find a successful ci.yml run for this exact commit. Match the
+          # immutable workflow path (not the editable display name) and a
+          # trusted trigger event, mirroring npm-publish.yml's gate.
+          run_id=""
+          for attempt in 1 2 3 4 5; do
+            run_id=$(gh api \
+              "repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${TAG_SHA}&status=success&per_page=100" \
+              --jq '[.workflow_runs[]
+                     | select(.path == ".github/workflows/ci.yml")
+                     | select(.event == "push" or .event == "merge_group")]
+                    | sort_by(.id) | last | .id // empty')
+            if [ -n "$run_id" ]; then
+              break
+            fi
+            # Not a CI wait — only GitHub API read-after-write lag. If the
+            # commit truly has no green CI run, all attempts come back empty
+            # and we fail fast below.
+            echo "No green ci.yml run indexed yet for ${TAG_SHA} (attempt ${attempt}/5); retrying in 6s…"
+            sleep 6
+          done
+
+          if [ -z "$run_id" ]; then
+            echo "::error::No successful ci.yml (push/merge_group) run found for commit ${TAG_SHA} (tag ${TAG}). Tag a commit that has already merged and passed CI on main, then re-push the tag."
+            exit 1
+          fi
+
+          echo "Resolved CI evidence run: ${run_id}"
+          {
+            echo "tag=${TAG}"
+            echo "run_id=${run_id}"
+          } >> "$GITHUB_OUTPUT"
+
+      # Dispatch the existing gated release workflow with the resolved
+      # evidence. release-publish.yml re-validates the run id (so this is
+      # defense in depth, not a bypass) and chains to npm-publish.yml.
+      - name: Dispatch release-publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.resolve.outputs.tag }}
+          RUN_ID: ${{ steps.resolve.outputs.run_id }}
+        run: |
+          set -euo pipefail
+          # -R is REQUIRED: this job has no actions/checkout, so there is no
+          # local git repo for `gh workflow run` to infer the target from —
+          # without it gh fails with "not a git repository". Pass the repo
+          # explicitly from the GITHUB_REPOSITORY context.
+          gh workflow run release-publish.yml \
+            -R "$GITHUB_REPOSITORY" \
+            -f tag="$TAG" \
+            -f validate_run_id="$RUN_ID" \
+            -f draft=false
+          echo "Dispatched release-publish.yml for $TAG (evidence run $RUN_ID)."
