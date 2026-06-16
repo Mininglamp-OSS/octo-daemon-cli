@@ -613,7 +613,7 @@ func (c *SSEClient) connectOnce(
 	up upgradeDispatcher,
 	mb managedBotsDispatcher,
 ) error {
-	url := fmt.Sprintf("%s/v1/daemon/events?runtime_id=%d", c.fleetURL, runtimeID)
+	url := fmt.Sprintf("%s/v1/runtimes/%d/events", c.fleetURL, runtimeID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return fmt.Errorf("new request: %w", err)
@@ -778,49 +778,6 @@ func (c *SSEClient) dispatch(
 	}
 
 	switch ev.Type {
-	case sseEventPing:
-		var p struct {
-			PingID string `json:"ping_id"`
-		}
-		if err := json.Unmarshal([]byte(ev.Data), &p); err != nil {
-			log.Printf("[WARN] SSE ping (runtime=%d): bad payload: %v", runtimeID, err)
-			advance() // MINOR (codex r4): 毒消息也 advance, 防 cursor 卡死反复 replay 同坏帧
-			return nil
-		}
-		if p.PingID == "" {
-			log.Printf("[WARN] SSE ping (runtime=%d): empty ping_id", runtimeID)
-			advance()
-			return nil
-		}
-		claimed, alreadyDone, cerr := c.dedup.claim(ev.Type, p.PingID)
-		if cerr != nil {
-			log.Printf("[WARN] SSE ping (runtime=%d id=%s) claim persist failed: %v", runtimeID, p.PingID, cerr)
-			return cerr // dedup 写盘失败, 断流重连
-		}
-		if alreadyDone {
-			advance() // 已成功处理过, 安全推进
-			return nil
-		}
-		if !claimed {
-			// R4 (codex r4 BLOCKER): inflight elsewhere — 不能 advance,
-			// 必须断流让 owner 完成. 重连后 owner 已 markDone (advance) 或
-			// unclaim (重新 claim 处理).
-			return fmt.Errorf("ping %s in-flight by another path, reconnect to retry", p.PingID)
-		}
-		if err := c.apiClient.ReportPing(ctx, p.PingID); err != nil {
-			log.Printf("[WARN] SSE ping (runtime=%d id=%s) report failed: %v — unclaim + reconnect", runtimeID, p.PingID, err)
-			if uerr := c.dedup.unclaim(ev.Type, p.PingID); uerr != nil {
-				log.Printf("[WARN] SSE ping (runtime=%d id=%s) unclaim: %v", runtimeID, p.PingID, uerr)
-			}
-			return err
-		}
-		log.Printf("[INFO] SSE ping (runtime=%d) reported (id=%s)", runtimeID, p.PingID)
-		if merr := c.dedup.markDone(ev.Type, p.PingID); merr != nil {
-			log.Printf("[WARN] SSE ping (runtime=%d id=%s) markDone: %v", runtimeID, p.PingID, merr)
-		}
-		advance()
-		return nil
-
 	case sseEventUpgrade:
 		var u PendingUpgrade
 		if err := json.Unmarshal([]byte(ev.Data), &u); err != nil {
@@ -935,14 +892,14 @@ func (c *SSEClient) dispatch(
 	}
 }
 
-// fetchBotProvision GET /v1/daemon/bot-provisions/:id. 返回 (nil, nil) 表
-// 410 Gone (bot 不再 provisionable).
+// fetchBotProvision GET /v1/bots/:bot_id/provision. 返回 (nil, nil) 表
+// 409 Conflict (bot 不再 provisionable: 已 active/archived/draft/failed).
 //
 // M5 fix (caster review final from codex): 用 apiClient.httpClient (30s
 // timeout), 不用 http.DefaultClient — fetch 在 readLoop goroutine 内, fleet
 // 卡死会无限阻塞后续 SSE frame 处理.
 func (c *SSEClient) fetchBotProvision(ctx context.Context, commandID string) (*PendingAgentCommand, error) {
-	url := fmt.Sprintf("%s/v1/daemon/bot-provisions/%s", c.fleetURL, commandID)
+	url := fmt.Sprintf("%s/v1/bots/%s/provision", c.fleetURL, commandID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
@@ -954,23 +911,24 @@ func (c *SSEClient) fetchBotProvision(ctx context.Context, commandID string) (*P
 	}
 	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
-	if resp.StatusCode == http.StatusGone {
-		return nil, nil
+	if resp.StatusCode == http.StatusConflict {
+		return nil, nil // not provisionable (already active/archived/draft/failed)
 	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("status %d: %s", resp.StatusCode, string(body))
 	}
-	// fleet wkhttp c.Response(data) 直接 JSON 数据, 无 outer envelope —
-	// 跟 daemon postJSON unmarshal 路径一致.
-	//
-	// 注意 (MI7 doc clarification): fleet 返的 payload 含 bot_uid + claim_token +
-	// workspace_id 但**不含 bot_token** — fleet bot 表不存 token. daemon
-	// 收到后若 cmd.BotToken == "" 会另起 GET /v1/bot/:bot_uid/token 问
-	// octo-server 拿 (exec_openclaw.go handleBotProvision line 42-50).
-	// 所以 A3 secret 不进 SSE stream 是因为 fleet 本来就没 secret, 这里
-	// fetch 拿的是 "bot identifying info + claim_token" 不是 secret 本身.
+	// fleet wraps the payload in a {"data": ...} envelope (R1) — unwrap then
+	// decode. Payload carries bot_uid + claim_token + workspace_id but NOT
+	// bot_token (fleet doesn't store it); handleBotProvision fetches the token
+	// from octo-server when cmd.BotToken == "".
+	var env struct {
+		Data json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(body, &env); err != nil {
+		return nil, fmt.Errorf("unmarshal envelope: %w", err)
+	}
 	var cmd PendingAgentCommand
-	if err := json.Unmarshal(body, &cmd); err != nil {
+	if err := json.Unmarshal(env.Data, &cmd); err != nil {
 		return nil, fmt.Errorf("unmarshal: %w", err)
 	}
 	if cmd.ID == 0 {

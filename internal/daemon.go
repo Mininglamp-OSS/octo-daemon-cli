@@ -255,47 +255,6 @@ func (d *Daemon) startSSEForRuntimes(ctx context.Context) {
 // 跟 SSE path 共享同一 dedupState. 防 SSE+heartbeat 双跑窗口同一 event
 // 被两条路径双处理.
 //
-// R4 (codex round 4): claim 返 3-tuple (claimed, alreadyDone, err).
-// alreadyDone (其它路径已 markDone) → skip. inflight (其它路径正在处理) →
-// skip (让 owner 完成). claimed → handler 处理, 成功 markDone, 失败
-// unclaim 让 replay/heartbeat 兜底重试.
-//
-// sseClient == nil 时 (OCTO_SSE_DISABLED 紧急回退), heartbeat 是唯一路径,
-// 跳 claim 直接处理.
-
-func (d *Daemon) runHeartbeatPing(ctx context.Context, pp *PendingPing) {
-	if d.sseClient != nil {
-		claimed, alreadyDone, cerr := d.sseClient.dedup.claim(sseEventPing, pp.PingID)
-		if cerr != nil {
-			log.Printf("[WARN] heartbeat ping claim persist failed (id=%s): %v", pp.PingID, cerr)
-			return
-		}
-		if alreadyDone || !claimed {
-			return // SSE 已处理完 / 正在处理
-		}
-		// claimed=true: 走 handler, 完后 markDone 或失败 unclaim
-		defer func() {
-			if r := recover(); r != nil {
-				log.Printf("[ERROR] heartbeat ping handler panic (id=%s): %v", pp.PingID, r)
-				_ = d.sseClient.dedup.unclaim(sseEventPing, pp.PingID)
-			}
-		}()
-		if err := d.client.ReportPing(ctx, pp.PingID); err != nil {
-			log.Printf("[WARN] heartbeat ping report failed (id=%s): %v", pp.PingID, err)
-			_ = d.sseClient.dedup.unclaim(sseEventPing, pp.PingID)
-			return
-		}
-		log.Printf("[INFO] heartbeat ping reported (id=%s)", pp.PingID)
-		_ = d.sseClient.dedup.markDone(sseEventPing, pp.PingID)
-		return
-	}
-	// sseClient nil 路径 (OCTO_SSE_DISABLED)
-	if err := d.client.ReportPing(ctx, pp.PingID); err != nil {
-		log.Printf("[WARN] heartbeat ping report failed (id=%s): %v", pp.PingID, err)
-	} else {
-		log.Printf("[INFO] heartbeat ping reported (id=%s)", pp.PingID)
-	}
-}
 
 func (d *Daemon) runHeartbeatUpgrade(ctx context.Context, up *PendingUpgrade) {
 	if d.sseClient != nil {
@@ -713,15 +672,6 @@ func (d *Daemon) sendHeartbeats(ctx context.Context) {
 			continue
 		}
 		anyHeartbeatOK = true
-		// Handle pending ping request from server.
-		// B1 (caster review final from codex): claim dedup 跟 SSE path 共享, 防
-		// Phase A 双跑期 SSE 收到同 event 重复处理 (e.g. SSE 中 reconnect 时
-		// heartbeat 抢先 → SSE replay 再收 → 不应再 ReportPing). sseClient
-		// 可能 nil (OCTO_SSE_DISABLED), 那种情况 heartbeat 是唯一路径, 不需要
-		// dedup.
-		if resp.PendingPing != nil {
-			go d.runHeartbeatPing(ctx, resp.PendingPing)
-		}
 		// Handle pending upgrade task from server
 		if resp.PendingUpgrade != nil {
 			go d.runHeartbeatUpgrade(ctx, resp.PendingUpgrade)
@@ -738,11 +688,6 @@ func (d *Daemon) sendHeartbeats(ctx context.Context) {
 				log.Printf("[WARN] unknown pending command action=%q id=%d — ignoring",
 					resp.PendingCommand.Action, resp.PendingCommand.ID)
 			}
-		}
-		// Same off-loading pattern for matter-driven bot tasks. These can
-		// take much longer (openclaw agent runs are minutes, not seconds).
-		if resp.PendingTask != nil {
-			go d.handleBotTask(ctx, resp.PendingTask)
 		}
 		// PR-B.2: accumulate managed_bots across runtimes. Whether the
 		// server scopes managed_bots per-runtime or per-daemon, the union
