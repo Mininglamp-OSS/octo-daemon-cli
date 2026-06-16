@@ -54,6 +54,17 @@ npm install -g @mininglamp-oss/octo-daemon
 linux，x64 / arm64）——没有 postinstall 下载，npm 镜像源
 （如 npmmirror）开箱即用。其他平台（含 Windows）请从源码构建（见下文）。
 
+`npm install -g` 会把 `octo-daemon` 命令自动放进 npm 全局 bin 目录的
+PATH 软链里——**无需手动改 PATH**。验证：
+
+```bash
+octo-daemon version
+```
+
+> **报 `octo-daemon: command not found`？** 说明 npm 全局 bin 目录不在
+> PATH 上（nvm 或自定义 prefix 常见）。用 `echo "$(npm config get prefix)/bin"`
+> 打印该目录，加进 `PATH` 即可。
+
 ### 2. 拿 API key
 
 在 OCTO 里向 BotFather 发 `/daemon`，会返回完整启动命令（含 API
@@ -64,6 +75,14 @@ key 和服务器地址）。
 ```bash
 octo-daemon start --api-key "uk_xxx" --api-url "http://your-server:8090"
 ```
+
+`start` 默认**前台运行**（占住终端）——首次跑时方便观察注册过程。要常驻
+后台，用第 4 步的系统服务。
+
+> 单机部署 `--api-key` + `--api-url` 即可。**服务拆分部署**（fleet
+> 独立）时还需设 `OCTO_FLEET_URL` / `OCTO_SERVER_URL`——见下方
+> [环境变量](#-环境变量)。BotFather 的 `/daemon` 回复会给出适配你这套
+> 部署的完整命令，照抄即可。
 
 ### 4.（推荐）装为系统服务
 
@@ -81,6 +100,24 @@ macOS 上会注册一个用户级 `launchd` agent（`ai.octo.daemon`）；Linux
 octo-daemon status            # 进程 / 版本
 octo-daemon service status    # 服务安装状态 + 最后一条日志
 ```
+
+## ⚙️ 环境变量
+
+单机部署只需 `--api-key` 和 `--api-url`。下面这些是可选的，daemon 从环境
+变量读取（在 `start` 前设好，或写进服务的 env 文件）。BotFather 的
+`/daemon` 回复已经会带上你这套部署所需的 URL——这里列出供自定义 / 拆分
+部署参考。
+
+| 变量 | 默认 | 何时设置 |
+|---|---|---|
+| `OCTO_FLEET_URL` | `--api-url` | **服务拆分部署**——fleet（runtime/bot 端点）地址与主 API 不同。 |
+| `OCTO_SERVER_URL` | `--api-url` | **服务拆分部署**——auth / bot-token 端点地址与主 API 不同。 |
+| `OCTO_SSE_DISABLED` | 未设 | 设为 `1` 关闭 SSE 反向派发，回退到 heartbeat 轮询（回滚开关）。 |
+| `OCTO_SLOW_DETECT_SECONDS` | `60` | 深度 agent 探测的重扫间隔——仅调优用。 |
+
+> daemon 通过上面的 fleet/server 端点够到 matter（任务 ack/拉取），**没有**
+> 单独的 matter URL 变量。（旧版 BotFather 输出里的 `OCTO_MATTER_URL`
+> daemon 并不读取。）
 
 ## 📦 支持的 Agent
 
@@ -127,8 +164,44 @@ GOOS=linux  GOARCH=amd64 make build
 GOOS=darwin GOARCH=arm64 make build
 ```
 
-正式版本由 `release-publish.yml` workflow（组织标准的带门控发布流程）
-内的 GoReleaser 构建，再经 `npm-publish.yml` 重新打包为 npm 包发布。
+## 🚢 发版（维护者）
+
+发版完全自动化，只需推一个 tag。给一个**已经合进 `main` 且 CI 已绿**的
+commit 打 tag，推上去：
+
+```bash
+git tag v1.2.3 <main-上的-commit>
+git push origin v1.2.3
+```
+
+这是唯一的手动步骤。之后依次自动触发：
+
+1. **`release-on-tag.yml`** —— 校验 tag 是 semver，解析该 commit 上成功的
+   `CI` run（commit 在 `main` 上没有绿色 CI run 则 fail-fast），再触发门控
+   发布流程。
+2. **`release-publish.yml`** —— 复验 CI 证据（组织标准门禁），创建 GitHub
+   Release，用 GoReleaser 编译各平台二进制。
+3. **`npm-publish.yml`** —— 下载 Release 产物、校验 `checksums.txt`、重新
+   打包为 npm 包，发布 `@mininglamp-oss/octo-daemon` + 4 个
+   `*-<os>-<cpu>` 平台子包。
+
+版本 → npm dist-tag：`v1.2.3` → `@latest`；预发布（`v1.2.3-rc.1`）→
+`@next`；比当前 `@latest` 更旧的 backport 会发到非 `latest` 的 tag，不会把
+`@latest` 往回退。
+
+**前置条件**
+
+- 打 tag 的 commit 必须在 `main` 上有一次通过的 `CI` run——证据门禁没有它
+  就拒绝发布。
+- `NPM_TOKEN`（仓库 / org secret）须有发布（及创建）
+  `@mininglamp-oss/octo-daemon*` 包的权限。
+
+**手动 / 恢复**
+
+`release-publish.yml` 和 `npm-publish.yml` 仍可从 Actions 页手动触发
+（`workflow_dispatch`），用于瞬时失败后的重跑。`npm-publish.yml` 默认
+`dry_run=true` 便于安全地空跑验证链路，且会跳过 registry 上已存在的包，
+重跑幂等。
 
 ## 🔗 OCTO 生态
 

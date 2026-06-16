@@ -56,6 +56,18 @@ automatically by npm (darwin / linux on x64 / arm64) — there is no
 postinstall download, so registry mirrors work transparently. Other
 platforms (including Windows): build from source (see below).
 
+`npm install -g` puts the `octo-daemon` command on your PATH automatically
+(a symlink in npm's global bin dir) — **no manual PATH editing needed**.
+Confirm it resolves:
+
+```bash
+octo-daemon version
+```
+
+> **`octo-daemon: command not found`?** npm's global bin dir is not on your
+> PATH (common with nvm or a custom prefix). Print the dir with
+> `echo "$(npm config get prefix)/bin"` and add it to your `PATH`.
+
 ### 2. Get an API key
 
 In OCTO, send `/daemon` to BotFather. It returns the complete install
@@ -66,6 +78,10 @@ command including your API key and server URL.
 ```bash
 octo-daemon start --api-key "uk_xxx" --api-url "http://your-server:8090"
 ```
+
+`start` runs in the **foreground** (blocks the terminal) — good for a first
+run to watch it register. For a persistent background daemon, use the service
+in step 4 instead.
 
 ### 4. (Recommended) Install as a service
 
@@ -84,6 +100,25 @@ seconds, and respawns with the new binary after a remote upgrade.
 octo-daemon status            # process / version
 octo-daemon service status    # service install state + last log line
 ```
+
+## ⚙️ Environment variables
+
+A single-host deployment needs only `--api-key` and `--api-url`. The variables
+below are optional; the daemon reads them from the environment (set them before
+`start`, or in the service env file). BotFather's `/daemon` reply already
+includes whichever URLs your deployment needs — these are documented here for
+custom/split setups.
+
+| Variable | Default | When to set |
+|---|---|---|
+| `OCTO_FLEET_URL` | `--api-url` | **Split-service deployment** — fleet (runtime/bot endpoints) runs at a different URL than the main API. |
+| `OCTO_SERVER_URL` | `--api-url` | **Split-service deployment** — auth / bot-token endpoints run at a different URL than the main API. |
+| `OCTO_SSE_DISABLED` | unset | Set to `1` to disable the SSE reverse-dispatch channel and fall back to heartbeat polling (rollback knob). |
+| `OCTO_SLOW_DETECT_SECONDS` | `60` | Rescan interval for deep agent detection — tuning only. |
+
+> The daemon reaches matter (task ack/pull) through the fleet/server endpoints
+> above — there is **no** separate matter URL variable. (An `OCTO_MATTER_URL`
+> seen in older BotFather output is unused by the daemon.)
 
 ## 📦 Supported agents
 
@@ -139,9 +174,46 @@ GOOS=linux  GOARCH=amd64 make build
 GOOS=darwin GOARCH=arm64 make build
 ```
 
-Released binaries are built by GoReleaser inside the
-`release-publish.yml` workflow (org-standard gated release flow), which
-then repacks them into the npm packages via `npm-publish.yml`.
+## 🚢 Releasing (maintainers)
+
+Releases are fully automated from a single tag push. Tag a commit that is
+**already merged and green on `main`**, then push the tag:
+
+```bash
+git tag v1.2.3 <commit-on-main>
+git push origin v1.2.3
+```
+
+That is the only manual step. It triggers, in order:
+
+1. **`release-on-tag.yml`** — checks the tag is semver, resolves the
+   successful `CI` run for the tagged commit (fail-fast if the commit has no
+   green CI run on `main`), and dispatches the gated release flow.
+2. **`release-publish.yml`** — re-validates the CI evidence (org-standard
+   gate), creates the GitHub Release, and builds the platform binaries with
+   GoReleaser.
+3. **`npm-publish.yml`** — downloads the release archives, verifies
+   `checksums.txt`, repacks them into the npm packages, and publishes
+   `@mininglamp-oss/octo-daemon` + the four `*-<os>-<cpu>` platform
+   sub-packages.
+
+Version → npm dist-tag: `v1.2.3` → `@latest`; a prerelease (`v1.2.3-rc.1`) →
+`@next`; a backport older than the current `@latest` is published under a
+non-`latest` tag rather than moving `@latest` backwards.
+
+**Prerequisites**
+
+- The tagged commit must have a passing `CI` run on `main` — the evidence gate
+  refuses to publish without it.
+- The `NPM_TOKEN` repo/org secret must be authorized to publish (and create)
+  the `@mininglamp-oss/octo-daemon*` packages.
+
+**Manual / recovery**
+
+`release-publish.yml` and `npm-publish.yml` stay dispatchable from the Actions
+tab (`workflow_dispatch`) for re-runs after a transient failure.
+`npm-publish.yml` defaults to `dry_run=true` for safe plumbing checks and
+skips packages already on the registry, so re-runs are idempotent.
 
 ## 🔗 OCTO Ecosystem
 
