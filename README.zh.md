@@ -93,9 +93,9 @@ octo-daemon service status    # 服务安装状态 + 最后一条日志
 
 1. **快速注册（< 5s）** —— 并行 `exec.LookPath` + `--version` 探测，所有已安装的立即上报 `online`。
 2. **慢速深探（异步）** —— OpenClaw `agents list / bindings / plugins list` 在后台 goroutine 跑，bindings / 插件版本变化时 re-register。
-3. **心跳（15s）** —— 维持 runtime 在线，服务端在响应里下发 pending ping / upgrade 任务。
+3. **心跳（15s）** —— 维持 runtime 在线，服务端在响应里下发 pending upgrade 任务。
 4. **重扫（60s）** —— 检测新装 CLI、版本变化、gateway 启停，变化触发 re-register。
-5. **服务端 sweeper（30s）** —— 45s 无心跳标 offline，7 天后删除；卡住的 ping/upgrade 任务自动 timeout。
+5. **服务端 sweeper（30s）** —— 45s 无心跳标 offline，7 天后删除；卡住的 upgrade 任务自动 timeout。
 6. **Service 模式自愈** —— `launchd KeepAlive` / `systemd Restart=on-failure` + exit-code 映射（75 = 升级后 respawn；78 = api-key 失效不循环；0 = 干净退出）。
 
 ## 🗂 本地数据

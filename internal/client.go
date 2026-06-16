@@ -110,10 +110,6 @@ type HeartbeatRequest struct {
 	RuntimeID int64 `json:"runtime_id"`
 }
 
-type PendingPing struct {
-	PingID string `json:"ping_id"`
-}
-
 type PendingUpgrade struct {
 	TaskID        string `json:"task_id"`
 	Component     string `json:"component"` // "octo-daemon" or "octo"
@@ -141,7 +137,6 @@ type PendingAgentCommand struct {
 
 type HeartbeatResponse struct {
 	Status         string               `json:"status"`
-	PendingPing    *PendingPing         `json:"pending_ping,omitempty"`
 	PendingUpgrade *PendingUpgrade      `json:"pending_upgrade,omitempty"`
 	PendingCommand *PendingAgentCommand `json:"pending_command,omitempty"`
 	PendingTask    *PendingBotTask      `json:"pending_task,omitempty"`
@@ -182,10 +177,6 @@ func (c *Client) Heartbeat(ctx context.Context, runtimeID int64) (*HeartbeatResp
 		return nil, err
 	}
 	return &resp, nil
-}
-
-func (c *Client) ReportPing(ctx context.Context, pingID string) error {
-	return c.postJSON(ctx, "/v1/daemon/ping/"+pingID, map[string]string{}, nil)
 }
 
 func (c *Client) ReportUpgrade(ctx context.Context, taskID, status, errMsg string) error {

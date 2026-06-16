@@ -100,11 +100,11 @@ octo-daemon service status    # service install state + last log line
    bindings`, `plugins list` run in background goroutines and
    re-register when bindings or plugin versions change.
 3. **Heartbeat (15s)** — Keeps the runtime alive; the server claims
-   pending ping / upgrade tasks on the response.
+   pending upgrade tasks on the response.
 4. **Rescan (60s)** — Detects newly-installed CLIs, version bumps,
    gateway up/down transitions; re-registers on change.
 5. **Server sweeper (30s)** — Marks runtimes offline after 45s of
-   silence, deletes after 7 days; expires stuck ping/upgrade tasks.
+   silence, deletes after 7 days; expires stuck upgrade tasks.
 6. **Service-mode self-heal** — `launchd KeepAlive` /
    `systemd Restart=on-failure` plus exit-code mapping (75 =
    respawn-after-upgrade; 78 = api-key-evicted-don't-loop; 0 = clean

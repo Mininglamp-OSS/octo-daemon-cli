@@ -26,7 +26,6 @@ import (
 // channel 也是 per-runtime, key = runtime_id.
 //
 // 事件类型 (跟 fleet sse.go eventType* 常量对齐):
-//   - ping            → call client.ReportPing (复用现有 handler)
 //   - upgrade         → call d.handleUpgrade
 //   - bot_provision   → fetch GET /v1/daemon/bot-provisions/:id → handleBotProvision
 //   - managed_bots_changed → apply delta (idempotent, 不走 dedup)
@@ -38,7 +37,6 @@ import (
 //     - 防 daemon 重启重做 (file atomic write tmp + rename, crash-safe)
 //     - dedup key = (event_type, source_pk) 不用 event_log id, 因为
 //       同 source 可能来 multiple runtimes 各自的 event_log row
-//       (e.g. daemon-level ping 推到任一 runtime, fleet 端可能不同 id)
 //     - lazy prune on read: 读 file 时清 ts < now-24h, 不开后台 ticker
 //
 //   A3 bot_provision secret fetch:
@@ -66,7 +64,6 @@ const (
 
 	// SSE 事件类型字符串 — 必须跟 fleet modules/runtime/sse.go 的
 	// eventType* 常量字面值一致.
-	sseEventPing               = "ping"
 	sseEventUpgrade            = "upgrade"
 	sseEventBotProvision       = "bot_provision"
 	sseEventManagedBotsChanged = "managed_bots_changed"
@@ -87,7 +84,6 @@ type sseEvent struct {
 // + R4 round 4 inflight/done 拆分):
 //
 //	{
-//	  "ping": [{"id":"ping_42","ts":1717891200000,"phase":"done"}, ...],
 //	  "upgrade": [...],
 //	  "bot_provision": [...],
 //	  "last_event_id_per_runtime": {"42": 123, "43": 456}
@@ -147,7 +143,6 @@ type dedupEntry struct {
 // dedupFile 是落盘 JSON schema (用 string-keyed map 因为 JSON object
 // key 必须是 string; load/persist 时转 int64 ↔ string).
 type dedupFile struct {
-	Ping             []dedupEntry     `json:"ping,omitempty"`
 	Upgrade          []dedupEntry     `json:"upgrade,omitempty"`
 	BotProvision     []dedupEntry     `json:"bot_provision,omitempty"`
 	LastEventIDPerRT map[string]int64 `json:"last_event_id_per_runtime,omitempty"`
@@ -182,7 +177,6 @@ func (d *dedupState) load() error {
 		// 旧 map[string][]dedupEntry. 如果两个 schema 都失败 = 真损坏.
 		var raw map[string][]dedupEntry
 		if err2 := json.Unmarshal(data, &raw); err2 == nil {
-			df.Ping = raw[sseEventPing]
 			df.Upgrade = raw[sseEventUpgrade]
 			df.BotProvision = raw[sseEventBotProvision]
 		} else {
@@ -226,7 +220,6 @@ func (d *dedupState) load() error {
 			d.phases[et] = phaseBucket
 		}
 	}
-	loadBucket(sseEventPing, df.Ping)
 	loadBucket(sseEventUpgrade, df.Upgrade)
 	loadBucket(sseEventBotProvision, df.BotProvision)
 
@@ -460,9 +453,6 @@ func (d *dedupState) snapshotLocked() dedupFile {
 		return list
 	}
 	df := dedupFile{}
-	if b := d.entries[sseEventPing]; len(b) > 0 {
-		df.Ping = mkList(sseEventPing, b)
-	}
 	if b := d.entries[sseEventUpgrade]; len(b) > 0 {
 		df.Upgrade = mkList(sseEventUpgrade, b)
 	}
@@ -778,49 +768,6 @@ func (c *SSEClient) dispatch(
 	}
 
 	switch ev.Type {
-	case sseEventPing:
-		var p struct {
-			PingID string `json:"ping_id"`
-		}
-		if err := json.Unmarshal([]byte(ev.Data), &p); err != nil {
-			log.Printf("[WARN] SSE ping (runtime=%d): bad payload: %v", runtimeID, err)
-			advance() // MINOR (codex r4): 毒消息也 advance, 防 cursor 卡死反复 replay 同坏帧
-			return nil
-		}
-		if p.PingID == "" {
-			log.Printf("[WARN] SSE ping (runtime=%d): empty ping_id", runtimeID)
-			advance()
-			return nil
-		}
-		claimed, alreadyDone, cerr := c.dedup.claim(ev.Type, p.PingID)
-		if cerr != nil {
-			log.Printf("[WARN] SSE ping (runtime=%d id=%s) claim persist failed: %v", runtimeID, p.PingID, cerr)
-			return cerr // dedup 写盘失败, 断流重连
-		}
-		if alreadyDone {
-			advance() // 已成功处理过, 安全推进
-			return nil
-		}
-		if !claimed {
-			// R4 (codex r4 BLOCKER): inflight elsewhere — 不能 advance,
-			// 必须断流让 owner 完成. 重连后 owner 已 markDone (advance) 或
-			// unclaim (重新 claim 处理).
-			return fmt.Errorf("ping %s in-flight by another path, reconnect to retry", p.PingID)
-		}
-		if err := c.apiClient.ReportPing(ctx, p.PingID); err != nil {
-			log.Printf("[WARN] SSE ping (runtime=%d id=%s) report failed: %v — unclaim + reconnect", runtimeID, p.PingID, err)
-			if uerr := c.dedup.unclaim(ev.Type, p.PingID); uerr != nil {
-				log.Printf("[WARN] SSE ping (runtime=%d id=%s) unclaim: %v", runtimeID, p.PingID, uerr)
-			}
-			return err
-		}
-		log.Printf("[INFO] SSE ping (runtime=%d) reported (id=%s)", runtimeID, p.PingID)
-		if merr := c.dedup.markDone(ev.Type, p.PingID); merr != nil {
-			log.Printf("[WARN] SSE ping (runtime=%d id=%s) markDone: %v", runtimeID, p.PingID, merr)
-		}
-		advance()
-		return nil
-
 	case sseEventUpgrade:
 		var u PendingUpgrade
 		if err := json.Unmarshal([]byte(ev.Data), &u); err != nil {
