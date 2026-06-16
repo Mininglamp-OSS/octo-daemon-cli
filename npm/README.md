@@ -1,6 +1,6 @@
 # @mininglamp-oss/octo-daemon
 
-Local agent runtime reporter for the [OCTO](https://github.com/Mininglamp-OSS) platform. Detects installed AI agent CLIs (Claude Code, Codex, OpenClaw, Hermes) and reports their status to your OCTO server.
+Local agent runtime reporter for the [OCTO](https://github.com/Mininglamp-OSS) platform. Detects installed AI agent CLIs (Claude Code, OpenClaw) and reports their status to your OCTO server.
 
 ## Install
 

@@ -110,7 +110,7 @@ func runOpenclawAgent(parent context.Context, agentID, prompt string) (string, e
 // (and `meta`), prefixed by some stderr-like banner lines from the gateway. We
 // locate the start of the JSON envelope and decode the rest, then walk a few
 // known shapes (openclaw `payloads`, finalAssistantVisibleText, plus simpler
-// claude/codex-style flat fields) in priority order.
+// claude-style flat fields) in priority order.
 //
 //nolint:unused
 func extractAgentReply(out []byte) string {
@@ -145,7 +145,7 @@ func extractAgentReply(out []byte) string {
 
 // replyFromEnvelope walks the openclaw / generic-agent shapes. Order matters:
 // payloads is the openclaw native shape; finalAssistantVisibleText is the
-// embedded-agent shape; the flat keys cover claude/codex-like CLIs.
+// embedded-agent shape; the flat keys cover claude-like CLIs.
 //
 //nolint:unused
 func replyFromEnvelope(env map[string]any) string {
@@ -170,7 +170,7 @@ func replyFromEnvelope(env map[string]any) string {
 	if s, ok := env["finalAssistantRawText"].(string); ok && strings.TrimSpace(s) != "" {
 		return s
 	}
-	// Generic flat keys for claude/codex-style envelopes
+	// Generic flat keys for claude-style envelopes
 	for _, key := range []string{"reply", "text", "content", "message", "answer", "output"} {
 		if v, ok := env[key]; ok {
 			if s, ok := v.(string); ok && strings.TrimSpace(s) != "" {

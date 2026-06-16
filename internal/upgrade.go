@@ -24,7 +24,7 @@ func (d *Daemon) handleUpgrade(ctx context.Context, up *PendingUpgrade) error {
 		return d.handlePluginUpgrade(ctx, up)
 	case "", "octo-daemon":
 		return d.handleDaemonUpgrade(ctx, up)
-	case "claude", "codex", "openclaw", "hermes":
+	case "claude", "openclaw":
 		return d.handleComponentUpgrade(ctx, up)
 	default:
 		log.Printf("[ERROR] unsupported upgrade component: %s", up.Component)
