@@ -153,8 +153,8 @@ type dedupFile struct {
 	LastEventIDPerRT map[string]int64 `json:"last_event_id_per_runtime,omitempty"`
 }
 
-func newDedupState(daemonID string) *dedupState {
-	path := filepath.Join(DataDir(), "events-"+daemonID+".state")
+func newDedupState(spaceID string) *dedupState {
+	path := filepath.Join(SpaceDir(spaceID), "events.state")
 	return &dedupState{
 		entries: make(map[string]map[string]int64),
 		phases:  make(map[string]map[string]entryPhase),
@@ -524,9 +524,10 @@ type SSEClient struct {
 	apiClient *Client
 }
 
-// NewSSEClient 在 NewDaemon 时构造. 调用方传 daemon_id (已 EnsureDaemonID).
-func NewSSEClient(fleetURL, apiKey, daemonID string, apiClient *Client) (*SSEClient, error) {
-	d := newDedupState(daemonID)
+// NewSSEClient is constructed per backendRunner. The dedup state file lives in
+// the space's directory (~/.octo-daemon/<space_id>/events.state).
+func NewSSEClient(fleetURL, apiKey, spaceID string, apiClient *Client) (*SSEClient, error) {
+	d := newDedupState(spaceID)
 	if err := d.load(); err != nil {
 		return nil, err
 	}

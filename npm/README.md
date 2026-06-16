@@ -20,18 +20,29 @@ If you get `octo-daemon: command not found`, npm's global bin dir is not on your
 
 ## Use
 
-In OCTO, send `/daemon` to BotFather to receive your API key, then:
+In OCTO, send `/daemon` to BotFather to receive your space ID, server / fleet URLs and API key, then configure a space and start:
 
 ```bash
-# Foreground run (blocks; good for a first run to watch it register):
-octo-daemon start --api-key "uk_xxx" --api-url "http://your-server:8090"
+# Configure a space (idempotent by --space-id; repeat per space for multi-space):
+octo-daemon config \
+  --space-id "your_space_id" \
+  --server-url "http://your-server:8090" \
+  --fleet-url  "http://your-server:8090" \
+  --api-key    "uk_xxx"
 
-# Or run it as a persistent background service (auto-starts at login):
-octo-daemon service install
+# Start (foreground, blocks; good for a first run to watch it register):
+octo-daemon start
+
+# Or run in the background, or as a persistent auto-starting service:
+octo-daemon start --daemon       # detached; logs to ~/.octo-daemon/daemon.log
+octo-daemon service install      # launchd / systemd, auto-start at login
 octo-daemon status
 ```
 
-A single-host deployment needs only `--api-key` and `--api-url` (BotFather's `/daemon` reply gives you both). **Split-service deployments** also set `OCTO_FLEET_URL` / `OCTO_SERVER_URL` (both default to `--api-url`); these and other env vars are documented in the [full README](https://github.com/Mininglamp-OSS/octo-daemon-cli#-environment-variables).
+`config` writes one profile per space into `~/.octo-daemon/config.json`; `start`
+supervises all of them in a single process. **Split-service deployments** point
+`--fleet-url` and `--server-url` at different addresses. Full env/config details
+are in the [full README](https://github.com/Mininglamp-OSS/octo-daemon-cli#%EF%B8%8F-configuration--environment).
 
 Full documentation: <https://github.com/Mininglamp-OSS/octo-daemon-cli>
 

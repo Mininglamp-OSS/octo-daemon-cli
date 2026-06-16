@@ -26,9 +26,15 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		fmt.Printf("Status: running (pid %d)\n", pid)
 	}
 
-	daemonID, err := internal.LoadDaemonID()
-	if err == nil {
-		fmt.Printf("Daemon ID: %s\n", daemonID)
+	if profiles, err := internal.LoadProfiles(internal.ConfigFilePath()); err == nil && len(profiles) > 0 {
+		fmt.Println("Profiles:")
+		for _, p := range profiles {
+			id, err := internal.LoadDaemonID(p.SpaceID)
+			if err != nil {
+				id = "(no daemon.id)"
+			}
+			fmt.Printf("  - space=%s daemon_id=%s\n", p.SpaceID, id)
+		}
 	}
 
 	runtimes := internal.DetectRuntimes()

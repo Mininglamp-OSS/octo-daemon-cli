@@ -74,22 +74,28 @@ func runServiceInstall(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Precheck 1: config must exist and have required fields. v1 only
-	// supports the default path. We don't just LoadConfig (which merely
-	// parses JSON) — also assert api_key / api_url are non-empty to mirror
-	// start.go's validation. Otherwise an empty `{}` config would let
-	// install succeed, then daemon exits 2, under-service maps 2→0, launchd
-	// treats as success → "installed but never ran" UX.
+	// Precheck 1: config must exist and have at least one usable profile.
+	// We don't just check the file exists — an empty `{"profiles":[]}` would
+	// let install succeed, then the daemon exits 2, under-service maps 2→0,
+	// launchd treats as success → "installed but never ran" UX. So require a
+	// profile with a non-empty api_key and fleet/server URLs.
 	cfgPath := internal.ConfigFilePath()
 	if _, err := os.Stat(cfgPath); err != nil {
-		return fmt.Errorf("daemon config not found at %s — run `octo-daemon start --api-key=... --api-url=...` once to establish config, then retry", cfgPath)
+		return fmt.Errorf("daemon config not found at %s — run `octo-daemon config --space-id=... --server-url=... --fleet-url=... --api-key=...` first, then retry", cfgPath)
 	}
-	cfg, err := internal.LoadConfig(cfgPath)
+	profiles, err := internal.LoadProfiles(cfgPath)
 	if err != nil {
 		return fmt.Errorf("daemon config at %s is invalid: %w", cfgPath, err)
 	}
-	if cfg.APIKey == "" || cfg.APIURL == "" {
-		return fmt.Errorf("daemon config at %s is missing api_key or api_url — run `octo-daemon start --api-key=... --api-url=...` once to re-establish, then retry", cfgPath)
+	usable := false
+	for _, p := range profiles {
+		if p.APIKey != "" && p.FleetURL != "" && p.ServerURL != "" {
+			usable = true
+			break
+		}
+	}
+	if !usable {
+		return fmt.Errorf("daemon config at %s has no usable profile (need api_key + fleet_url + server_url) — run `octo-daemon config --space-id=... --server-url=... --fleet-url=... --api-key=...`, then retry", cfgPath)
 	}
 
 	// Precheck 2: refuse double-install without --force.

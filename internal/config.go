@@ -9,9 +9,13 @@ import (
 	"time"
 )
 
+// Config is the runtime config for ONE backendRunner (one space/profile).
 type Config struct {
+	SpaceID    string
 	APIKey     string
-	APIURL     string
+	ServerURL  string
+	FleetURL   string
+	MatterURL  string
 	DeviceName string
 	CLIVersion string
 
@@ -38,55 +42,92 @@ func (c *Config) withDefaults() {
 	}
 }
 
-type persistedConfig struct {
+// Profile is the persisted form of one backend connection, keyed by space_id.
+type Profile struct {
+	SpaceID                  string `json:"space_id"`
+	ServerURL                string `json:"server_url"`
+	FleetURL                 string `json:"fleet_url"`
+	MatterURL                string `json:"matter_url,omitempty"`
 	APIKey                   string `json:"api_key"`
-	APIURL                   string `json:"api_url"`
 	DeviceName               string `json:"device_name,omitempty"`
 	HeartbeatIntervalSeconds int    `json:"heartbeat_interval_seconds,omitempty"`
+}
+
+// fileConfig is the on-disk top-level shape: {"profiles":[...]}.
+type fileConfig struct {
+	Profiles []Profile `json:"profiles"`
 }
 
 func ConfigFilePath() string {
 	return filepath.Join(DataDir(), "config.json")
 }
 
-func SaveConfig(cfg Config) error {
-	p := persistedConfig{
-		APIKey:     cfg.APIKey,
-		APIURL:     cfg.APIURL,
-		DeviceName: cfg.DeviceName,
+func (p Profile) toConfig() Config {
+	c := Config{
+		SpaceID:    p.SpaceID,
+		APIKey:     p.APIKey,
+		ServerURL:  p.ServerURL,
+		FleetURL:   p.FleetURL,
+		MatterURL:  p.MatterURL,
+		DeviceName: p.DeviceName,
 	}
-	if cfg.HeartbeatInterval > 0 {
-		p.HeartbeatIntervalSeconds = int(cfg.HeartbeatInterval / time.Second)
+	if p.HeartbeatIntervalSeconds > 0 {
+		c.HeartbeatInterval = time.Duration(p.HeartbeatIntervalSeconds) * time.Second
 	}
-	data, err := json.MarshalIndent(p, "", "  ")
+	return c
+}
+
+func configToProfile(c Config) Profile {
+	p := Profile{
+		SpaceID:    c.SpaceID,
+		ServerURL:  c.ServerURL,
+		FleetURL:   c.FleetURL,
+		MatterURL:  c.MatterURL,
+		APIKey:     c.APIKey,
+		DeviceName: c.DeviceName,
+	}
+	if c.HeartbeatInterval > 0 {
+		p.HeartbeatIntervalSeconds = int(c.HeartbeatInterval / time.Second)
+	}
+	return p
+}
+
+// LoadProfiles reads config.json in the {"profiles":[...]} format. A pre-
+// multi-profile single-object config has no "profiles" key and therefore loads
+// as zero profiles — there is no legacy auto-wrapping; `octo-daemon config`
+// replaces such a file outright.
+func LoadProfiles(path string) ([]Config, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read config: %w", err)
+	}
+
+	var fc fileConfig
+	if err := json.Unmarshal(data, &fc); err != nil {
+		return nil, fmt.Errorf("parse config: %w", err)
+	}
+	cfgs := make([]Config, 0, len(fc.Profiles))
+	for _, p := range fc.Profiles {
+		cfgs = append(cfgs, p.toConfig())
+	}
+	return cfgs, nil
+}
+
+// SaveProfiles writes the profiles to config.json (0600), creating the data
+// directory if needed.
+func SaveProfiles(path string, cfgs []Config) error {
+	fc := fileConfig{Profiles: make([]Profile, 0, len(cfgs))}
+	for _, c := range cfgs {
+		fc.Profiles = append(fc.Profiles, configToProfile(c))
+	}
+	data, err := json.MarshalIndent(fc, "", "  ")
 	if err != nil {
 		return err
 	}
-	path := ConfigFilePath()
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return err
 	}
 	return os.WriteFile(path, data, 0600)
-}
-
-func LoadConfig(path string) (Config, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return Config{}, fmt.Errorf("read config: %w", err)
-	}
-	var p persistedConfig
-	if err := json.Unmarshal(data, &p); err != nil {
-		return Config{}, fmt.Errorf("parse config: %w", err)
-	}
-	cfg := Config{
-		APIKey:     p.APIKey,
-		APIURL:     p.APIURL,
-		DeviceName: p.DeviceName,
-	}
-	if p.HeartbeatIntervalSeconds > 0 {
-		cfg.HeartbeatInterval = time.Duration(p.HeartbeatIntervalSeconds) * time.Second
-	}
-	return cfg, nil
 }
 
 // envSecondsOrDefault reads a positive integer env var as seconds, falling
