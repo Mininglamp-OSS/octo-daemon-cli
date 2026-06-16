@@ -34,7 +34,7 @@
 Agent，并把实时清单上报给
 [`octo-server`](https://github.com/Mininglamp-OSS/octo-server)，由
 [`octo-web`](https://github.com/Mininglamp-OSS/octo-web) 在 Runtimes
-页面渲染、做延迟测试和触发远程升级。
+页面渲染和触发远程升级。
 
 ## 🌟 为什么用 Octo Daemon
 

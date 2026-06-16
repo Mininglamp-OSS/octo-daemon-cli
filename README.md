@@ -34,7 +34,7 @@ machine and server in your fleet. It runs as a `launchd` / `systemd`
 service, probes the AI agents installed locally, and pushes a live
 inventory to [`octo-server`](https://github.com/Mininglamp-OSS/octo-server)
 so [`octo-web`](https://github.com/Mininglamp-OSS/octo-web) can render
-the Runtimes view, kick off latency tests, and trigger remote
+the Runtimes view and trigger remote
 upgrades.
 
 ## 🌟 Why Octo Daemon
