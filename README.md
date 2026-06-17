@@ -30,18 +30,18 @@
 > **The local agent runtime reporter** for the OCTO platform. Detects installed AI agent CLIs (Claude Code, OpenClaw), reports status, agent bindings and plugin versions, supports remote one-click upgrades.
 
 `octo-daemon` is the small Go binary that lives on every developer
-machine and server in your fleet. It runs as a `launchd` / `systemd`
-service, probes the AI agents installed locally, and pushes a live
-inventory to [`octo-server`](https://github.com/Mininglamp-OSS/octo-server)
+machine and server in your fleet. It probes the AI agents installed
+locally and pushes a live inventory to
+[`octo-server`](https://github.com/Mininglamp-OSS/octo-server)
 so [`octo-web`](https://github.com/Mininglamp-OSS/octo-web) can render
 the Runtimes view and trigger remote
 upgrades.
 
 ## 🌟 Why Octo Daemon
 
-- **Zero-config inventory.** Drop the binary on a box, run `octo-daemon service install`, and every Claude / OpenClaw install on that machine appears on the OCTO Runtimes page within seconds.
+- **Fast inventory.** Point the binary at a space with `octo-daemon config`, run `octo-daemon start`, and every Claude / OpenClaw install on that machine appears on the OCTO Runtimes page within seconds. One daemon can serve **multiple spaces** at once.
 - **Remote upgrades, no SSH.** Daemon, OpenClaw plugins, and provider CLIs (Claude, OpenClaw itself) can all be upgraded from the OCTO web UI — atomic claim on the server, version-pinned downloads, register-time close-out.
-- **Self-healing by design.** Two-stage detection (fast register + async deep probe), 60s rescan, 30s server-side sweeper, exit-code-driven service respawn. A crashed daemon is back online in 10 seconds; an evicted API key shuts itself down cleanly.
+- **Self-healing by design.** Two-stage detection (fast register + async deep probe), 60s rescan, 30s server-side sweeper. Each space runs in its own supervised loop: a failing space is isolated and retried without affecting the others, and an evicted API key shuts that space down cleanly.
 
 ## 🚀 Quickstart
 
@@ -68,57 +68,76 @@ octo-daemon version
 > PATH (common with nvm or a custom prefix). Print the dir with
 > `echo "$(npm config get prefix)/bin"` and add it to your `PATH`.
 
-### 2. Get an API key
+### 2. Get your connection values
 
-In OCTO, send `/daemon` to BotFather. It returns the complete install
-command including your API key and server URL.
+In OCTO, send `/daemon` to BotFather. It returns the values you need for the
+next step: your **space ID**, the **server / fleet URLs**, and your **API key**.
 
-### 3. Start
-
-```bash
-octo-daemon start --api-key "uk_xxx" --api-url "http://your-server:8090"
-```
-
-`start` runs in the **foreground** (blocks the terminal) — good for a first
-run to watch it register. For a persistent background daemon, use the service
-in step 4 instead.
-
-### 4. (Recommended) Install as a service
+### 3. Configure a space
 
 ```bash
-octo-daemon service install
+octo-daemon config \
+  --space-id "your_space_id" \
+  --server-url "http://your-server:8090" \
+  --fleet-url  "http://your-server:8090" \
+  --api-key    "uk_xxx"
 ```
 
-On macOS this registers a user-level `launchd` agent
-(`ai.octo.daemon`); on Linux it registers a `systemd --user` unit.
-The service auto-starts at login, restarts on crash within 10
-seconds, and respawns with the new binary after a remote upgrade.
+`config` creates `~/.octo-daemon/<space_id>/` (generating that space's
+`daemon.id`) and upserts the profile into `~/.octo-daemon/config.json`. It is
+**idempotent by `--space-id`**: re-running updates that profile in place. To
+connect one machine to **multiple spaces**, run `config` once per space — each
+gets its own profile and its own backend connection.
+
+> `--matter-url` is accepted and stored for future use but is optional.
+
+### 4. Start
+
+```bash
+octo-daemon start            # foreground (blocks the terminal)
+octo-daemon start --daemon   # background (detached); logs to ~/.octo-daemon/daemon.log
+octo-daemon stop             # stop a running daemon (foreground or --daemon)
+```
+
+`start` reads **every** configured profile from `config.json` and supervises one
+backend connection per space inside a single process. A single space's failure
+(bad URL, evicted key) is isolated and retried without affecting the others.
 
 ### 5. Check status
 
 ```bash
-octo-daemon status            # process / version
-octo-daemon service status    # service install state + last log line
+octo-daemon status            # process / version / per-space profiles
 ```
 
-## ⚙️ Environment variables
+> Running as a managed `launchd` / `systemd` service is on the roadmap but not
+> documented yet — for now use `octo-daemon start --daemon` for a background
+> process.
 
-A single-host deployment needs only `--api-key` and `--api-url`. The variables
-below are optional; the daemon reads them from the environment (set them before
-`start`, or in the service env file). BotFather's `/daemon` reply already
-includes whichever URLs your deployment needs — these are documented here for
-custom/split setups.
+## ⚙️ Configuration & environment
+
+Each space's connection is stored as a **profile** in
+`~/.octo-daemon/config.json` (written by `octo-daemon config`):
+
+| Field | Required | Purpose |
+|---|---|---|
+| `space_id` | yes | Profile key + per-space data directory name |
+| `api_key` | yes | Space-scoped API key |
+| `fleet_url` | yes | Runtime / bot endpoints + SSE |
+| `server_url` | yes | Auth + bot-token endpoints |
+| `matter_url` | no | Reserved for future use (stored, not yet consumed) |
+
+> **Split-service deployments** set `fleet_url` and `server_url` to different
+> URLs; a single-host deployment points both at the same address. The old
+> `OCTO_FLEET_URL` / `OCTO_SERVER_URL` environment variables have been
+> **removed** — routing now lives per-profile in `config.json`. There is no
+> separate matter URL env var either.
+
+The remaining environment variables are runtime knobs, not routing:
 
 | Variable | Default | When to set |
 |---|---|---|
-| `OCTO_FLEET_URL` | `--api-url` | **Split-service deployment** — fleet (runtime/bot endpoints) runs at a different URL than the main API. |
-| `OCTO_SERVER_URL` | `--api-url` | **Split-service deployment** — auth / bot-token endpoints run at a different URL than the main API. |
 | `OCTO_SSE_DISABLED` | unset | Set to `1` to disable the SSE reverse-dispatch channel and fall back to heartbeat polling (rollback knob). |
 | `OCTO_SLOW_DETECT_SECONDS` | `60` | Rescan interval for deep agent detection — tuning only. |
-
-> The daemon reaches matter (task ack/pull) through the fleet/server endpoints
-> above — there is **no** separate matter URL variable. (An `OCTO_MATTER_URL`
-> seen in older BotFather output is unused by the daemon.)
 
 ## 📦 Supported agents
 
@@ -140,24 +159,19 @@ custom/split setups.
    gateway up/down transitions; re-registers on change.
 5. **Server sweeper (30s)** — Marks runtimes offline after 45s of
    silence, deletes after 7 days; expires stuck upgrade tasks.
-6. **Service-mode self-heal** — `launchd KeepAlive` /
-   `systemd Restart=on-failure` plus exit-code mapping (75 =
-   respawn-after-upgrade; 78 = api-key-evicted-don't-loop; 0 = clean
-   exit).
 
 ## 🗂 Local data
 
 Everything lives under `~/.octo-daemon/`:
 
-| File | Purpose |
+| Path | Purpose |
 |------|---------|
-| `daemon.id` | Machine UUID (v7, generated once, kept forever) |
-| `daemon.lock` | File lock — single-instance guard |
+| `config.json` | Profiles (one per space); written by `octo-daemon config`, read by `start` |
+| `<space_id>/daemon.id` | Per-space daemon identity (UUID v7, generated once, kept forever) |
+| `<space_id>/events.state` | Per-space SSE dedup cursor |
+| `daemon.lock` | File lock — single-instance guard (one process serves all spaces) |
 | `daemon.pid` | Current process PID |
-| `config.json` | `service install` reads this for api-key / api-url |
-| `service-env/ai.octo.daemon.env` | Service-mode env file (HOME / PATH / OCTO_DAEMON_UNDER_SERVICE=1) |
-| `service-env/ai.octo.daemon-env-wrapper.sh` | Service-mode `exec` wrapper |
-| `logs/daemon.log` | macOS service stdout (Linux uses journal) |
+| `daemon.log` | Background (`start --daemon`) stdout/stderr |
 
 ## 🛠 Build from source
 

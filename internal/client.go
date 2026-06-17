@@ -100,14 +100,10 @@ type RegisterResponse struct {
 
 func (c *Client) Register(ctx context.Context, req RegisterRequest) (*RegisterResponse, error) {
 	var resp RegisterResponse
-	if err := c.postJSON(ctx, "/v1/daemon/register", req, &resp); err != nil {
+	if err := c.postJSON(ctx, "/v1/runtimes", req, &resp); err != nil {
 		return nil, fmt.Errorf("register: %w", err)
 	}
 	return &resp, nil
-}
-
-type HeartbeatRequest struct {
-	RuntimeID int64 `json:"runtime_id"`
 }
 
 type PendingUpgrade struct {
@@ -136,13 +132,10 @@ type PendingAgentCommand struct {
 }
 
 type HeartbeatResponse struct {
-	Status         string               `json:"status"`
 	PendingUpgrade *PendingUpgrade      `json:"pending_upgrade,omitempty"`
 	PendingCommand *PendingAgentCommand `json:"pending_command,omitempty"`
-	PendingTask    *PendingBotTask      `json:"pending_task,omitempty"`
 	// PR-B.2: fleet returns the daemon's managed bot list so daemon can
-	// pull tasks for each from matter directly. Empty / missing on
-	// pre-PR-B.2 fleet builds — daemon falls back to PendingTask.
+	// pull tasks for each from matter directly.
 	ManagedBots []ManagedBot `json:"managed_bots,omitempty"`
 }
 
@@ -154,58 +147,28 @@ type ManagedBot struct {
 	WorkspaceID string `json:"workspace_id"`
 }
 
-// PendingBotTask is the server's pull-mode dispatch for a matter-driven
-// agent task. Server has already resolved bot_uid → agent_id binding; we
-// just spawn `openclaw agent --agent <id>` with the prompt and ack back.
-type PendingBotTask struct {
-	ID         int64  `json:"id"`
-	AgentID    string `json:"agent_id"`
-	Prompt     string `json:"prompt"`
-	MatterID   string `json:"matter_id"`
-	BotUID     string `json:"bot_uid"`
-	ClaimToken string `json:"claim_token"`
-	// RuntimeKind selects which runtime adapter executes this task
-	// (openclaw|claude). Empty on pre-runtime-kind fleet builds,
-	// where Registry.Get normalizes it to openclaw for backward compatibility.
-	RuntimeKind string `json:"runtime_kind"`
-}
-
 func (c *Client) Heartbeat(ctx context.Context, runtimeID int64) (*HeartbeatResponse, error) {
-	req := HeartbeatRequest{RuntimeID: runtimeID}
 	var resp HeartbeatResponse
-	if err := c.postJSON(ctx, "/v1/daemon/heartbeat", req, &resp); err != nil {
+	path := fmt.Sprintf("/v1/runtimes/%d/heartbeat", runtimeID)
+	if err := c.postJSON(ctx, path, struct{}{}, &resp); err != nil {
 		return nil, err
 	}
 	return &resp, nil
 }
 
 func (c *Client) ReportUpgrade(ctx context.Context, taskID, status, errMsg string) error {
-	return c.postJSON(ctx, "/v1/daemon/upgrade/"+taskID, map[string]string{
+	return c.postJSON(ctx, "/v1/upgrades/"+taskID+"/report", map[string]string{
 		"status": status, "error": errMsg,
 	}, nil)
 }
 
 // AckBot acknowledges completion (or failure) of a bot.provision command.
-// Path mirrors server's daemon route group.
 func (c *Client) AckBot(ctx context.Context, id int64, claimToken, status, errMsg string) error {
-	path := fmt.Sprintf("/v1/daemon/bots/%d/ack", id)
+	path := fmt.Sprintf("/v1/bots/%d/ack", id)
 	return c.postJSON(ctx, path, map[string]string{
 		"claim_token": claimToken,
 		"status":      status,
 		"error_msg":   errMsg,
-	}, nil)
-}
-
-// AckBotTask reports the outcome of a matter-driven agent task. status must
-// be "succeeded" or "failed"; on success, result_summary holds the agent
-// reply (truncated for storage); on failure, error_msg explains why.
-func (c *Client) AckBotTask(ctx context.Context, id int64, claimToken, status, resultSummary, errMsg string) error {
-	path := fmt.Sprintf("/v1/daemon/bot-tasks/%d/ack", id)
-	return c.postJSON(ctx, path, map[string]string{
-		"claim_token":    claimToken,
-		"status":         status,
-		"result_summary": resultSummary,
-		"error_msg":      errMsg,
 	}, nil)
 }
 
@@ -215,7 +178,44 @@ type DeregisterRequest struct {
 
 func (c *Client) Deregister(ctx context.Context, runtimeIDs []int64) error {
 	req := DeregisterRequest{RuntimeIDs: runtimeIDs}
-	return c.postJSON(ctx, "/v1/daemon/deregister", req, nil)
+	return c.postJSON(ctx, "/v1/runtimes/_deregister", req, nil)
+}
+
+// listProvidersResp 对齐 fleet GET /v1/daemon/runtime-providers 响应。
+// 该端点由 #52 引入,不在 resource-API envelope 重构范围内,故直接解
+// {"providers":[...]} 不走 postJSON 的 data 信封。
+type listProvidersResp struct {
+	Providers []fleetProvider `json:"providers"`
+}
+
+// ListProviders 拉取 fleet 当前启用的 runtime provider 列表 (#52)。403 →
+// ForbiddenError 让 daemon checkForbidden 退出,与 postJSON 语义一致。
+func (c *Client) ListProviders(ctx context.Context) ([]fleetProvider, error) {
+	url := c.baseURL + "/v1/daemon/runtime-providers"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	req.Header.Set("X-Client-Platform", "daemon")
+	req.Header.Set("X-Client-Version", c.cliVersion)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize))
+	if resp.StatusCode == http.StatusForbidden {
+		return nil, &ForbiddenError{Message: string(body)}
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("list providers status %d: %s", resp.StatusCode, string(body))
+	}
+	var out listProvidersResp
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, fmt.Errorf("unmarshal providers: %w", err)
+	}
+	return out.Providers, nil
 }
 
 func (c *Client) postJSON(ctx context.Context, path string, body any, result any) error {
@@ -251,12 +251,31 @@ func (c *Client) postJSON(ctx context.Context, path string, body any, result any
 		return &ForbiddenError{Message: string(respBody)}
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		// fleet renders errors as {"error":{"code","message",...}} (R2).
+		var env struct {
+			Error *struct {
+				Code    string `json:"code"`
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if json.Unmarshal(respBody, &env) == nil && env.Error != nil {
+			return fmt.Errorf("fleet %d %s: %s", resp.StatusCode, env.Error.Code, env.Error.Message)
+		}
 		return fmt.Errorf("server returned %d: %s", resp.StatusCode, string(respBody))
 	}
 
 	if result != nil && len(respBody) > 0 {
-		if err := json.Unmarshal(respBody, result); err != nil {
-			return fmt.Errorf("unmarshal response: %w", err)
+		// fleet wraps success payloads in a {"data": ...} envelope (R1).
+		var env struct {
+			Data json.RawMessage `json:"data"`
+		}
+		if err := json.Unmarshal(respBody, &env); err != nil {
+			return fmt.Errorf("unmarshal envelope: %w", err)
+		}
+		if len(env.Data) > 0 {
+			if err := json.Unmarshal(env.Data, result); err != nil {
+				return fmt.Errorf("unmarshal data: %w", err)
+			}
 		}
 	}
 
@@ -274,40 +293,4 @@ func normalizeOS() string {
 	default:
 		return runtime.GOOS
 	}
-}
-
-// listProvidersResp 对齐 fleet GET /v1/daemon/runtime-providers 响应。
-type listProvidersResp struct {
-	Providers []fleetProvider `json:"providers"`
-}
-
-// ListProviders 拉 fleet active provider 列表(PR-A 端点)。
-// 老 fleet 无此端点会 404 → 返错,调用方保留上次快照 / 编译期 fallback。
-func (c *Client) ListProviders(ctx context.Context) ([]fleetProvider, error) {
-	url := c.baseURL + "/v1/daemon/runtime-providers"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Authorization", "Bearer "+c.apiKey)
-	req.Header.Set("X-Client-Platform", "daemon")
-	req.Header.Set("X-Client-Version", c.cliVersion)
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize))
-	if resp.StatusCode == http.StatusForbidden {
-		// 与 postJSON 一致:403 → ForbiddenError,daemon checkForbidden 退出。
-		return nil, &ForbiddenError{Message: string(body)}
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("list providers status %d: %s", resp.StatusCode, string(body))
-	}
-	var out listProvidersResp
-	if err := json.Unmarshal(body, &out); err != nil {
-		return nil, fmt.Errorf("unmarshal providers: %w", err)
-	}
-	return out.Providers, nil
 }

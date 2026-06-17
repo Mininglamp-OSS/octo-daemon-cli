@@ -29,7 +29,7 @@ func testRegistry(t *testing.T) *adapter.Registry {
 func newTestDaemon(t *testing.T, srv *httptest.Server) *Daemon {
 	t.Helper()
 	return &Daemon{
-		cfg:      Config{APIURL: srv.URL, APIKey: "test-key"},
+		cfg:      Config{FleetURL: srv.URL, APIKey: "test-key"},
 		client:   NewClient(srv.URL, "test-key", "0.0.0-test"),
 		registry: testRegistry(t),
 	}
