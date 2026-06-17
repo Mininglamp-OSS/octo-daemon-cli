@@ -181,6 +181,43 @@ func (c *Client) Deregister(ctx context.Context, runtimeIDs []int64) error {
 	return c.postJSON(ctx, "/v1/runtimes/_deregister", req, nil)
 }
 
+// listProvidersResp 对齐 fleet GET /v1/daemon/runtime-providers 响应。
+// 该端点由 #52 引入,不在 resource-API envelope 重构范围内,故直接解
+// {"providers":[...]} 不走 postJSON 的 data 信封。
+type listProvidersResp struct {
+	Providers []fleetProvider `json:"providers"`
+}
+
+// ListProviders 拉取 fleet 当前启用的 runtime provider 列表 (#52)。403 →
+// ForbiddenError 让 daemon checkForbidden 退出,与 postJSON 语义一致。
+func (c *Client) ListProviders(ctx context.Context) ([]fleetProvider, error) {
+	url := c.baseURL + "/v1/daemon/runtime-providers"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	req.Header.Set("X-Client-Platform", "daemon")
+	req.Header.Set("X-Client-Version", c.cliVersion)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize))
+	if resp.StatusCode == http.StatusForbidden {
+		return nil, &ForbiddenError{Message: string(body)}
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("list providers status %d: %s", resp.StatusCode, string(body))
+	}
+	var out listProvidersResp
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, fmt.Errorf("unmarshal providers: %w", err)
+	}
+	return out.Providers, nil
+}
+
 func (c *Client) postJSON(ctx context.Context, path string, body any, result any) error {
 	data, err := json.Marshal(body)
 	if err != nil {

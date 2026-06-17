@@ -27,20 +27,20 @@
 
 # 🛰 Octo Daemon CLI
 
-> **The local agent runtime reporter** for the OCTO platform. Detects installed AI agent CLIs (Claude Code, Codex, OpenClaw, Hermes), reports status, agent bindings and plugin versions, supports remote one-click upgrades.
+> **The local agent runtime reporter** for the OCTO platform. Detects installed AI agent CLIs (Claude Code, OpenClaw), reports status, agent bindings and plugin versions, supports remote one-click upgrades.
 
 `octo-daemon` is the small Go binary that lives on every developer
 machine and server in your fleet. It probes the AI agents installed
 locally and pushes a live inventory to
 [`octo-server`](https://github.com/Mininglamp-OSS/octo-server)
 so [`octo-web`](https://github.com/Mininglamp-OSS/octo-web) can render
-the Runtimes view, kick off latency tests, and trigger remote
+the Runtimes view and trigger remote
 upgrades.
 
 ## 🌟 Why Octo Daemon
 
-- **Fast inventory.** Point the binary at a space with `octo-daemon config`, run `octo-daemon start`, and every Claude / Codex / OpenClaw / Hermes install on that machine appears on the OCTO Runtimes page within seconds. One daemon can serve **multiple spaces** at once.
-- **Remote upgrades, no SSH.** Daemon, OpenClaw plugins, and provider CLIs (Claude, Codex, Hermes, OpenClaw itself) can all be upgraded from the OCTO web UI — atomic claim on the server, version-pinned downloads, register-time close-out.
+- **Fast inventory.** Point the binary at a space with `octo-daemon config`, run `octo-daemon start`, and every Claude / OpenClaw install on that machine appears on the OCTO Runtimes page within seconds. One daemon can serve **multiple spaces** at once.
+- **Remote upgrades, no SSH.** OpenClaw / cc-octo plugins and provider CLIs (Claude, OpenClaw) can be upgraded from the OCTO web UI — atomic claim on the server, version-pinned downloads, register-time close-out. The daemon binary itself rolls via npm / k8s, not in-process.
 - **Self-healing by design.** Two-stage detection (fast register + async deep probe), 60s rescan, 30s server-side sweeper. Each space runs in its own supervised loop: a failing space is isolated and retried without affecting the others, and an evicted API key shuts that space down cleanly.
 
 ## 🚀 Quickstart
@@ -143,9 +143,7 @@ The remaining environment variables are runtime knobs, not routing:
 
 | Agent | Probe | Status rule | Extra data |
 |-------|-------|-------------|------------|
-| Claude Code | `claude --version` | Installed = online | — |
-| Codex | `codex --version` | Installed = online | — |
-| Hermes | `hermes --version` | Installed = online | — |
+| Claude Code | `claude --version` + cc-channel-octo gateway probe | Gateway running = online | cc-octo plugin version |
 | OpenClaw | `openclaw --version` + gateway port probe | Gateway listening = online | Agent list, bindings, plugins |
 
 ## 🧬 How it works
@@ -155,12 +153,12 @@ The remaining environment variables are runtime knobs, not routing:
 2. **Slow detect (async)** — OpenClaw `agents list`, `agents
    bindings`, `plugins list` run in background goroutines and
    re-register when bindings or plugin versions change.
-3. **Heartbeat (15s)** — Keeps the runtime alive; the server claims
-   pending ping / upgrade tasks on the response.
+3. **Heartbeat (5s)** — Keeps the runtime alive; the server claims
+   pending upgrade tasks on the response.
 4. **Rescan (60s)** — Detects newly-installed CLIs, version bumps,
    gateway up/down transitions; re-registers on change.
 5. **Server sweeper (30s)** — Marks runtimes offline after 45s of
-   silence, deletes after 7 days; expires stuck ping/upgrade tasks.
+   silence, deletes after 7 days; expires stuck upgrade tasks.
 
 ## 🗂 Local data
 

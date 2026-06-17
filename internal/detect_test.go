@@ -144,3 +144,71 @@ func TestIsCcChannelOctoRunning_NotInPath(t *testing.T) {
 		t.Fatalf("expected false when binary not in PATH, got true")
 	}
 }
+
+// findCcOctoPlugin returns the cc-octo plugin entry from a runtime's Plugins, or nil.
+func findCcOctoPlugin(r RuntimeInfo) *PluginInfo {
+	for i := range r.Plugins {
+		if r.Plugins[i].Name == "cc-octo" {
+			return &r.Plugins[i]
+		}
+	}
+	return nil
+}
+
+func TestEnrichClaudeRuntime_AddsCcOctoPlugin(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("PATH-shadow trick relies on POSIX shell")
+	}
+	dir := t.TempDir()
+	writeFakeBin(t, dir, "cc-channel-octo", "1.2.3")
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	// Offline on purpose: cc-octo version must be reported regardless of gateway
+	// liveness, so the upgrade entry survives an offline gateway.
+	in := []RuntimeInfo{{Provider: "claude", Status: "offline"}}
+	out := EnrichClaudeRuntime(in)
+	p := findCcOctoPlugin(out[0])
+	if p == nil {
+		t.Fatalf("expected cc-octo plugin, got Plugins=%v", out[0].Plugins)
+	}
+	if p.Version != "1.2.3" {
+		t.Fatalf("cc-octo version got=%q want=1.2.3", p.Version)
+	}
+}
+
+func TestEnrichClaudeRuntime_StripsVPrefixAndText(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("PATH-shadow trick relies on POSIX shell")
+	}
+	for _, out := range []string{"v1.2.3", "cc-channel-octo 1.2.3"} {
+		dir := t.TempDir()
+		writeFakeBin(t, dir, "cc-channel-octo", out)
+		t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+		got := EnrichClaudeRuntime([]RuntimeInfo{{Provider: "claude", Status: "online"}})
+		p := findCcOctoPlugin(got[0])
+		if p == nil || p.Version != "1.2.3" {
+			t.Fatalf("output %q → got %+v, want version 1.2.3", out, p)
+		}
+	}
+}
+
+func TestEnrichClaudeRuntime_SkipsNonClaude(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("PATH-shadow trick relies on POSIX shell")
+	}
+	dir := t.TempDir()
+	writeFakeBin(t, dir, "cc-channel-octo", "1.2.3")
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	out := EnrichClaudeRuntime([]RuntimeInfo{{Provider: "openclaw", Status: "online"}})
+	if p := findCcOctoPlugin(out[0]); p != nil {
+		t.Fatalf("openclaw runtime must not get a cc-octo plugin, got %+v", p)
+	}
+}
+
+func TestEnrichClaudeRuntime_MissingBinary_NoPlugin(t *testing.T) {
+	t.Setenv("PATH", t.TempDir()) // no cc-channel-octo on PATH
+	out := EnrichClaudeRuntime([]RuntimeInfo{{Provider: "claude", Status: "online"}})
+	if p := findCcOctoPlugin(out[0]); p != nil {
+		t.Fatalf("missing cc-channel-octo must yield no cc-octo plugin, got %+v", p)
+	}
+}

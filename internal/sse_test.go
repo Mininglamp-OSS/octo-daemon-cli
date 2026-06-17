@@ -36,7 +36,7 @@ func TestDedupState_LoadEmpty(t *testing.T) {
 	if err := d.load(); err != nil {
 		t.Fatalf("load empty: %v", err)
 	}
-	if d.seen(sseEventPing, "ping_1") {
+	if d.seen(sseEventUpgrade, "upg_1") {
 		t.Error("empty state should not contain anything")
 	}
 }
@@ -46,13 +46,13 @@ func TestDedupState_MarkSeenRoundtrip(t *testing.T) {
 	d := newDedupState("daemon-A")
 	_ = d.load()
 
-	if err := d.mark(sseEventPing, "ping_42"); err != nil {
+	if err := d.mark(sseEventUpgrade, "upg_42"); err != nil {
 		t.Fatalf("mark: %v", err)
 	}
-	if !d.seen(sseEventPing, "ping_42") {
+	if !d.seen(sseEventUpgrade, "upg_42") {
 		t.Error("mark then seen should return true")
 	}
-	if d.seen(sseEventPing, "ping_other") {
+	if d.seen(sseEventUpgrade, "upg_other") {
 		t.Error("other id should not be seen")
 	}
 
@@ -61,7 +61,7 @@ func TestDedupState_MarkSeenRoundtrip(t *testing.T) {
 	if err := d2.load(); err != nil {
 		t.Fatalf("reload: %v", err)
 	}
-	if !d2.seen(sseEventPing, "ping_42") {
+	if !d2.seen(sseEventUpgrade, "upg_42") {
 		t.Error("reload should preserve marked id")
 	}
 }
@@ -101,14 +101,14 @@ func TestDedupState_CorruptFileRecovery(t *testing.T) {
 	if err := d.load(); err != nil {
 		t.Fatalf("load 应当 graceful, 不该 return err on corrupt: %v", err)
 	}
-	if d.seen(sseEventPing, "anything") {
+	if d.seen(sseEventUpgrade, "anything") {
 		t.Error("corrupt-state-as-empty: nothing should be seen")
 	}
 	// 后续 mark 仍能正常工作 (overwrite corrupt file)
-	if err := d.mark(sseEventPing, "ping_recovered"); err != nil {
+	if err := d.mark(sseEventUpgrade, "upg_recovered"); err != nil {
 		t.Fatalf("post-recovery mark: %v", err)
 	}
-	if !d.seen(sseEventPing, "ping_recovered") {
+	if !d.seen(sseEventUpgrade, "upg_recovered") {
 		t.Error("post-recovery mark/seen broken")
 	}
 }
@@ -119,17 +119,17 @@ func TestDedupState_LazyPruneTTL(t *testing.T) {
 	_ = d.load()
 	// 手动 inject 一个过期 entry (24h+1s 前)
 	d.mu.Lock()
-	d.entries[sseEventPing] = map[string]int64{
-		"stale_ping": time.Now().Add(-sseDedupTTL - time.Second).UnixMilli(),
-		"fresh_ping": time.Now().UnixMilli(),
+	d.entries[sseEventUpgrade] = map[string]int64{
+		"stale_upg": time.Now().Add(-sseDedupTTL - time.Second).UnixMilli(),
+		"fresh_upg": time.Now().UnixMilli(),
 	}
 	d.mu.Unlock()
 
-	// seen("fresh_ping") 触发 lazy prune
-	if !d.seen(sseEventPing, "fresh_ping") {
+	// seen("fresh_upg") 触发 lazy prune
+	if !d.seen(sseEventUpgrade, "fresh_upg") {
 		t.Error("fresh entry should remain")
 	}
-	if d.seen(sseEventPing, "stale_ping") {
+	if d.seen(sseEventUpgrade, "stale_upg") {
 		t.Error("stale entry should be pruned on read")
 	}
 }
@@ -203,6 +203,39 @@ func TestDispatch_RecordsEventIDForReconnect(t *testing.T) {
 
 	if got := d.lastEventID(99); got != 500 {
 		t.Errorf("dispatch should recordEventID(99, 500), got %d", got)
+	}
+}
+
+// 历史 ping replay 兼容: ping 处理已删, fleet 端 ping 端点已 no-op, 但旧
+// daemon 重连时仍可能 replay 到历史 "ping" event_log 行. 这种已知事件类型
+// 现在必须当 unknown event 走 default 分支被 advance() 跳过 — 不调任何
+// handler, cursor 照常推进, 不卡在历史 ping 上反复 replay.
+func TestDispatch_HistoricalPingSkippedAndAdvances(t *testing.T) {
+	tempHome(t)
+	d := newDedupState("daemon-ping-replay")
+	_ = d.load()
+	c := &SSEClient{dedup: d, apiClient: &Client{httpClient: &http.Client{Timeout: 30 * time.Second}}}
+
+	bp := &mockBP{}
+	up := &mockUp{}
+	mb := &mockMB{}
+	ev := sseEvent{
+		ID:   "123",
+		Type: "ping",
+		Data: `{"ping_id":"ping_legacy"}`,
+	}
+	if derr := c.dispatch(context.Background(), 7, ev, bp, up, mb); derr != nil {
+		t.Fatalf("historical ping must not error, got %v", derr)
+	}
+
+	// 不调任何 handler.
+	if bp.calls.Load() != 0 || up.calls.Load() != 0 || mb.calls.Load() != 0 {
+		t.Errorf("historical ping 不该触发任何 handler, bp=%d up=%d mb=%d",
+			bp.calls.Load(), up.calls.Load(), mb.calls.Load())
+	}
+	// 被 default 当 unknown event advance — cursor 推进到 123, 不卡.
+	if got := d.lastEventID(7); got != 123 {
+		t.Errorf("historical ping 应被 default advance cursor 到 123, got %d", got)
 	}
 }
 
@@ -354,7 +387,7 @@ func TestDedupState_ConcurrentMarkPersistsAllEntries(t *testing.T) {
 	}
 }
 
-// B1 (caster review final from codex): claim atomic, 并发同 source_pk 只
+// B1 (caster review final): claim atomic, 并发同 source_pk 只
 // 有一个 goroutine 返 true. 防 SSE+heartbeat 双路径在 mark-after-handler
 // 窗口同时 spawn handler.
 func TestDedupState_ConcurrentClaimOnlyOneWins(t *testing.T) {
@@ -363,14 +396,14 @@ func TestDedupState_ConcurrentClaimOnlyOneWins(t *testing.T) {
 	_ = d.load()
 
 	const concurrency = 8
-	const sourceID = "ping_race"
+	const sourceID = "upg_race"
 	var winners atomic.Int64
 	var wg sync.WaitGroup
 	for i := 0; i < concurrency; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			ok, _, err := d.claim(sseEventPing, sourceID)
+			ok, _, err := d.claim(sseEventUpgrade, sourceID)
 			if err != nil {
 				t.Errorf("claim err: %v", err)
 				return
@@ -386,16 +419,16 @@ func TestDedupState_ConcurrentClaimOnlyOneWins(t *testing.T) {
 	}
 
 	// unclaim 后下次 claim 又能成功
-	if err := d.unclaim(sseEventPing, sourceID); err != nil {
+	if err := d.unclaim(sseEventUpgrade, sourceID); err != nil {
 		t.Fatalf("unclaim: %v", err)
 	}
-	ok, alreadyDone, err := d.claim(sseEventPing, sourceID)
+	ok, alreadyDone, err := d.claim(sseEventUpgrade, sourceID)
 	if err != nil || !ok || alreadyDone {
 		t.Errorf("post-unclaim claim should succeed (ok=true, alreadyDone=false), got ok=%v alreadyDone=%v err=%v", ok, alreadyDone, err)
 	}
 }
 
-// R4 (codex round 4 BLOCKER): claim 返三态. inflight (claimed=false,
+// R4 (round 4): claim 返三态. inflight (claimed=false,
 // alreadyDone=false) 时 caller 不能 advance cursor, owner markDone 后
 // 重新 claim 才能 alreadyDone=true.
 func TestDedupState_ClaimInflightVsDone(t *testing.T) {
@@ -435,7 +468,7 @@ func TestDedupState_ClaimInflightVsDone(t *testing.T) {
 	}
 }
 
-// R4 round 5 (codex review final BLOCKER): daemon 重启后 inflight 必须
+// R4 round 5 (review (BLOCKER)): daemon 重启后 inflight 必须
 // drop (不该跨 restart 持久化), 否则 owner goroutine 死了没法 markDone/
 // unclaim, 下次 claim 永久 (false, false, nil) 卡死循环.
 //
@@ -489,19 +522,19 @@ func TestDedupState_HotPathPrunes(t *testing.T) {
 	// inject 200 过期 (ts 25h 前) done entries (mock 之前 markDone 留的 stale)
 	d.mu.Lock()
 	staleTS := time.Now().Add(-25 * time.Hour).UnixMilli()
-	d.entries[sseEventPing] = make(map[string]int64, 200)
-	d.phases[sseEventPing] = make(map[string]entryPhase, 200)
+	d.entries[sseEventBotProvision] = make(map[string]int64, 200)
+	d.phases[sseEventBotProvision] = make(map[string]entryPhase, 200)
 	for i := 0; i < 200; i++ {
 		id := fmt.Sprintf("stale_%d", i)
-		d.entries[sseEventPing][id] = staleTS
-		d.phases[sseEventPing][id] = phaseDone
+		d.entries[sseEventBotProvision][id] = staleTS
+		d.phases[sseEventBotProvision][id] = phaseDone
 	}
 	d.mu.Unlock()
 
 	beforeSize := func() int {
 		d.mu.Lock()
 		defer d.mu.Unlock()
-		return len(d.entries[sseEventPing])
+		return len(d.entries[sseEventBotProvision])
 	}
 	if beforeSize() != 200 {
 		t.Fatalf("setup: expected 200 stale entries, got %d", beforeSize())
@@ -515,13 +548,13 @@ func TestDedupState_HotPathPrunes(t *testing.T) {
 		}
 	}
 
-	// prune 应当清掉 200 个 stale ping entries
+	// prune 应当清掉 200 个 stale bot_provision entries
 	d.mu.Lock()
-	stalePingRemaining := len(d.entries[sseEventPing])
+	staleRemaining := len(d.entries[sseEventBotProvision])
 	freshUpgradeCount := len(d.entries[sseEventUpgrade])
 	d.mu.Unlock()
-	if stalePingRemaining != 0 {
-		t.Errorf("hot-path prune 必须清掉所有 stale done entries, 还剩 %d (D-2)", stalePingRemaining)
+	if staleRemaining != 0 {
+		t.Errorf("hot-path prune 必须清掉所有 stale done entries, 还剩 %d (D-2)", staleRemaining)
 	}
 	if freshUpgradeCount != dedupHotPrunePeriod {
 		t.Errorf("fresh entries 不该被 prune 掉, expected %d, got %d", dedupHotPrunePeriod, freshUpgradeCount)
@@ -550,7 +583,7 @@ func TestDedupState_HotPathPreservesInflight(t *testing.T) {
 	}
 }
 
-// B2 (caster review final from codex): handler 失败时 lastEventID 不能推进,
+// B2 (caster review final): handler 失败时 lastEventID 不能推进,
 // 防失败 event 被 Last-Event-ID 跳过永不 replay.
 func TestDispatch_HandlerErrorDoesNotAdvanceLastEventID(t *testing.T) {
 	tempHome(t)
@@ -586,7 +619,7 @@ func TestDispatch_HandlerErrorDoesNotAdvanceLastEventID(t *testing.T) {
 	}
 }
 
-// B2 round 3 (codex): readLoop 看 dispatch err 必须 return 触发重连. 不
+// B2 round 3 (review): readLoop 看 dispatch err 必须 return 触发重连. 不
 // 继续读后续 frame, 防 max cursor 越过失败 event id.
 //
 // 模拟: 1 个 fail event + 1 个 success event 在同 stream, readLoop 应该
@@ -627,8 +660,8 @@ data: {"task_id":"upg_ok","component":"octo-daemon"}
 
 func TestSSEClient_ReadLoop_ParsesFrames(t *testing.T) {
 	tempHome(t)
-	// 只测 upgrade event — ping/bot_provision dispatch 会触发网络 IO
-	// (ReportPing / fetchBotProvision), 单独测. 这里仅验 wire parser
+	// 只测 upgrade event — bot_provision dispatch 会触发网络 IO
+	// (fetchBotProvision), 单独测. 这里仅验 wire parser
 	// 拆帧正确.
 	body := `event: upgrade
 id: 2
@@ -933,11 +966,13 @@ type mockMB struct {
 	mu      sync.Mutex
 	added   atomic.Int64
 	removed atomic.Int64
+	calls   atomic.Int64
 }
 
 func (m *mockMB) ApplyManagedBotsDelta(added, removed []string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.calls.Add(1)
 	m.added.Add(int64(len(added)))
 	m.removed.Add(int64(len(removed)))
 }

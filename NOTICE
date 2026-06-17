@@ -36,8 +36,6 @@ service frameworks at runtime via their CLI surfaces:
 * Linux systemd (LGPL-2.1+, not linked, invoked as user-mode service)
 * OpenClaw (https://github.com/openclaw/openclaw)
 * Claude Code CLI (Anthropic)
-* OpenAI Codex CLI
-* Hermes Agent (https://github.com/NousResearch/hermes-agent)
 
 Detection and version-probing of these tools is read-only and uses
 their published CLI contracts; no source from these projects is

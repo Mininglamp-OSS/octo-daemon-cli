@@ -27,18 +27,18 @@
 
 # 🛰 Octo Daemon CLI（简体中文）
 
-> **OCTO 平台的本机 Agent Runtime 上报守护进程**。自动检测本机已安装的 AI Agent CLI（Claude Code、Codex、OpenClaw、Hermes），上报版本、agent 绑定和插件状态，支持远程一键升级。
+> **OCTO 平台的本机 Agent Runtime 上报守护进程**。自动检测本机已安装的 AI Agent CLI（Claude Code、OpenClaw），上报版本、agent 绑定和插件状态，支持远程一键升级。
 
 `octo-daemon` 是一个轻量级 Go 二进制，安装在团队成员的开发机或
 服务器上，自动探测本机 AI Agent，并把实时清单上报给
 [`octo-server`](https://github.com/Mininglamp-OSS/octo-server)，由
 [`octo-web`](https://github.com/Mininglamp-OSS/octo-web) 在 Runtimes
-页面渲染、做延迟测试和触发远程升级。
+页面渲染和触发远程升级。
 
 ## 🌟 为什么用 Octo Daemon
 
-- **快速清单。** 用 `octo-daemon config` 把二进制对准一个 space，执行 `octo-daemon start`，本机上所有 Claude / Codex / OpenClaw / Hermes 都会在数秒内出现在 OCTO Runtimes 页面。一个 daemon 可同时服务**多个 space**。
-- **远程升级，无需 SSH。** Daemon 本身、OpenClaw 插件以及四个 provider CLI（Claude / Codex / Hermes / OpenClaw）都可以从 OCTO Web 一键升级 —— 服务端 atomic claim、版本 pin、register 时自动关单。
+- **快速清单。** 用 `octo-daemon config` 把二进制对准一个 space，执行 `octo-daemon start`，本机上所有 Claude / OpenClaw 都会在数秒内出现在 OCTO Runtimes 页面。一个 daemon 可同时服务**多个 space**。
+- **远程升级，无需 SSH。** OpenClaw / cc-octo 插件以及 provider CLI（Claude / OpenClaw）都可以从 OCTO Web 一键升级 —— 服务端 atomic claim、版本 pin、register 时自动关单。daemon 二进制本身走 npm / k8s 编排升级，不在进程内自升级。
 - **天然自愈。** 两阶段探测（快注册 + 异步深探）、60s 周期重扫、服务端 30s sweeper。每个 space 各跑一条受监管的循环：出问题的 space 会被隔离重试、不影响其他 space；API key 被踢则该 space 干净退出。
 
 ## 🚀 快速开始
@@ -136,18 +136,16 @@ octo-daemon status            # 进程 / 版本 / 各 space profile
 
 | Agent | 检测方式 | 状态判定 | 附加信息 |
 |-------|---------|---------|---------|
-| Claude Code | `claude --version` | 安装即在线 | — |
-| Codex | `codex --version` | 安装即在线 | — |
-| Hermes | `hermes --version` | 安装即在线 | — |
+| Claude Code | `claude --version` + cc-channel-octo gateway 探测 | Gateway 运行 = 在线 | cc-octo 插件版本 |
 | OpenClaw | `openclaw --version` + gateway 端口探测 | Gateway 在监听 = 在线 | Agent 列表、bindings、插件 |
 
 ## 🧬 工作原理
 
 1. **快速注册（< 5s）** —— 并行 `exec.LookPath` + `--version` 探测，所有已安装的立即上报 `online`。
 2. **慢速深探（异步）** —— OpenClaw `agents list / bindings / plugins list` 在后台 goroutine 跑，bindings / 插件版本变化时 re-register。
-3. **心跳（15s）** —— 维持 runtime 在线，服务端在响应里下发 pending ping / upgrade 任务。
+3. **心跳（5s）** —— 维持 runtime 在线，服务端在响应里下发 pending upgrade 任务。
 4. **重扫（60s）** —— 检测新装 CLI、版本变化、gateway 启停，变化触发 re-register。
-5. **服务端 sweeper（30s）** —— 45s 无心跳标 offline，7 天后删除；卡住的 ping/upgrade 任务自动 timeout。
+5. **服务端 sweeper（30s）** —— 45s 无心跳标 offline，7 天后删除；卡住的 upgrade 任务自动 timeout。
 
 ## 🗂 本地数据
 

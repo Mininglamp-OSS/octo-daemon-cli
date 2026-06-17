@@ -9,7 +9,7 @@ import (
 )
 
 // componentUpgradeSpec 描述一个 provider 组件的升级方式。
-// 各 CLI 都自带 update 子命令（claude update / codex update / hermes update / openclaw update），
+// 各 CLI 都自带 update 子命令（claude update / openclaw update），
 // daemon 只负责调用 + 注入非交互环境 + 探活。
 type componentUpgradeSpec struct {
 	// Command 返回 exec.CommandContext 的 argv。targetVersion 仅 openclaw 用（pin tag）。
@@ -24,15 +24,6 @@ var componentUpgradeSpecs = map[string]componentUpgradeSpec{
 	"claude": {
 		Command:     func(_ string) []string { return []string{"claude", "update"} },
 		ExecTimeout: 2 * time.Minute,
-	},
-	"codex": {
-		Command:     func(_ string) []string { return []string{"codex", "update"} },
-		ExecTimeout: 3 * time.Minute,
-	},
-	"hermes": {
-		// hermes update: git pull + pip reinstall，可能几分钟
-		Command:     func(_ string) []string { return []string{"hermes", "update"} },
-		ExecTimeout: 14 * time.Minute,
 	},
 	"openclaw": {
 		// pin 目标版本避免 runtime_latest_version 漂移导致升到非预期版本。
@@ -62,7 +53,7 @@ func openclawPostUpgradeGatewayCheck(_ context.Context, _ *Daemon) error {
 	return nil
 }
 
-// handleComponentUpgrade 处理 provider 组件升级（claude/codex/hermes/openclaw）。
+// handleComponentUpgrade 处理 provider 组件升级（claude/openclaw）。
 //
 // 流程：
 //  1. report installing（服务端 dispatched → installing）

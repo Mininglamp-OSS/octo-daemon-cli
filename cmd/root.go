@@ -7,7 +7,7 @@ import (
 var rootCmd = &cobra.Command{
 	Use:   "octo-daemon",
 	Short: "Octo Agent Runtime Daemon",
-	Long:  "Detects local AI agent runtimes (Claude Code, OpenClaw, Hermes, Codex) and reports status to Octo server.",
+	Long:  "Detects local AI agent runtimes (Claude Code, OpenClaw) and reports status to Octo server.",
 }
 
 func Execute() error {

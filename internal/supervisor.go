@@ -27,9 +27,9 @@ const (
 // respawns it on the new binary.
 //
 // NOTE: adapters are shared across all spaces and still write to per-machine
-// host paths (~/.cc-channel-octo, ~/.hermes/.env). When multiple spaces share
-// one runtime these can collide — per-space namespacing is deferred (doc 16
-// step 8) pending the pod topology decision.
+// host paths (~/.cc-channel-octo). When multiple spaces share one runtime these
+// can collide — per-space namespacing is deferred (doc 16 step 8) pending the
+// pod topology decision.
 type Supervisor struct {
 	profiles []Config
 	registry *adapter.Registry
@@ -38,11 +38,12 @@ type Supervisor struct {
 // NewSupervisor builds the shared adapter registry once and binds the profiles.
 func NewSupervisor(profiles []Config) (*Supervisor, error) {
 	reg := adapter.NewRegistry()
+	// Only openclaw + claude are supported runtimes (#52 dropped codex/hermes
+	// detection and adapters; provider availability is driven by the
+	// runtime-providers snapshot).
 	for _, a := range []adapter.RuntimeAdapter{
 		adapter.NewOpenclawAdapter(nil),
 		adapter.NewClaudeAdapter(nil),
-		adapter.NewCodexAdapter(nil),
-		adapter.NewHermesAdapter(nil),
 	} {
 		if err := reg.Register(a); err != nil {
 			return nil, fmt.Errorf("register runtime adapter: %w", err)

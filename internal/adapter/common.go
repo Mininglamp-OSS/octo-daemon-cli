@@ -70,7 +70,7 @@ func ExtractReplyFromEnvelope(stdout []byte) string {
 
 // replyFromEnvelope walks the openclaw / generic-agent shapes. Order matters:
 // payloads is the openclaw native shape; finalAssistantVisibleText is the
-// embedded-agent shape; the flat keys cover claude/codex-like CLIs.
+// embedded-agent shape; the flat keys cover claude-like CLIs.
 func replyFromEnvelope(env map[string]any) string {
 	if payloads, ok := env["payloads"].([]any); ok {
 		var parts []string

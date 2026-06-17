@@ -23,6 +23,10 @@ type Daemon struct {
 	registry  *adapter.Registry
 	sseClient *SSEClient
 	daemonID  string
+	// providers is this daemon's own runtime-provider snapshot. Per-daemon (not
+	// package-global) so multi-profile fan-out doesn't let one space's refresh
+	// clobber another's.
+	providers *providerStore
 
 	mu                 sync.Mutex
 	registeredRuntimes []RegisteredRuntime
@@ -53,10 +57,11 @@ func newBackendRunner(cfg Config, registry *adapter.Registry, daemonID string) *
 	client.SetServerURL(cfg.ServerURL)
 
 	return &Daemon{
-		cfg:      cfg,
-		client:   client,
-		registry: registry,
-		daemonID: daemonID,
+		cfg:       cfg,
+		client:    client,
+		registry:  registry,
+		daemonID:  daemonID,
+		providers: newProviderStore(),
 	}
 }
 
@@ -180,7 +185,7 @@ func (d *Daemon) ApplyManagedBotsDelta(added, removed []string) {
 }
 
 // truncateBotUIDList 截断 bot_uid 列表用于 log (防 spam). 前 N 个 + 省略号.
-// CC-2 (cc reviewer): log 加具体 bot_uid 列表帮 oncall 定位.
+// log 加具体 bot_uid 列表帮 oncall 定位.
 func truncateBotUIDList(uids []string, max int) []string {
 	if len(uids) <= max {
 		return uids
@@ -194,7 +199,7 @@ func truncateBotUIDList(uids []string, max int) []string {
 // startSSEForRuntimes 为每个 registeredRuntime 起一条 SSE goroutine
 // (Q2: per-runtime conn). goroutine 自管 reconnect, ctx cancel 退出.
 //
-// M6 known limitation (caster review final from codex, document only):
+// M6 known limitation (caster review final, document only):
 // 当前只在初始 Run() 后 snapshot 一次 registeredRuntimes 起 SSE goroutine.
 // 后续 re-register (slowDetectLoop 检测到新 CLI / runtime crash 重 register)
 // 不会动 SSE goroutine 池 — 新 runtime 走 heartbeat 兜底 (Phase A 双跑设计),
@@ -211,8 +216,8 @@ func (d *Daemon) startSSEForRuntimes(ctx context.Context) {
 	}
 }
 
-// runHeartbeatPing / runHeartbeatUpgrade / runHeartbeatBotProvision
-// (B1 caster review final from codex): heartbeat dispatch 加 dedup claim
+// runHeartbeatUpgrade / runHeartbeatBotProvision
+// (B1 caster review final): heartbeat dispatch 加 dedup claim
 // 跟 SSE path 共享同一 dedupState. 防 SSE+heartbeat 双跑窗口同一 event
 // 被两条路径双处理.
 //
@@ -377,7 +382,10 @@ func (d *Daemon) addDeviceName(runtimes []RuntimeInfo) {
 // fastDetectAndRegister does quick detection + immediate register.
 // Returns the generation after successful register.
 func (d *Daemon) fastDetectAndRegister(ctx context.Context) (uint64, error) {
-	runtimes := DetectRuntimesFast()
+	if err := d.refreshProviders(ctx); err != nil {
+		return 0, err // 403 终态:不再 detect/register
+	}
+	runtimes := DetectRuntimesFast(d.providers.current())
 	d.addDeviceName(runtimes)
 
 	resp, err := d.client.Register(ctx, d.buildRegisterRequest(runtimes))
@@ -401,9 +409,13 @@ func (d *Daemon) fastDetectAndRegister(ctx context.Context) (uint64, error) {
 // sees the new plugin version in metadata.plugins immediately (required by the
 // close-out path in modules/runtime/api.go::completeUpgradeIfMatchedWithRuntime).
 func (d *Daemon) enrichDetectAndRegister(ctx context.Context) (uint64, error) {
-	runtimes := DetectRuntimesFast()
+	if err := d.refreshProviders(ctx); err != nil {
+		return 0, err // 403 终态:不再 detect/register(本路径可能用 background ctx)
+	}
+	runtimes := DetectRuntimesFast(d.providers.current())
 	d.addDeviceName(runtimes)
 	runtimes = EnrichOpenclawRuntime(runtimes)
+	runtimes = EnrichClaudeRuntime(runtimes)
 
 	resp, err := d.client.Register(ctx, d.buildRegisterRequest(runtimes))
 	if err != nil {
@@ -421,8 +433,37 @@ func (d *Daemon) enrichDetectAndRegister(ctx context.Context) (uint64, error) {
 	return gen, nil
 }
 
+// refreshProviders 从 fleet 拉 active provider 列表刷新本地快照。
+//   - 403:API key 被撤销 → checkForbidden 触发退出;返回 err,挂点应中止
+//     后续 detect/register(尤其 handleComponentUpgrade 用脱离 daemon ctx 的
+//     background context,不靠 ctx cancel 兜底)。
+//   - 404 / 网络错误:老 fleet 无端点或抖动 → 保留上次快照,返回 nil(非终态)。
+//   - 200(含空列表):以 fleet 为权威整体替换(按本地支持集过滤);空列表清空
+//     快照(fleet 把全部 provider disable 的合法语义,不能退化成旧快照)。
+//
+// 并发刷新用版本门禁:发请求前拿递增序号,只有最新开始的刷新允许写快照,
+// 避免较早发出但较晚返回的响应覆盖更新的快照。
+func (d *Daemon) refreshProviders(ctx context.Context) error {
+	mySeq := d.providers.nextSeq()
+	rows, err := d.client.ListProviders(ctx)
+	if err != nil {
+		if d.checkForbidden(err) {
+			return err // 已 requestExit,挂点据此中止后续 detect/register
+		}
+		log.Printf("[INFO] refresh providers skipped (keep last snapshot): %v", err)
+		return nil
+	}
+	if d.providers.setIfNewer(providersFromFleet(rows, d.registry.Kinds()), mySeq) {
+		log.Printf("[INFO] provider snapshot refreshed: %d active", len(rows))
+	}
+	return nil
+}
+
 func (d *Daemon) register(ctx context.Context) error {
-	runtimes := DetectRuntimesFast()
+	if err := d.refreshProviders(ctx); err != nil {
+		return err // 403 终态:不再 detect/register
+	}
+	runtimes := DetectRuntimesFast(d.providers.current())
 	d.addDeviceName(runtimes)
 
 	if len(runtimes) == 0 {
@@ -514,9 +555,13 @@ func (d *Daemon) runSlowDetect(ctx context.Context) {
 	baseGen := d.generation
 	d.mu.Unlock()
 
-	current := DetectRuntimesFast()
+	if err := d.refreshProviders(ctx); err != nil {
+		return // 403 终态:已 requestExit,不再 detect/register
+	}
+	current := DetectRuntimesFast(d.providers.current())
 	d.addDeviceName(current)
 	current = EnrichOpenclawRuntime(current)
+	current = EnrichClaudeRuntime(current)
 
 	// Early exit if generation advanced during detection
 	d.mu.Lock()
