@@ -46,13 +46,14 @@ func GetDeviceInfo() string {
 
 // DetectRuntimesFast does quick detection only (LookPath + version + gateway port probe).
 // Returns immediately without waiting for slow operations like `openclaw agents list`.
-func DetectRuntimesFast() []RuntimeInfo {
+// provs is the provider→binary set to probe (per-daemon snapshot, or fallback for
+// daemon-less callers).
+func DetectRuntimesFast(provs map[string]string) []RuntimeInfo {
 	type result struct {
 		rt    RuntimeInfo
 		found bool
 	}
 
-	provs := currentProviders()
 	ch := make(chan result, len(provs))
 
 	for provider, binary := range provs {
@@ -209,8 +210,10 @@ func pluginNames(plugins []PluginInfo) string {
 }
 
 // DetectRuntimes does full detection including slow operations (backward compat).
+// Daemon-less callers (e.g. the status command) detect against the fallback
+// provider set; daemons pass their own snapshot to DetectRuntimesFast directly.
 func DetectRuntimes() []RuntimeInfo {
-	runtimes := DetectRuntimesFast()
+	runtimes := DetectRuntimesFast(fallbackProviders)
 	return EnrichOpenclawRuntime(runtimes)
 }
 

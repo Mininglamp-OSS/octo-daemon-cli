@@ -27,9 +27,9 @@ const (
 // respawns it on the new binary.
 //
 // NOTE: adapters are shared across all spaces and still write to per-machine
-// host paths (~/.cc-channel-octo, ~/.hermes/.env). When multiple spaces share
-// one runtime these can collide — per-space namespacing is deferred (doc 16
-// step 8) pending the pod topology decision.
+// host paths (~/.cc-channel-octo). When multiple spaces share one runtime these
+// can collide — per-space namespacing is deferred (doc 16 step 8) pending the
+// pod topology decision.
 type Supervisor struct {
 	profiles []Config
 	registry *adapter.Registry

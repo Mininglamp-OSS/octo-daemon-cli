@@ -15,49 +15,51 @@ type fleetProvider struct {
 	UpgradeTimeoutSec int    `json:"upgrade_timeout_sec"`
 }
 
-// providerSnapshot 存不可变的 provider→binary map。用 atomic.Value 整体替换,
-// 避免 detect / register / slow-detect 并发读写 Go map 触发
-// "fatal error: concurrent map iteration and map write"(codex BLOCKER 3)。
-var providerSnapshot atomic.Value // map[string]string
-
-// providerRefreshSeq 是刷新版本门禁:多个挂点并发 refreshProviders 时,各自
-// 在发请求前 Add(1) 拿一个递增序号。写快照时在 refreshMu 临界区内比较序号,
-// 只有"最新开始"的那次刷新允许写,避免较早发出但较晚返回的响应覆盖更新的快照。
-var providerRefreshSeq atomic.Uint64
-
-// refreshMu 保护 setProvidersIfNewer 的"比较序号 + 写快照"为原子操作。
-// 否则 Load 检查与 Store 之间会有 TOCTOU 窗口:seq2 通过检查 → seq3 写入 →
-// seq2 才 Store 覆盖掉 seq3。
-var refreshMu sync.Mutex
-
-// fallbackProviders 是编译期兜底:fleet 不可达 / 老 fleet 无端点时使用。
-// 本期只放行 claude + openclaw(去掉 codex/hermes)。
+// fallbackProviders 是编译期兜底:fleet 不可达 / 老 fleet 无端点时使用,也是
+// 无 daemon 上下文的本地 detect(status 命令)默认集。本期只放行 claude +
+// openclaw(去掉 codex/hermes)。
 var fallbackProviders = map[string]string{
 	"claude":   "claude",
 	"openclaw": "openclaw",
 }
 
-func init() {
-	resetProvidersForTest()
+// providerStore 持有一个 daemon(单 space)的 provider→binary 快照。
+//
+// 每个 Daemon 各持一个实例:multi-profile 单进程 fan-out 下,supervisor 为每个
+// space 并发跑 refreshProviders。若共用包级全局快照,不同 space 的刷新会互相
+// 覆盖(A space 的 active 集盖掉 B space 的),DetectRuntimesFast 又从同一全局
+// 读,导致某 space 按另一 space 的 provider 集注册/漏注册。per-Daemon 隔离消除
+// 这种跨 space 污染。
+type providerStore struct {
+	// snapshot 存不可变的 provider→binary map,用 atomic.Value 整体替换,避免
+	// detect / register / slow-detect 并发读写 Go map 触发 concurrent map 崩溃。
+	snapshot   atomic.Value // map[string]string
+	refreshSeq atomic.Uint64
+	// mu 保护 setIfNewer 的"比较序号 + 写快照"为原子操作,否则 Load 检查与
+	// Store 之间有 TOCTOU 窗口:seq2 通过检查 → seq3 写入 → seq2 才 Store 覆盖。
+	mu      sync.Mutex
+	lastSeq uint64 // 已写入快照的最大刷新序号(mu 保护)
 }
 
-// resetProvidersForTest 把快照重置为编译期 fallback(init + 测试用)。
-// 快照与序号在同一 refreshMu 临界区内重置,与 setProvidersIfNewer 保持一致。
-func resetProvidersForTest() {
-	cp := make(map[string]string, len(fallbackProviders))
-	for k, v := range fallbackProviders {
-		cp[k] = v
-	}
-	refreshMu.Lock()
-	providerSnapshot.Store(cp)
-	lastWrittenSeq = 0
-	providerRefreshSeq.Store(0)
-	refreshMu.Unlock()
+// newProviderStore 返回一个快照初始化为编译期 fallback 的 store。
+func newProviderStore() *providerStore {
+	s := &providerStore{}
+	s.reset()
+	return s
 }
 
-// currentProviders 返回当前快照的防御性拷贝(调用方改返回值不污染内部)。
-func currentProviders() map[string]string {
-	cur, _ := providerSnapshot.Load().(map[string]string)
+// reset 把快照重置为编译期 fallback(构造 + 测试用)。
+func (s *providerStore) reset() {
+	s.mu.Lock()
+	s.set(fallbackProviders)
+	s.lastSeq = 0
+	s.refreshSeq.Store(0)
+	s.mu.Unlock()
+}
+
+// current 返回当前快照的防御性拷贝(调用方改返回值不污染内部)。
+func (s *providerStore) current() map[string]string {
+	cur, _ := s.snapshot.Load().(map[string]string)
 	out := make(map[string]string, len(cur))
 	for k, v := range cur {
 		out[k] = v
@@ -65,35 +67,31 @@ func currentProviders() map[string]string {
 	return out
 }
 
-// setProviders 整体替换快照(存入拷贝,防调用方后续改入参)。
-func setProviders(m map[string]string) {
+// set 整体替换快照(存入拷贝,防调用方后续改入参)。
+func (s *providerStore) set(m map[string]string) {
 	cp := make(map[string]string, len(m))
 	for k, v := range m {
 		cp[k] = v
 	}
-	providerSnapshot.Store(cp)
+	s.snapshot.Store(cp)
 }
 
-// lastWrittenSeq 是已写入快照的最大刷新序号(refreshMu 保护)。
-var lastWrittenSeq uint64
-
-// nextRefreshSeq 在每次 refresh 发请求前调用,返回本次刷新的版本号。
-func nextRefreshSeq() uint64 {
-	return providerRefreshSeq.Add(1)
+// nextSeq 在每次 refresh 发请求前调用,返回本次刷新的版本号。
+func (s *providerStore) nextSeq() uint64 {
+	return s.refreshSeq.Add(1)
 }
 
-// setProvidersIfNewer 在 refreshMu 临界区内比较序号:仅当 mySeq 大于已写入的
-// 最大序号时才写快照,并推进 lastWrittenSeq。并发刷新下,较早开始(mySeq 较小)
-// 但较晚返回的响应会被丢弃,保证写入按 seq 单调推进、不被旧响应覆盖。
-// 返回是否实际写入。
-func setProvidersIfNewer(m map[string]string, mySeq uint64) bool {
-	refreshMu.Lock()
-	defer refreshMu.Unlock()
-	if mySeq <= lastWrittenSeq {
+// setIfNewer 在 mu 临界区内比较序号:仅当 mySeq 大于已写入的最大序号时才写
+// 快照,并推进 lastSeq。并发刷新下,较早开始(mySeq 较小)但较晚返回的响应会
+// 被丢弃,保证写入按 seq 单调推进、不被旧响应覆盖。返回是否实际写入。
+func (s *providerStore) setIfNewer(m map[string]string, mySeq uint64) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if mySeq <= s.lastSeq {
 		return false // 已有同序或更新的刷新写过,放弃
 	}
-	lastWrittenSeq = mySeq
-	setProviders(m)
+	s.lastSeq = mySeq
+	s.set(m)
 	return true
 }
 
@@ -102,7 +100,7 @@ func setProvidersIfNewer(m map[string]string, mySeq uint64) bool {
 // 按 daemon 本地支持集(supported,即已注册 adapter 的 kind)过滤:fleet 若
 // 误配/迁移残留把 codex/hermes 等本 daemon 已不支持的 provider 标 active,
 // 直接 warn + 跳过 —— 否则 daemon 会去 LookPath/探测/注册一个没有 adapter
-// 的 provider,后续 provision/task/upgrade 全失败(codex MAJOR)。空 name 也跳过。
+// 的 provider,后续 provision/task/upgrade 全失败。空 name 也跳过。
 func providersFromFleet(rows []fleetProvider, supported map[string]struct{}) map[string]string {
 	out := make(map[string]string, len(rows))
 	for _, r := range rows {

@@ -387,7 +387,7 @@ func TestDedupState_ConcurrentMarkPersistsAllEntries(t *testing.T) {
 	}
 }
 
-// B1 (caster review final from codex): claim atomic, 并发同 source_pk 只
+// B1 (caster review final): claim atomic, 并发同 source_pk 只
 // 有一个 goroutine 返 true. 防 SSE+heartbeat 双路径在 mark-after-handler
 // 窗口同时 spawn handler.
 func TestDedupState_ConcurrentClaimOnlyOneWins(t *testing.T) {
@@ -428,7 +428,7 @@ func TestDedupState_ConcurrentClaimOnlyOneWins(t *testing.T) {
 	}
 }
 
-// R4 (codex round 4 BLOCKER): claim 返三态. inflight (claimed=false,
+// R4 (round 4): claim 返三态. inflight (claimed=false,
 // alreadyDone=false) 时 caller 不能 advance cursor, owner markDone 后
 // 重新 claim 才能 alreadyDone=true.
 func TestDedupState_ClaimInflightVsDone(t *testing.T) {
@@ -468,7 +468,7 @@ func TestDedupState_ClaimInflightVsDone(t *testing.T) {
 	}
 }
 
-// R4 round 5 (codex review final BLOCKER): daemon 重启后 inflight 必须
+// R4 round 5 (review (BLOCKER)): daemon 重启后 inflight 必须
 // drop (不该跨 restart 持久化), 否则 owner goroutine 死了没法 markDone/
 // unclaim, 下次 claim 永久 (false, false, nil) 卡死循环.
 //
@@ -583,7 +583,7 @@ func TestDedupState_HotPathPreservesInflight(t *testing.T) {
 	}
 }
 
-// B2 (caster review final from codex): handler 失败时 lastEventID 不能推进,
+// B2 (caster review final): handler 失败时 lastEventID 不能推进,
 // 防失败 event 被 Last-Event-ID 跳过永不 replay.
 func TestDispatch_HandlerErrorDoesNotAdvanceLastEventID(t *testing.T) {
 	tempHome(t)
@@ -619,7 +619,7 @@ func TestDispatch_HandlerErrorDoesNotAdvanceLastEventID(t *testing.T) {
 	}
 }
 
-// B2 round 3 (codex): readLoop 看 dispatch err 必须 return 触发重连. 不
+// B2 round 3 (review): readLoop 看 dispatch err 必须 return 触发重连. 不
 // 继续读后续 frame, 防 max cursor 越过失败 event id.
 //
 // 模拟: 1 个 fail event + 1 个 success event 在同 stream, readLoop 应该

@@ -94,7 +94,7 @@ type sseEvent struct {
 //
 // 内存 map 化以便 O(1) lookup, 写盘时再 marshal 成 plan 的 list 形式.
 //
-// R4 round 4 (codex review final): claim 返 (claimed, alreadyDone, err).
+// R4 round 4 (review): claim 返 (claimed, alreadyDone, err).
 // alreadyDone=true 时 caller 可 advance (其他 path 已成功). inflight 时
 // (claimed=false, alreadyDone=false) caller **不能 advance**, 必须断流
 // 让 owner 完成. 这一层是 H3+B1+B2 之后剩下的 race 闭环.
@@ -124,7 +124,7 @@ type dedupState struct {
 const dedupHotPrunePeriod = 100
 
 // entryPhase 标识 dedup entry 是 "正在处理" 还是 "已完成". inflight 时
-// 其它 caller 不能 advance cursor (R4 codex BLOCKER), 必须断流让 owner
+// 其它 caller 不能 advance cursor (R4), 必须断流让 owner
 // 完成.
 type entryPhase string
 
@@ -200,7 +200,7 @@ func (d *dedupState) load() error {
 			if e.TS < cutoff {
 				continue // TTL prune
 			}
-			// R4 round 5 (codex review final): inflight 是进程内瞬态状态,
+			// R4 round 5 (review): inflight 是进程内瞬态状态,
 			// 不该跨 daemon restart. 没有 owner 会 markDone/unclaim 它,
 			// 否则下次 claim 永远 (false, false, nil) 断流死循环. drop
 			// inflight entries on load → 重启后 fresh claim 重跑 handler
@@ -689,7 +689,7 @@ func (c *SSEClient) readLoop(
 					// readLoop, 让 RunForRuntime 走 reconnect.
 					return errors.New("server sent close event (TTL re-verify)")
 				}
-				// B2 round 3 (codex): dispatch 返 err 必须断流重连. 不能
+				// B2 round 3 (review): dispatch 返 err 必须断流重连. 不能
 				// 继续读后续 frame, 否则成功 event 用 max 语义推进 cursor
 				// 越过失败 id, 失败 event 永丢 (尤其 bot_provision: fetch
 				// 已 transition row, heartbeat 看不到).
@@ -728,13 +728,13 @@ func (c *SSEClient) readLoop(
 }
 
 // dispatch 处理一帧 event: dedup claim → fetch (bot_provision) → 调对应
-// handler → 失败 unclaim 让 replay 重试 (H3 + B2 fix from codex review).
+// handler → 失败 unclaim 让 replay 重试 (H3 + B2 fix).
 //
 // 返回 err 表示"这条 event 处理失败, 不能继续读后续 frame" — caller (readLoop)
 // 收到 err 应当 return 让 RunForRuntime 重连. 不返 err 才意味着此 event
 // 处理完毕 (含成功 / dedup-skip / 410 终态), readLoop 继续读下一帧.
 //
-// 为啥失败必须断流重连 (B2 round 3 codex review BLOCKER):
+// 为啥失败必须断流重连 (B2 round 3):
 //   - handler 失败 dispatch 不推进 lastEventID, 但 readLoop 继续读后续帧
 //   - 后续成功 event 用 max 语义推进 cursor 越过失败 id
 //   - bot_provision 尤其危险: fetchBotProvision 已把 fleet row 转 dispatched
@@ -886,7 +886,7 @@ func (c *SSEClient) dispatch(
 // fetchBotProvision GET /v1/bots/:bot_id/provision. 返回 (nil, nil) 表
 // 409 Conflict (bot 不再 provisionable: 已 active/archived/draft/failed).
 //
-// M5 fix (caster review final from codex): 用 apiClient.httpClient (30s
+// M5 fix (caster review final): 用 apiClient.httpClient (30s
 // timeout), 不用 http.DefaultClient — fetch 在 readLoop goroutine 内, fleet
 // 卡死会无限阻塞后续 SSE frame 处理.
 func (c *SSEClient) fetchBotProvision(ctx context.Context, commandID string) (*PendingAgentCommand, error) {
