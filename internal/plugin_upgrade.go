@@ -44,16 +44,30 @@ func (d *Daemon) handlePluginUpgrade(ctx context.Context, up *PendingUpgrade) er
 
 	// octo (openclaw): `npx -y create-openclaw-octo install` — npm 包名硬编码，
 	// 走 ClawHub native + 自动重启 gateway，不带版本号走 @latest。
-	// cc-octo (claude): `cc-channel-octo upgrade <target>` — cc-channel-octo 的
-	// upgrade 子命令封装 npm 全局安装 + 重启自身 gateway。
+	// cc-octo (claude): 首选 `cc-channel-octo upgrade <target>`(子命令内封装
+	// npm 全局安装 + 重启)。但现网旧版 cc-channel-octo 可能没有 upgrade 子命令
+	// (首次 rollout 的 chicken-egg),失败则回退 daemon 直接 `npm install -g` +
+	// `cc-channel-octo restart`(restart 子命令旧版也有)。
 	cmd := exec.CommandContext(installCtx, bin, args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		msg := fmt.Sprintf("%s install failed: %v\noutput: %s", bin, err, truncateOutput(string(out), 2000))
-		log.Printf("[ERROR] plugin upgrade failed: %s", msg)
-		return d.reportUpgrade(ctx, up.TaskID, "failed", msg)
+		if up.Component == ccOctoPluginName {
+			log.Printf("[WARN] cc-channel-octo upgrade subcommand failed (%v), falling back to npm install: %s",
+				err, truncateOutput(string(out), 800))
+			if ferr := d.ccOctoNpmFallback(installCtx, up.TargetVersion); ferr != nil {
+				msg := fmt.Sprintf("cc-octo upgrade failed (subcommand: %v; npm fallback: %v)", err, ferr)
+				log.Printf("[ERROR] %s", msg)
+				return d.reportUpgrade(ctx, up.TaskID, "failed", msg)
+			}
+			log.Printf("[INFO] cc-octo npm fallback install + restart succeeded (task=%s)", up.TaskID)
+		} else {
+			msg := fmt.Sprintf("%s install failed: %v\noutput: %s", bin, err, truncateOutput(string(out), 2000))
+			log.Printf("[ERROR] plugin upgrade failed: %s", msg)
+			return d.reportUpgrade(ctx, up.TaskID, "failed", msg)
+		}
+	} else {
+		log.Printf("[INFO] plugin upgrade install exited cleanly (task=%s)", up.TaskID)
 	}
-	log.Printf("[INFO] plugin upgrade install exited cleanly (task=%s)", up.TaskID)
 
 	// 安装命令退出只能保证 CLI 流程跑完，不能保证 gateway 已经带新代码起来。
 	// 这里显式探 gateway，不通则上报 failed。给 gateway 一点启动时间。
@@ -115,7 +129,7 @@ func pluginUpgradeCommand(component, targetVersion string) (bin string, args []s
 	switch component {
 	case "octo":
 		return "npx", []string{"-y", "create-openclaw-octo", "install"}, true
-	case "cc-octo":
+	case ccOctoPluginName:
 		args = []string{"upgrade"}
 		if targetVersion != "" {
 			args = append(args, targetVersion)
@@ -126,13 +140,40 @@ func pluginUpgradeCommand(component, targetVersion string) (bin string, args []s
 	}
 }
 
+// ccOctoNpmInstallArgs builds the `npm install -g @mininglamp-oss/cc-channel-octo@<v>`
+// argument vector for the chicken-egg fallback (deployed cc-channel-octo predates
+// the `upgrade` subcommand). Empty target → @latest. Pure for unit testing.
+func ccOctoNpmInstallArgs(targetVersion string) []string {
+	v := targetVersion
+	if v == "" {
+		v = "latest"
+	}
+	return []string{"install", "-g", "@mininglamp-oss/cc-channel-octo@" + v}
+}
+
+// ccOctoNpmFallback drives the upgrade directly via npm + restart when the
+// cc-channel-octo `upgrade` subcommand is unavailable. npm install does NOT
+// restart, so we explicitly run `cc-channel-octo restart` (which old versions
+// already have) afterwards.
+func (d *Daemon) ccOctoNpmFallback(ctx context.Context, targetVersion string) error {
+	out, err := exec.CommandContext(ctx, "npm", ccOctoNpmInstallArgs(targetVersion)...).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("npm install: %v (output: %s)", err, truncateOutput(string(out), 800))
+	}
+	rout, rerr := exec.CommandContext(ctx, "cc-channel-octo", "restart").CombinedOutput()
+	if rerr != nil {
+		return fmt.Errorf("restart after npm install: %v (output: %s)", rerr, truncateOutput(string(rout), 800))
+	}
+	return nil
+}
+
 // probePluginGateway verifies the relevant gateway came back up after an
 // install. A clean install exit doesn't guarantee the gateway restarted with
 // the new code, so we probe and fail the task if it's down — otherwise the
 // order would close as completed while the gateway still runs the old code.
 func (d *Daemon) probePluginGateway(component string) error {
 	switch component {
-	case "cc-octo":
+	case ccOctoPluginName:
 		if !isCcChannelOctoRunning() {
 			return fmt.Errorf("cc-octo installed but cc-channel-octo gateway is not running after restart")
 		}

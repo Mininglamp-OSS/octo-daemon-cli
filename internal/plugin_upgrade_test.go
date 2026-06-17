@@ -63,3 +63,12 @@ func equalStrings(a, b []string) bool {
 	}
 	return true
 }
+
+func TestCcOctoNpmInstallArgs(t *testing.T) {
+	if got := ccOctoNpmInstallArgs("1.2.3"); !equalStrings(got, []string{"install", "-g", "@mininglamp-oss/cc-channel-octo@1.2.3"}) {
+		t.Errorf("with version: %v", got)
+	}
+	if got := ccOctoNpmInstallArgs(""); !equalStrings(got, []string{"install", "-g", "@mininglamp-oss/cc-channel-octo@latest"}) {
+		t.Errorf("empty → latest: %v", got)
+	}
+}
