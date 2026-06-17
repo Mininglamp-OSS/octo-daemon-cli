@@ -464,6 +464,7 @@ func (d *Daemon) enrichDetectAndRegister(ctx context.Context) (uint64, error) {
 	runtimes := DetectRuntimesFast()
 	d.addDeviceName(runtimes)
 	runtimes = EnrichOpenclawRuntime(runtimes)
+	runtimes = EnrichClaudeRuntime(runtimes)
 
 	resp, err := d.client.Register(ctx, d.buildRegisterRequest(runtimes))
 	if err != nil {
@@ -609,6 +610,7 @@ func (d *Daemon) runSlowDetect(ctx context.Context) {
 	current := DetectRuntimesFast()
 	d.addDeviceName(current)
 	current = EnrichOpenclawRuntime(current)
+	current = EnrichClaudeRuntime(current)
 
 	// Early exit if generation advanced during detection
 	d.mu.Lock()

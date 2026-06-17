@@ -143,3 +143,52 @@ func TestClaudeProvisionRejectsMissingFields(t *testing.T) {
 		})
 	}
 }
+
+// readBotConfig reads a per-bot config.json into a generic map for field checks.
+func readBotConfig(t *testing.T, home, botUID string) map[string]any {
+	t.Helper()
+	buf, err := os.ReadFile(filepath.Join(home, claudeChannelDir, botUID, "config.json"))
+	if err != nil {
+		t.Fatalf("read per-bot config.json: %v", err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(buf, &m); err != nil {
+		t.Fatalf("unmarshal per-bot config.json: %v", err)
+	}
+	return m
+}
+
+func TestClaudeProvisionWritesApiUrl(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	a := NewClaudeAdapter(&recordingRunner{})
+	if _, err := a.Provision(context.Background(), ProvisionRequest{
+		BotUID:   "bot-x",
+		BotToken: "bf_x",
+		APIURL:   "https://test.example.com",
+	}); err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	cfg := readBotConfig(t, home, "bot-x")
+	if cfg["apiUrl"] != "https://test.example.com" {
+		t.Errorf("apiUrl = %v, want https://test.example.com", cfg["apiUrl"])
+	}
+}
+
+func TestClaudeProvisionOmitsEmptyApiUrl(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	a := NewClaudeAdapter(&recordingRunner{})
+	if _, err := a.Provision(context.Background(), ProvisionRequest{
+		BotUID:   "bot-y",
+		BotToken: "bf_y",
+		// APIURL empty → cc-channel-octo falls back to the shared global apiUrl;
+		// don't write a blank key.
+	}); err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	cfg := readBotConfig(t, home, "bot-y")
+	if _, present := cfg["apiUrl"]; present {
+		t.Errorf("apiUrl should be omitted when empty, got %v", cfg["apiUrl"])
+	}
+}

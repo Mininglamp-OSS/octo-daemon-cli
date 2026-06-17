@@ -97,6 +97,14 @@ func (a *ClaudeAdapter) Provision(ctx context.Context, req ProvisionRequest) (Pr
 		"botToken": req.BotToken,
 		"sdk":      map[string]any{"model": claudeModel},
 	}
+	// Pin this bot's server in its own per-bot config (mirrors openclaw's
+	// accounts.<uid>.apiUrl). Without it cc-channel-octo falls back to the
+	// shared global config.apiUrl, which can be stale/wrong-env and cause a
+	// cross-env 401 — the exact failure that took the whole gateway offline.
+	// Omit when empty so the shared fallback still applies.
+	if req.APIURL != "" {
+		cfg["apiUrl"] = req.APIURL
+	}
 	buf, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return ProvisionResult{}, fmt.Errorf("marshal config: %w", err)
