@@ -165,6 +165,41 @@ func EnrichOpenclawAgents(runtimes []RuntimeInfo) []RuntimeInfo {
 	return EnrichOpenclawRuntime(runtimes)
 }
 
+// ccOctoPluginName is the component name under which the cc-channel-octo gateway
+// version is reported for claude runtimes. cc-channel-octo is claude's octo
+// adapter layer (the analogue of openclaw's bundled "octo" plugin), so its
+// version rides in RuntimeInfo.Plugins as {name:"cc-octo"} — symmetric with
+// openclaw's plugins[{name:"octo"}]. Fleet + web key the version display and
+// upgrade order off this exact string, so it must match across all three repos.
+const ccOctoPluginName = "cc-octo"
+
+// EnrichClaudeRuntime adds the cc-octo plugin version to claude runtimes by
+// running `cc-channel-octo --version`. Unlike the openclaw enrich it does NOT
+// require the gateway to be online — the version is read from the installed
+// binary, so the version + upgrade entry stay visible even when the gateway is
+// stopped (online/offline is carried separately by RuntimeInfo.Status). Call
+// asynchronously after fast registration, alongside EnrichOpenclawRuntime.
+func EnrichClaudeRuntime(runtimes []RuntimeInfo) []RuntimeInfo {
+	enriched := make([]RuntimeInfo, len(runtimes))
+	copy(enriched, runtimes)
+	for i := range enriched {
+		if enriched[i].Provider != "claude" {
+			continue
+		}
+		binPath, err := exec.LookPath("cc-channel-octo")
+		if err != nil {
+			continue // not installed → no cc-octo plugin (claude itself still reported)
+		}
+		// detectVersion runs `<bin> --version` and parses with versionRe
+		// (strips a "v" prefix / surrounding text); returns "unknown" on error.
+		if v := detectVersion(binPath); v != "" && v != "unknown" {
+			enriched[i].Plugins = []PluginInfo{{Name: ccOctoPluginName, Version: v}}
+			log.Printf("[INFO]   └─ cc-octo plugin: %s", v)
+		}
+	}
+	return enriched
+}
+
 func pluginNames(plugins []PluginInfo) string {
 	names := make([]string, len(plugins))
 	for i, p := range plugins {
