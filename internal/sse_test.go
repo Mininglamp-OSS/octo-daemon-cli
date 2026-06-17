@@ -720,14 +720,14 @@ func TestSSEClient_ReadLoop_CloseEventReconnects(t *testing.T) {
 
 func TestFetchBotProvision_OK(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/daemon/bot-provisions/42" {
+		if r.URL.Path != "/v1/bots/42/provision" {
 			t.Errorf("unexpected path: %s", r.URL.Path)
 		}
 		if r.Header.Get("Authorization") != "Bearer uk_test" {
 			t.Errorf("missing/wrong auth: %q", r.Header.Get("Authorization"))
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{
 			"id":           42,
 			"action":       "bot.provision",
 			"workspace_id": "ws-x",
@@ -735,7 +735,7 @@ func TestFetchBotProvision_OK(t *testing.T) {
 			"bot_uid":      "bot_abc",
 			"bot_token":    "bf_secret",
 			"claim_token":  "claim_xyz",
-		})
+		}})
 	}))
 	defer srv.Close()
 
@@ -760,15 +760,15 @@ func TestFetchBotProvision_OK(t *testing.T) {
 	}
 }
 
-func TestFetchBotProvision_410Gone(t *testing.T) {
+func TestFetchBotProvision_409NotProvisionable(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusGone)
-		_, _ = w.Write([]byte(`{"msg":"not provisionable"}`))
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(`{"error":{"code":"CONFLICT","message":"not provisionable"}}`))
 	}))
 	defer srv.Close()
 
 	tempHome(t)
-	d := newDedupState("daemon-410")
+	d := newDedupState("daemon-409")
 	_ = d.load()
 	client := &SSEClient{
 		fleetURL:  srv.URL,
@@ -778,10 +778,10 @@ func TestFetchBotProvision_410Gone(t *testing.T) {
 	}
 	cmd, err := client.fetchBotProvision(context.Background(), "99")
 	if err != nil {
-		t.Errorf("410 should return (nil, nil), not err: %v", err)
+		t.Errorf("409 should return (nil, nil), not err: %v", err)
 	}
 	if cmd != nil {
-		t.Error("410 should return nil cmd")
+		t.Error("409 should return nil cmd")
 	}
 }
 
@@ -865,11 +865,8 @@ func TestApplyManagedBotsDelta_RemoveMissingNoOp(t *testing.T) {
 func TestSSEClient_ConnectOnce_DispatchUpgradeEvent(t *testing.T) {
 	tempHome(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/daemon/events" {
+		if r.URL.Path != "/v1/runtimes/7/events" {
 			t.Errorf("unexpected path: %s", r.URL.Path)
-		}
-		if r.URL.Query().Get("runtime_id") != "7" {
-			t.Errorf("missing runtime_id query: %v", r.URL.Query())
 		}
 		if r.Header.Get("Authorization") != "Bearer uk_test" {
 			t.Errorf("missing/wrong auth header")
