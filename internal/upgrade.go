@@ -20,7 +20,10 @@ import (
 
 func (d *Daemon) handleUpgrade(ctx context.Context, up *PendingUpgrade) error {
 	switch up.Component {
-	case "octo":
+	case "octo", "cc-octo":
+		// Both are octo-adapter "plugins" (openclaw's bundled octo / claude's
+		// cc-channel-octo gateway). handlePluginUpgrade branches on the
+		// component to pick the install command + liveness probe.
 		return d.handlePluginUpgrade(ctx, up)
 	case "", "octo-daemon":
 		return d.handleDaemonUpgrade(ctx, up)

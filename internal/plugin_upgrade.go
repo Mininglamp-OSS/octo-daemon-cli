@@ -28,6 +28,13 @@ import (
 func (d *Daemon) handlePluginUpgrade(ctx context.Context, up *PendingUpgrade) error {
 	log.Printf("[INFO] plugin upgrade task: %s → %s (task=%s)", up.Component, up.TargetVersion, up.TaskID)
 
+	bin, args, ok := pluginUpgradeCommand(up.Component, up.TargetVersion)
+	if !ok {
+		msg := "unsupported plugin component: " + up.Component
+		log.Printf("[ERROR] %s", msg)
+		return d.reportUpgrade(ctx, up.TaskID, "failed", msg)
+	}
+
 	// dispatched → installing (progress — 失败 swallow)
 	_ = d.reportUpgrade(ctx, up.TaskID, "installing", "")
 
@@ -35,28 +42,24 @@ func (d *Daemon) handlePluginUpgrade(ctx context.Context, up *PendingUpgrade) er
 	installCtx, cancel := context.WithTimeout(ctx, 9*time.Minute)
 	defer cancel()
 
-	// up.Component 是 plugin id ("octo")，但 npm 包名是 "create-openclaw-octo"，
-	// 必须 hardcode npm 包名（不能用 up.Component 当 npx target）。
-	// 不带版本号 → 走 @latest. install 子命令内部走 ClawHub native, 兼容老环境.
-	cmd := exec.CommandContext(installCtx, "npx", "-y", "create-openclaw-octo", "install")
+	// octo (openclaw): `npx -y create-openclaw-octo install` — npm 包名硬编码，
+	// 走 ClawHub native + 自动重启 gateway，不带版本号走 @latest。
+	// cc-octo (claude): `cc-channel-octo upgrade <target>` — cc-channel-octo 的
+	// upgrade 子命令封装 npm 全局安装 + 重启自身 gateway。
+	cmd := exec.CommandContext(installCtx, bin, args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		msg := fmt.Sprintf("npx install failed: %v\noutput: %s", err, truncateOutput(string(out), 2000))
+		msg := fmt.Sprintf("%s install failed: %v\noutput: %s", bin, err, truncateOutput(string(out), 2000))
 		log.Printf("[ERROR] plugin upgrade failed: %s", msg)
 		return d.reportUpgrade(ctx, up.TaskID, "failed", msg)
 	}
-	log.Printf("[INFO] plugin upgrade npx exited cleanly (task=%s)", up.TaskID)
+	log.Printf("[INFO] plugin upgrade install exited cleanly (task=%s)", up.TaskID)
 
-	// npx 退出只能保证 CLI 流程跑完，不能保证 openclaw gateway 已经带新插件起来。
-	// octo 的 install 脚本里 gateway restart 失败只打 warning，
-	// 会导致"磁盘插件升级+服务端关单 completed 但 gateway 还在跑旧插件"。
-	// 这里显式探 gateway，不通则上报 failed。
-	// 给 gateway 一点启动时间（用户 install 命令内部已经重启，但可能进程刚 spawn 还没 bind）。
+	// 安装命令退出只能保证 CLI 流程跑完，不能保证 gateway 已经带新代码起来。
+	// 这里显式探 gateway，不通则上报 failed。给 gateway 一点启动时间。
 	time.Sleep(2 * time.Second)
-	if openclawBin, lookErr := exec.LookPath("openclaw"); lookErr == nil {
-		if !isOpenclawGatewayRunning(openclawBin) {
-			return d.reportUpgrade(ctx, up.TaskID, "failed", "plugin installed but openclaw gateway is not running after restart")
-		}
+	if err := d.probePluginGateway(up.Component); err != nil {
+		return d.reportUpgrade(ctx, up.TaskID, "failed", err.Error())
 	}
 
 	// 同步跑 enrich detect + register：必须带上新插件版本去服务端，才能走
@@ -98,4 +101,47 @@ func truncateOutput(s string, max int) string {
 		return s
 	}
 	return s[:max] + "...(truncated)"
+}
+
+// pluginUpgradeCommand maps an octo-adapter plugin component to the install
+// command that upgrades it. Pure (no I/O) so the per-component routing is unit
+// testable. Returns ok=false for non-plugin components (octo-daemon / provider
+// CLIs go through other handlers).
+//
+//   - "octo"    → openclaw's installer; always pulls @latest (target ignored).
+//   - "cc-octo" → cc-channel-octo's own `upgrade <target>` subcommand (bare
+//     `upgrade` when target is empty → @latest).
+func pluginUpgradeCommand(component, targetVersion string) (bin string, args []string, ok bool) {
+	switch component {
+	case "octo":
+		return "npx", []string{"-y", "create-openclaw-octo", "install"}, true
+	case "cc-octo":
+		args = []string{"upgrade"}
+		if targetVersion != "" {
+			args = append(args, targetVersion)
+		}
+		return "cc-channel-octo", args, true
+	default:
+		return "", nil, false
+	}
+}
+
+// probePluginGateway verifies the relevant gateway came back up after an
+// install. A clean install exit doesn't guarantee the gateway restarted with
+// the new code, so we probe and fail the task if it's down — otherwise the
+// order would close as completed while the gateway still runs the old code.
+func (d *Daemon) probePluginGateway(component string) error {
+	switch component {
+	case "cc-octo":
+		if !isCcChannelOctoRunning() {
+			return fmt.Errorf("cc-octo installed but cc-channel-octo gateway is not running after restart")
+		}
+	case "octo":
+		if openclawBin, lookErr := exec.LookPath("openclaw"); lookErr == nil {
+			if !isOpenclawGatewayRunning(openclawBin) {
+				return fmt.Errorf("plugin installed but openclaw gateway is not running after restart")
+			}
+		}
+	}
+	return nil
 }
