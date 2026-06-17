@@ -89,13 +89,13 @@ func runServiceInstall(cmd *cobra.Command, args []string) error {
 	}
 	usable := false
 	for _, p := range profiles {
-		if p.APIKey != "" && p.FleetURL != "" && p.ServerURL != "" {
+		if internal.ValidateSpaceID(p.SpaceID) == nil && p.APIKey != "" && p.FleetURL != "" && p.ServerURL != "" {
 			usable = true
 			break
 		}
 	}
 	if !usable {
-		return fmt.Errorf("daemon config at %s has no usable profile (need api_key + fleet_url + server_url) — run `octo-daemon config --space-id=... --server-url=... --fleet-url=... --api-key=...`, then retry", cfgPath)
+		return fmt.Errorf("daemon config at %s has no usable profile (need a valid space_id + api_key + fleet_url + server_url) — run `octo-daemon config --space-id=... --server-url=... --fleet-url=... --api-key=...`, then retry", cfgPath)
 	}
 
 	// Precheck 2: refuse double-install without --force.

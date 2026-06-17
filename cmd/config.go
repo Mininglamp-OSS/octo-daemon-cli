@@ -49,6 +49,13 @@ func runConfig(cmd *cobra.Command, args []string) error {
 
 	// Load existing profiles (tolerate a missing file as "no profiles yet").
 	cfgPath := internal.ConfigFilePath()
+	// Move a pre-multi-profile single-object config aside before writing the
+	// new format, preserving the operator's old values instead of overwriting.
+	if backup, err := internal.BackupLegacyConfig(cfgPath); err != nil {
+		return &internal.ExitError{Code: 2, Message: fmt.Sprintf("back up legacy config: %v", err)}
+	} else if backup != "" {
+		fmt.Printf("legacy config moved to %s\n", backup)
+	}
 	var profiles []internal.Config
 	if _, statErr := os.Stat(cfgPath); statErr == nil {
 		loaded, err := internal.LoadProfiles(cfgPath)

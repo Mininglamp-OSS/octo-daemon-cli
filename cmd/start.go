@@ -51,6 +51,15 @@ func runStart(cmd *cobra.Command, args []string) error {
 		cfgPath = internal.ConfigFilePath()
 	}
 
+	// A pre-multi-profile single-object config can't run under the new binary;
+	// move it aside so this becomes a clean "no config" → "run config" error
+	// instead of a silent zero-profile start.
+	if backup, err := internal.BackupLegacyConfig(cfgPath); err != nil {
+		return &internal.ExitError{Code: 2, Message: fmt.Sprintf("back up legacy config: %v", err)}
+	} else if backup != "" {
+		fmt.Printf("legacy config moved to %s — run `octo-daemon config --space-id=... --server-url=... --fleet-url=... --api-key=...` to reconfigure\n", backup)
+	}
+
 	if _, err := os.Stat(cfgPath); os.IsNotExist(err) {
 		return &internal.ExitError{Code: 2, Message: fmt.Sprintf("no config at %s — run `octo-daemon config --space-id=... --server-url=... --fleet-url=... --api-key=...` first", cfgPath)}
 	}

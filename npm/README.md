@@ -33,9 +33,8 @@ octo-daemon config \
 # Start (foreground, blocks; good for a first run to watch it register):
 octo-daemon start
 
-# Or run in the background, or as a persistent auto-starting service:
-octo-daemon start --daemon       # detached; logs to ~/.octo-daemon/daemon.log
-octo-daemon service install      # launchd / systemd, auto-start at login
+# Or run it detached in the background:
+octo-daemon start --daemon       # logs to ~/.octo-daemon/daemon.log
 octo-daemon status
 ```
 

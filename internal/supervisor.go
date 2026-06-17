@@ -87,6 +87,7 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		cancel() // unwind all runners
 	}
 
+	started := 0
 	for _, cfg := range s.profiles {
 		cfg := cfg
 		daemonID, err := EnsureDaemonID(cfg.SpaceID)
@@ -95,11 +96,19 @@ func (s *Supervisor) Run(ctx context.Context) error {
 			log.Printf("[ERROR] [%s] ensure daemon id: %v — skipping profile", cfg.SpaceID, err)
 			continue
 		}
+		started++
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			s.runProfile(ctx, cfg, daemonID, setFatal)
 		}()
+	}
+
+	// No runner launched (every profile's space_id was invalid) means no daemon
+	// is listening — that is a config error, not a successful run. Fail loudly so
+	// it isn't mistaken for a clean exit.
+	if started == 0 {
+		return &ExitError{Code: 2, Message: "no valid profile to start — every configured space_id was invalid; run `octo-daemon config --space-id=... --server-url=... --fleet-url=... --api-key=...` to fix"}
 	}
 
 	wg.Wait()

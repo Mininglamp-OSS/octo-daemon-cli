@@ -130,6 +130,44 @@ func SaveProfiles(path string, cfgs []Config) error {
 	return os.WriteFile(path, data, 0600)
 }
 
+// BackupLegacyConfig detects a pre-multi-profile single-object config (no
+// "profiles" key, but carrying api_key/api_url) and renames it aside to
+// <path>.back.<unix-ts>, leaving no config file in place. Returns the backup
+// path, or "" when nothing was done. A multi-profile config, a missing file,
+// or unparseable JSON is left untouched.
+//
+// This converts the "legacy config + new binary" case (which would otherwise
+// load as zero profiles and look like an empty start) into a clean "no config"
+// state, so start surfaces a clear "run config" error instead of a silent exit.
+func BackupLegacyConfig(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", err
+	}
+	var probe struct {
+		Profiles []json.RawMessage `json:"profiles"`
+		APIKey   string            `json:"api_key"`
+		APIURL   string            `json:"api_url"`
+	}
+	if err := json.Unmarshal(data, &probe); err != nil {
+		return "", nil // not valid JSON — LoadProfiles will surface a parse error
+	}
+	if probe.Profiles != nil {
+		return "", nil // already multi-profile format
+	}
+	if probe.APIKey == "" && probe.APIURL == "" {
+		return "", nil // not recognizably legacy (e.g. empty {})
+	}
+	backup := fmt.Sprintf("%s.back.%d", path, time.Now().Unix())
+	if err := os.Rename(path, backup); err != nil {
+		return "", fmt.Errorf("back up legacy config: %w", err)
+	}
+	return backup, nil
+}
+
 // envSecondsOrDefault reads a positive integer env var as seconds, falling
 // back to the supplied default if missing/invalid/non-positive. Used for
 // ops-tunable cadence knobs that don't warrant a persisted config field.

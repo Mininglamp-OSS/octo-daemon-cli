@@ -92,3 +92,54 @@ func TestSaveProfiles_ZeroHeartbeatOmitsField(t *testing.T) {
 		t.Fatalf("zero HeartbeatInterval should omit field, got: %s", got)
 	}
 }
+
+func TestBackupLegacyConfig_LegacyMovedAside(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(path, []byte(`{"api_key":"uk_abc","api_url":"http://h:8090"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	backup, err := BackupLegacyConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if backup == "" {
+		t.Fatal("expected a backup path for legacy config")
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("original config should be gone after backup, stat err=%v", err)
+	}
+	if _, err := os.Stat(backup); err != nil {
+		t.Fatalf("backup file missing: %v", err)
+	}
+}
+
+func TestBackupLegacyConfig_NewFormatUntouched(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	const body = `{"profiles":[{"space_id":"a","api_key":"k","fleet_url":"f","server_url":"s"}]}`
+	if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+	backup, err := BackupLegacyConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if backup != "" {
+		t.Fatalf("new-format config must not be backed up, got %q", backup)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("new-format config should be left in place: %v", err)
+	}
+}
+
+func TestBackupLegacyConfig_MissingIsNoop(t *testing.T) {
+	dir := t.TempDir()
+	backup, err := BackupLegacyConfig(filepath.Join(dir, "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if backup != "" {
+		t.Fatalf("missing config must be a no-op, got %q", backup)
+	}
+}
