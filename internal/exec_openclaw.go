@@ -42,8 +42,7 @@ func (d *Daemon) handleBotProvision(ctx context.Context, cmd *PendingAgentComman
 	// robot.creator_uid). api_url is always sourced locally — fleet
 	// no longer fills it (fleet's External.BaseURL is fleet's own URL,
 	// not server's; fleet has no reliable IM-server URL to send).
-	// Daemon uses OCTO_SERVER_URL env or its own --api-url flag as
-	// single source of truth.
+	// Daemon uses the profile's server_url as the single source of truth.
 	if cmd.BotToken == "" {
 		tokCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		tok, err := d.client.GetBotToken(tokCtx, cmd.BotUID)
@@ -54,10 +53,7 @@ func (d *Daemon) handleBotProvision(ctx context.Context, cmd *PendingAgentComman
 		cmd.BotToken = tok
 	}
 	if cmd.APIURL == "" {
-		cmd.APIURL = os.Getenv("OCTO_SERVER_URL")
-		if cmd.APIURL == "" {
-			cmd.APIURL = d.cfg.APIURL
-		}
+		cmd.APIURL = d.cfg.ServerURL
 	}
 
 	ad, err := d.runtimeAdapter(cmd.RuntimeKind)

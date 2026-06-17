@@ -25,19 +25,19 @@ func testRegistry(t *testing.T) *adapter.Registry {
 	return reg
 }
 
-// newTestDaemon 构造一个最小 Daemon:client 指向 srv,registry 为支持集。
+// newTestDaemon 构造一个最小 Daemon:client 指向 srv,registry 为支持集,
+// providers 为各自独立的快照(默认 fallback)。
 func newTestDaemon(t *testing.T, srv *httptest.Server) *Daemon {
 	t.Helper()
 	return &Daemon{
-		cfg:      Config{APIURL: srv.URL, APIKey: "test-key"},
-		client:   NewClient(srv.URL, "test-key", "0.0.0-test"),
-		registry: testRegistry(t),
+		cfg:       Config{FleetURL: srv.URL, APIKey: "test-key"},
+		client:    NewClient(srv.URL, "test-key", "0.0.0-test"),
+		registry:  testRegistry(t),
+		providers: newProviderStore(),
 	}
 }
 
 func TestRefreshProviders_200ReplacesSnapshot(t *testing.T) {
-	t.Cleanup(resetProvidersForTest)
-	resetProvidersForTest()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"providers":[{"name":"claude","binary_name":"claude"}]}`))
 	}))
@@ -47,42 +47,38 @@ func TestRefreshProviders_200ReplacesSnapshot(t *testing.T) {
 	if err := d.refreshProviders(context.Background()); err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
-	got := currentProviders()
+	got := d.providers.current()
 	if _, ok := got["claude"]; !ok || len(got) != 1 {
 		t.Errorf("expected snapshot {claude}, got %v", got)
 	}
 }
 
 func TestRefreshProviders_200EmptyClearsSnapshot(t *testing.T) {
-	t.Cleanup(resetProvidersForTest)
-	resetProvidersForTest() // 起点是 fallback {claude, openclaw}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"providers":[]}`))
 	}))
 	defer srv.Close()
-	d := newTestDaemon(t, srv)
+	d := newTestDaemon(t, srv) // 起点是 fallback {claude, openclaw}
 
 	if err := d.refreshProviders(context.Background()); err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
-	if got := currentProviders(); len(got) != 0 {
+	if got := d.providers.current(); len(got) != 0 {
 		t.Errorf("200 empty must clear snapshot, got %v", got)
 	}
 }
 
 func TestRefreshProviders_404KeepsSnapshot(t *testing.T) {
-	t.Cleanup(resetProvidersForTest)
-	resetProvidersForTest() // fallback {claude, openclaw}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	}))
 	defer srv.Close()
-	d := newTestDaemon(t, srv)
+	d := newTestDaemon(t, srv) // fallback {claude, openclaw}
 
 	if err := d.refreshProviders(context.Background()); err != nil {
 		t.Fatalf("404 must not be terminal, got err: %v", err)
 	}
-	got := currentProviders()
+	got := d.providers.current()
 	if _, ok := got["claude"]; !ok {
 		t.Errorf("404 must keep last snapshot (fallback), got %v", got)
 	}
@@ -92,8 +88,6 @@ func TestRefreshProviders_404KeepsSnapshot(t *testing.T) {
 }
 
 func TestRefreshProviders_403Terminal(t *testing.T) {
-	t.Cleanup(resetProvidersForTest)
-	resetProvidersForTest()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
 	}))
@@ -114,8 +108,6 @@ func TestRefreshProviders_403Terminal(t *testing.T) {
 }
 
 func TestRegister_403DoesNotCallRegisterEndpoint(t *testing.T) {
-	t.Cleanup(resetProvidersForTest)
-	resetProvidersForTest()
 	var registerHits atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {

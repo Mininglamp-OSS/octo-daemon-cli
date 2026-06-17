@@ -193,7 +193,7 @@ func extractFuncBody(t *testing.T, src, name string) string {
 
 // assertTerminalCallsReturn 锁: 函数体内每个 `d.<helper>(..., "<terminalStatus>", ...)`
 // 调用都必须 `return d.<helper>(...)` 前缀, 不能裸调用 / `_ =` swallow / 后跟无值
-// return. codex N2 强化: 老 swallow pattern `d.reportUpgrade(..., "failed", ...); return`
+// return. N2 强化: 老 swallow pattern `d.reportUpgrade(..., "failed", ...); return`
 // 之类的回归会被这个 test loudly fail.
 //
 // 排除以 // 开头的注释行 (含 `"failed"` 字面量的文档不算).
@@ -212,13 +212,13 @@ func assertTerminalCallsReturn(t *testing.T, fnName, helperName, terminalStatus,
 			continue
 		}
 		if !strings.Contains(line, "return d."+helperName+"(") {
-			t.Fatalf("%s line %d: terminal `d.%s(..., %q, ...)` must be `return d.%s(...)` to propagate ack err — Jerry-Xin Critical fix (codex N2 lock). Line: %q",
+			t.Fatalf("%s line %d: terminal `d.%s(..., %q, ...)` must be `return d.%s(...)` to propagate ack err — Jerry-Xin Critical fix (N2 lock). Line: %q",
 				fnName, i+1, helperName, terminalStatus, helperName, line)
 		}
 	}
 }
 
-// TestHandleDaemonUpgrade_TerminalReportPropagates — codex N2: handleDaemonUpgrade
+// TestHandleDaemonUpgrade_TerminalReportPropagates — N2: handleDaemonUpgrade
 // 内所有 `d.reportUpgrade(..., "failed", ...)` 必须 `return ...` 前缀.
 func TestHandleDaemonUpgrade_TerminalReportPropagates(t *testing.T) {
 	src := readSource(t, "upgrade.go")

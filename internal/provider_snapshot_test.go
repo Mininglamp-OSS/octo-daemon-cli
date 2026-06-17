@@ -6,9 +6,8 @@ import (
 )
 
 func TestCurrentProviders_DefaultFallback(t *testing.T) {
-	t.Cleanup(resetProvidersForTest)
-	resetProvidersForTest()
-	got := currentProviders()
+	s := newProviderStore()
+	got := s.current()
 	// 编译期 fallback 只含 claude/openclaw,不含 codex/hermes
 	if _, ok := got["claude"]; !ok {
 		t.Errorf("expected claude in fallback, got %v", got)
@@ -25,24 +24,22 @@ func TestCurrentProviders_DefaultFallback(t *testing.T) {
 }
 
 func TestSetProviders_ReturnsCopy(t *testing.T) {
-	t.Cleanup(resetProvidersForTest)
-	resetProvidersForTest()
-	setProviders(map[string]string{"claude": "claude"})
-	got := currentProviders()
+	s := newProviderStore()
+	s.set(map[string]string{"claude": "claude"})
+	got := s.current()
 	got["mutated"] = "x" // 改返回值不能污染内部快照
-	again := currentProviders()
+	again := s.current()
 	if _, ok := again["mutated"]; ok {
-		t.Error("currentProviders must return a defensive copy")
+		t.Error("current must return a defensive copy")
 	}
 }
 
 func TestSetProviders_EmptyClearsSnapshot(t *testing.T) {
-	t.Cleanup(resetProvidersForTest)
-	resetProvidersForTest()
-	setProviders(map[string]string{}) // 200 空 active → 快照清空(不退化为 fallback)
-	got := currentProviders()
+	s := newProviderStore()
+	s.set(map[string]string{}) // 200 空 active → 快照清空(不退化为 fallback)
+	got := s.current()
 	if len(got) != 0 {
-		t.Errorf("expected empty snapshot after setProviders(empty), got %v", got)
+		t.Errorf("expected empty snapshot after set(empty), got %v", got)
 	}
 }
 
@@ -98,20 +95,19 @@ func TestProvidersFromFleet_EmptyKeepsCaller(t *testing.T) {
 }
 
 func TestSetProvidersIfNewer_StaleResponseDropped(t *testing.T) {
-	t.Cleanup(resetProvidersForTest)
-	resetProvidersForTest()
+	s := newProviderStore()
 	// 模拟两次并发刷新:seq2 后开始(更新),seq1 先开始(更旧)。
-	seq1 := nextRefreshSeq()
-	seq2 := nextRefreshSeq()
+	seq1 := s.nextSeq()
+	seq2 := s.nextSeq()
 	// 更新的 seq2 先落地
-	if !setProvidersIfNewer(map[string]string{"openclaw": "openclaw"}, seq2) {
+	if !s.setIfNewer(map[string]string{"openclaw": "openclaw"}, seq2) {
 		t.Fatal("newest seq must write")
 	}
 	// 更旧的 seq1 晚返回,必须被丢弃,不能覆盖 seq2 的结果
-	if setProvidersIfNewer(map[string]string{"claude": "claude"}, seq1) {
+	if s.setIfNewer(map[string]string{"claude": "claude"}, seq1) {
 		t.Error("stale seq must not overwrite newer snapshot")
 	}
-	got := currentProviders()
+	got := s.current()
 	if _, ok := got["openclaw"]; !ok {
 		t.Errorf("expected seq2 snapshot to win, got %v", got)
 	}
@@ -122,14 +118,13 @@ func TestSetProvidersIfNewer_StaleResponseDropped(t *testing.T) {
 
 // TestSetProvidersIfNewer_ConcurrentInterleaving 用 barrier 复现真实并发交错:
 // 旧 seq 通过检查后、写入前,被新 seq 插队写入,旧 seq 不得覆盖新 seq。
-// refreshMu 把"比较+写"做成原子,所以无论调度顺序,最终快照都属于最大 seq。
+// mu 把"比较+写"做成原子,所以无论调度顺序,最终快照都属于最大 seq。
 func TestSetProvidersIfNewer_ConcurrentInterleaving(t *testing.T) {
-	t.Cleanup(resetProvidersForTest)
-	resetProvidersForTest()
+	s := newProviderStore()
 	const n = 100
 	seqs := make([]uint64, n)
 	for i := range seqs {
-		seqs[i] = nextRefreshSeq()
+		seqs[i] = s.nextSeq()
 	}
 	var wg sync.WaitGroup
 	start := make(chan struct{})
@@ -138,29 +133,28 @@ func TestSetProvidersIfNewer_ConcurrentInterleaving(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			<-start // 同时起跑,最大化交错
-			setProvidersIfNewer(map[string]string{"p": string(rune('a' + i%26))}, seqs[i])
+			s.setIfNewer(map[string]string{"p": string(rune('a' + i%26))}, seqs[i])
 		}(i)
 	}
 	close(start)
 	wg.Wait()
-	// 最大 seq 是 seqs[n-1];最终 lastWrittenSeq 必须 == 它,快照属于它。
-	if !setProvidersIfNewer(map[string]string{"final": "x"}, seqs[n-1]+1) {
+	// 最大 seq 是 seqs[n-1];最终 lastSeq 必须 == 它,快照属于它。
+	if !s.setIfNewer(map[string]string{"final": "x"}, seqs[n-1]+1) {
 		t.Fatal("a strictly greater seq must always win")
 	}
-	if got := currentProviders(); got["final"] != "x" {
+	if got := s.current(); got["final"] != "x" {
 		t.Errorf("expected final write to win, got %v", got)
 	}
 }
 
 func TestCurrentProviders_ConcurrentSafe(t *testing.T) {
-	t.Cleanup(resetProvidersForTest)
-	resetProvidersForTest()
+	s := newProviderStore()
 	var wg sync.WaitGroup
 	for i := 0; i < 50; i++ {
 		wg.Add(3)
-		go func() { defer wg.Done(); _ = currentProviders() }()
-		go func() { defer wg.Done(); setProviders(map[string]string{"claude": "claude"}) }()
-		go func() { defer wg.Done(); _ = DetectRuntimesFast() }() // 覆盖真实读路径
+		go func() { defer wg.Done(); _ = s.current() }()
+		go func() { defer wg.Done(); s.set(map[string]string{"claude": "claude"}) }()
+		go func() { defer wg.Done(); _ = DetectRuntimesFast(s.current()) }() // 覆盖真实读路径
 	}
 	wg.Wait() // -race 下不得 panic
 }

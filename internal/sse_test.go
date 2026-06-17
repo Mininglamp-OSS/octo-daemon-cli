@@ -75,12 +75,12 @@ func TestDedupState_AtomicWrite(t *testing.T) {
 		t.Fatalf("mark: %v", err)
 	}
 	// 没 leak .tmp file
-	tmpPath := filepath.Join(home, ".octo-daemon", "events-daemon-X.state.tmp")
+	tmpPath := filepath.Join(home, ".octo-daemon", "daemon-X", "events.state.tmp")
 	if _, err := os.Stat(tmpPath); err == nil {
 		t.Errorf("tmp file %s should not exist after rename", tmpPath)
 	}
 	// 真 file 存在
-	realPath := filepath.Join(home, ".octo-daemon", "events-daemon-X.state")
+	realPath := filepath.Join(home, ".octo-daemon", "daemon-X", "events.state")
 	if _, err := os.Stat(realPath); err != nil {
 		t.Errorf("real state file should exist: %v", err)
 	}
@@ -88,11 +88,11 @@ func TestDedupState_AtomicWrite(t *testing.T) {
 
 func TestDedupState_CorruptFileRecovery(t *testing.T) {
 	home := tempHome(t)
-	dataDir := filepath.Join(home, ".octo-daemon")
+	dataDir := filepath.Join(home, ".octo-daemon", "daemon-corrupt")
 	if err := os.MkdirAll(dataDir, 0700); err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(dataDir, "events-daemon-corrupt.state")
+	path := filepath.Join(dataDir, "events.state")
 	// 写入不合法 JSON, 模拟 crash-mid-write
 	if err := os.WriteFile(path, []byte("{not json"), 0600); err != nil {
 		t.Fatal(err)
@@ -387,7 +387,7 @@ func TestDedupState_ConcurrentMarkPersistsAllEntries(t *testing.T) {
 	}
 }
 
-// B1 (caster review final from codex): claim atomic, 并发同 source_pk 只
+// B1 (caster review final): claim atomic, 并发同 source_pk 只
 // 有一个 goroutine 返 true. 防 SSE+heartbeat 双路径在 mark-after-handler
 // 窗口同时 spawn handler.
 func TestDedupState_ConcurrentClaimOnlyOneWins(t *testing.T) {
@@ -428,7 +428,7 @@ func TestDedupState_ConcurrentClaimOnlyOneWins(t *testing.T) {
 	}
 }
 
-// R4 (codex round 4 BLOCKER): claim 返三态. inflight (claimed=false,
+// R4 (round 4): claim 返三态. inflight (claimed=false,
 // alreadyDone=false) 时 caller 不能 advance cursor, owner markDone 后
 // 重新 claim 才能 alreadyDone=true.
 func TestDedupState_ClaimInflightVsDone(t *testing.T) {
@@ -468,7 +468,7 @@ func TestDedupState_ClaimInflightVsDone(t *testing.T) {
 	}
 }
 
-// R4 round 5 (codex review final BLOCKER): daemon 重启后 inflight 必须
+// R4 round 5 (review (BLOCKER)): daemon 重启后 inflight 必须
 // drop (不该跨 restart 持久化), 否则 owner goroutine 死了没法 markDone/
 // unclaim, 下次 claim 永久 (false, false, nil) 卡死循环.
 //
@@ -583,7 +583,7 @@ func TestDedupState_HotPathPreservesInflight(t *testing.T) {
 	}
 }
 
-// B2 (caster review final from codex): handler 失败时 lastEventID 不能推进,
+// B2 (caster review final): handler 失败时 lastEventID 不能推进,
 // 防失败 event 被 Last-Event-ID 跳过永不 replay.
 func TestDispatch_HandlerErrorDoesNotAdvanceLastEventID(t *testing.T) {
 	tempHome(t)
@@ -619,7 +619,7 @@ func TestDispatch_HandlerErrorDoesNotAdvanceLastEventID(t *testing.T) {
 	}
 }
 
-// B2 round 3 (codex): readLoop 看 dispatch err 必须 return 触发重连. 不
+// B2 round 3 (review): readLoop 看 dispatch err 必须 return 触发重连. 不
 // 继续读后续 frame, 防 max cursor 越过失败 event id.
 //
 // 模拟: 1 个 fail event + 1 个 success event 在同 stream, readLoop 应该
@@ -753,14 +753,14 @@ func TestSSEClient_ReadLoop_CloseEventReconnects(t *testing.T) {
 
 func TestFetchBotProvision_OK(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/daemon/bot-provisions/42" {
+		if r.URL.Path != "/v1/bots/42/provision" {
 			t.Errorf("unexpected path: %s", r.URL.Path)
 		}
 		if r.Header.Get("Authorization") != "Bearer uk_test" {
 			t.Errorf("missing/wrong auth: %q", r.Header.Get("Authorization"))
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{
 			"id":           42,
 			"action":       "bot.provision",
 			"workspace_id": "ws-x",
@@ -768,7 +768,7 @@ func TestFetchBotProvision_OK(t *testing.T) {
 			"bot_uid":      "bot_abc",
 			"bot_token":    "bf_secret",
 			"claim_token":  "claim_xyz",
-		})
+		}})
 	}))
 	defer srv.Close()
 
@@ -793,15 +793,15 @@ func TestFetchBotProvision_OK(t *testing.T) {
 	}
 }
 
-func TestFetchBotProvision_410Gone(t *testing.T) {
+func TestFetchBotProvision_409NotProvisionable(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusGone)
-		_, _ = w.Write([]byte(`{"msg":"not provisionable"}`))
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(`{"error":{"code":"CONFLICT","message":"not provisionable"}}`))
 	}))
 	defer srv.Close()
 
 	tempHome(t)
-	d := newDedupState("daemon-410")
+	d := newDedupState("daemon-409")
 	_ = d.load()
 	client := &SSEClient{
 		fleetURL:  srv.URL,
@@ -811,10 +811,10 @@ func TestFetchBotProvision_410Gone(t *testing.T) {
 	}
 	cmd, err := client.fetchBotProvision(context.Background(), "99")
 	if err != nil {
-		t.Errorf("410 should return (nil, nil), not err: %v", err)
+		t.Errorf("409 should return (nil, nil), not err: %v", err)
 	}
 	if cmd != nil {
-		t.Error("410 should return nil cmd")
+		t.Error("409 should return nil cmd")
 	}
 }
 
@@ -898,11 +898,8 @@ func TestApplyManagedBotsDelta_RemoveMissingNoOp(t *testing.T) {
 func TestSSEClient_ConnectOnce_DispatchUpgradeEvent(t *testing.T) {
 	tempHome(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/daemon/events" {
+		if r.URL.Path != "/v1/runtimes/7/events" {
 			t.Errorf("unexpected path: %s", r.URL.Path)
-		}
-		if r.URL.Query().Get("runtime_id") != "7" {
-			t.Errorf("missing runtime_id query: %v", r.URL.Query())
 		}
 		if r.Header.Get("Authorization") != "Bearer uk_test" {
 			t.Errorf("missing/wrong auth header")

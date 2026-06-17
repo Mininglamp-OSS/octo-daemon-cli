@@ -9,6 +9,7 @@ dist/
 *.out
 .idea/
 .vscode/
+.obsidian/
 .DS_Store
 
 # Local binary builds — never commit these

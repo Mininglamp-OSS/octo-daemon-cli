@@ -94,7 +94,7 @@ type sseEvent struct {
 //
 // 内存 map 化以便 O(1) lookup, 写盘时再 marshal 成 plan 的 list 形式.
 //
-// R4 round 4 (codex review final): claim 返 (claimed, alreadyDone, err).
+// R4 round 4 (review): claim 返 (claimed, alreadyDone, err).
 // alreadyDone=true 时 caller 可 advance (其他 path 已成功). inflight 时
 // (claimed=false, alreadyDone=false) caller **不能 advance**, 必须断流
 // 让 owner 完成. 这一层是 H3+B1+B2 之后剩下的 race 闭环.
@@ -124,7 +124,7 @@ type dedupState struct {
 const dedupHotPrunePeriod = 100
 
 // entryPhase 标识 dedup entry 是 "正在处理" 还是 "已完成". inflight 时
-// 其它 caller 不能 advance cursor (R4 codex BLOCKER), 必须断流让 owner
+// 其它 caller 不能 advance cursor (R4), 必须断流让 owner
 // 完成.
 type entryPhase string
 
@@ -148,8 +148,8 @@ type dedupFile struct {
 	LastEventIDPerRT map[string]int64 `json:"last_event_id_per_runtime,omitempty"`
 }
 
-func newDedupState(daemonID string) *dedupState {
-	path := filepath.Join(DataDir(), "events-"+daemonID+".state")
+func newDedupState(spaceID string) *dedupState {
+	path := filepath.Join(SpaceDir(spaceID), "events.state")
 	return &dedupState{
 		entries: make(map[string]map[string]int64),
 		phases:  make(map[string]map[string]entryPhase),
@@ -200,7 +200,7 @@ func (d *dedupState) load() error {
 			if e.TS < cutoff {
 				continue // TTL prune
 			}
-			// R4 round 5 (codex review final): inflight 是进程内瞬态状态,
+			// R4 round 5 (review): inflight 是进程内瞬态状态,
 			// 不该跨 daemon restart. 没有 owner 会 markDone/unclaim 它,
 			// 否则下次 claim 永远 (false, false, nil) 断流死循环. drop
 			// inflight entries on load → 重启后 fresh claim 重跑 handler
@@ -514,9 +514,10 @@ type SSEClient struct {
 	apiClient *Client
 }
 
-// NewSSEClient 在 NewDaemon 时构造. 调用方传 daemon_id (已 EnsureDaemonID).
-func NewSSEClient(fleetURL, apiKey, daemonID string, apiClient *Client) (*SSEClient, error) {
-	d := newDedupState(daemonID)
+// NewSSEClient is constructed per backendRunner. The dedup state file lives in
+// the space's directory (~/.octo-daemon/<space_id>/events.state).
+func NewSSEClient(fleetURL, apiKey, spaceID string, apiClient *Client) (*SSEClient, error) {
+	d := newDedupState(spaceID)
 	if err := d.load(); err != nil {
 		return nil, err
 	}
@@ -603,7 +604,7 @@ func (c *SSEClient) connectOnce(
 	up upgradeDispatcher,
 	mb managedBotsDispatcher,
 ) error {
-	url := fmt.Sprintf("%s/v1/daemon/events?runtime_id=%d", c.fleetURL, runtimeID)
+	url := fmt.Sprintf("%s/v1/runtimes/%d/events", c.fleetURL, runtimeID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return fmt.Errorf("new request: %w", err)
@@ -688,7 +689,7 @@ func (c *SSEClient) readLoop(
 					// readLoop, 让 RunForRuntime 走 reconnect.
 					return errors.New("server sent close event (TTL re-verify)")
 				}
-				// B2 round 3 (codex): dispatch 返 err 必须断流重连. 不能
+				// B2 round 3 (review): dispatch 返 err 必须断流重连. 不能
 				// 继续读后续 frame, 否则成功 event 用 max 语义推进 cursor
 				// 越过失败 id, 失败 event 永丢 (尤其 bot_provision: fetch
 				// 已 transition row, heartbeat 看不到).
@@ -727,13 +728,13 @@ func (c *SSEClient) readLoop(
 }
 
 // dispatch 处理一帧 event: dedup claim → fetch (bot_provision) → 调对应
-// handler → 失败 unclaim 让 replay 重试 (H3 + B2 fix from codex review).
+// handler → 失败 unclaim 让 replay 重试 (H3 + B2 fix).
 //
 // 返回 err 表示"这条 event 处理失败, 不能继续读后续 frame" — caller (readLoop)
 // 收到 err 应当 return 让 RunForRuntime 重连. 不返 err 才意味着此 event
 // 处理完毕 (含成功 / dedup-skip / 410 终态), readLoop 继续读下一帧.
 //
-// 为啥失败必须断流重连 (B2 round 3 codex review BLOCKER):
+// 为啥失败必须断流重连 (B2 round 3):
 //   - handler 失败 dispatch 不推进 lastEventID, 但 readLoop 继续读后续帧
 //   - 后续成功 event 用 max 语义推进 cursor 越过失败 id
 //   - bot_provision 尤其危险: fetchBotProvision 已把 fleet row 转 dispatched
@@ -882,14 +883,14 @@ func (c *SSEClient) dispatch(
 	}
 }
 
-// fetchBotProvision GET /v1/daemon/bot-provisions/:id. 返回 (nil, nil) 表
-// 410 Gone (bot 不再 provisionable).
+// fetchBotProvision GET /v1/bots/:bot_id/provision. 返回 (nil, nil) 表
+// 409 Conflict (bot 不再 provisionable: 已 active/archived/draft/failed).
 //
-// M5 fix (caster review final from codex): 用 apiClient.httpClient (30s
+// M5 fix (caster review final): 用 apiClient.httpClient (30s
 // timeout), 不用 http.DefaultClient — fetch 在 readLoop goroutine 内, fleet
 // 卡死会无限阻塞后续 SSE frame 处理.
 func (c *SSEClient) fetchBotProvision(ctx context.Context, commandID string) (*PendingAgentCommand, error) {
-	url := fmt.Sprintf("%s/v1/daemon/bot-provisions/%s", c.fleetURL, commandID)
+	url := fmt.Sprintf("%s/v1/bots/%s/provision", c.fleetURL, commandID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
@@ -901,23 +902,24 @@ func (c *SSEClient) fetchBotProvision(ctx context.Context, commandID string) (*P
 	}
 	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
-	if resp.StatusCode == http.StatusGone {
-		return nil, nil
+	if resp.StatusCode == http.StatusConflict {
+		return nil, nil // not provisionable (already active/archived/draft/failed)
 	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("status %d: %s", resp.StatusCode, string(body))
 	}
-	// fleet wkhttp c.Response(data) 直接 JSON 数据, 无 outer envelope —
-	// 跟 daemon postJSON unmarshal 路径一致.
-	//
-	// 注意 (MI7 doc clarification): fleet 返的 payload 含 bot_uid + claim_token +
-	// workspace_id 但**不含 bot_token** — fleet bot 表不存 token. daemon
-	// 收到后若 cmd.BotToken == "" 会另起 GET /v1/bot/:bot_uid/token 问
-	// octo-server 拿 (exec_openclaw.go handleBotProvision line 42-50).
-	// 所以 A3 secret 不进 SSE stream 是因为 fleet 本来就没 secret, 这里
-	// fetch 拿的是 "bot identifying info + claim_token" 不是 secret 本身.
+	// fleet wraps the payload in a {"data": ...} envelope (R1) — unwrap then
+	// decode. Payload carries bot_uid + claim_token + workspace_id but NOT
+	// bot_token (fleet doesn't store it); handleBotProvision fetches the token
+	// from octo-server when cmd.BotToken == "".
+	var env struct {
+		Data json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(body, &env); err != nil {
+		return nil, fmt.Errorf("unmarshal envelope: %w", err)
+	}
 	var cmd PendingAgentCommand
-	if err := json.Unmarshal(body, &cmd); err != nil {
+	if err := json.Unmarshal(env.Data, &cmd); err != nil {
 		return nil, fmt.Errorf("unmarshal: %w", err)
 	}
 	if cmd.ID == 0 {
