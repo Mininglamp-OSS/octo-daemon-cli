@@ -4,75 +4,88 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"github.com/Mininglamp-OSS/octo-daemon-cli/internal"
 	"github.com/spf13/cobra"
 )
 
+// daemonWorkerEnv marks the re-exec'd background worker so it runs in the
+// foreground instead of forking again. It is intentionally an env var, not a
+// flag, so it never appears in `--help`.
+const daemonWorkerEnv = "OCTO_DAEMON_WORKER"
+
 var startCmd = &cobra.Command{
 	Use:   "start",
 	Short: "Start the daemon",
-	Long:  "Start detecting local agent runtimes and reporting to Octo server.",
+	Long:  "Start detecting local agent runtimes and reporting to Octo server.\n\nReads profiles from the config file (default ~/.octo-daemon/config.json) and\nsupervises one backend connection per space. Configure profiles first with\n`octo-daemon config`.",
 	RunE:  runStart,
 }
 
 var (
-	flagAPIKey     string
-	flagAPIURL     string
-	flagDeviceName string
-	flagForeground bool
 	flagConfigFile string
+	flagDaemon     bool
 )
 
 func init() {
-	startCmd.Flags().StringVar(&flagAPIKey, "api-key", "", "User API key for authentication")
-	startCmd.Flags().StringVar(&flagAPIURL, "api-url", "", "Octo API server URL")
-	startCmd.Flags().StringVar(&flagDeviceName, "device-name", "", "Device display name (defaults to hostname)")
-	startCmd.Flags().BoolVar(&flagForeground, "foreground", true, "Run in foreground (default: true)")
-	startCmd.Flags().StringVar(&flagConfigFile, "config", "", "Config file path (overrides api-key/api-url flags)")
+	// --config is optional; it exists mainly so `service install` can bake an
+	// absolute path into the launchd/systemd unit. Interactive/k8s runs use the
+	// default ~/.octo-daemon/config.json.
+	startCmd.Flags().StringVar(&flagConfigFile, "config", "", "Config file path (default ~/.octo-daemon/config.json)")
+	startCmd.Flags().BoolVar(&flagDaemon, "daemon", false, "Run in the background (detached); logs to ~/.octo-daemon/daemon.log")
 }
 
 func runStart(cmd *cobra.Command, args []string) error {
-	var cfg internal.Config
+	// Launcher role: --daemon set and we are not already the worker → re-exec
+	// self detached, then exit. The worker (same binary with the env marker)
+	// falls through to the foreground path below.
+	if flagDaemon && os.Getenv(daemonWorkerEnv) == "" {
+		return daemonize()
+	}
 
-	// 如果有 --config，从文件加载
-	if flagConfigFile != "" {
-		loaded, err := internal.LoadConfig(flagConfigFile)
-		if err != nil {
-			return &internal.ExitError{Code: 2, Message: fmt.Sprintf("load config: %v", err)}
+	cfgPath := flagConfigFile
+	if cfgPath == "" {
+		cfgPath = internal.ConfigFilePath()
+	}
+
+	// A pre-multi-profile single-object config can't run under the new binary;
+	// move it aside so this becomes a clean "no config" → "run config" error
+	// instead of a silent zero-profile start.
+	if backup, err := internal.BackupLegacyConfig(cfgPath); err != nil {
+		return &internal.ExitError{Code: 2, Message: fmt.Sprintf("back up legacy config: %v", err)}
+	} else if backup != "" {
+		fmt.Printf("legacy config moved to %s — run `octo-daemon config --space-id=... --server-url=... --fleet-url=... --api-key=...` to reconfigure\n", backup)
+	}
+
+	if _, err := os.Stat(cfgPath); os.IsNotExist(err) {
+		return &internal.ExitError{Code: 2, Message: fmt.Sprintf("no config at %s — run `octo-daemon config --space-id=... --server-url=... --fleet-url=... --api-key=...` first", cfgPath)}
+	}
+
+	profiles, err := internal.LoadProfiles(cfgPath)
+	if err != nil {
+		return &internal.ExitError{Code: 2, Message: fmt.Sprintf("load config: %v", err)}
+	}
+	if len(profiles) == 0 {
+		return &internal.ExitError{Code: 2, Message: "no profiles configured — run `octo-daemon config --space-id=... --server-url=... --fleet-url=... --api-key=...` first"}
+	}
+
+	hostname, err := os.Hostname()
+	if err != nil {
+		return &internal.ExitError{Code: 2, Message: fmt.Sprintf("get hostname: %v", err)}
+	}
+	for i := range profiles {
+		if profiles[i].DeviceName == "" {
+			profiles[i].DeviceName = hostname
 		}
-		cfg = loaded
+		profiles[i].CLIVersion = version
 	}
 
-	// 命令行参数覆盖配置文件
-	if flagAPIKey != "" {
-		cfg.APIKey = flagAPIKey
-	}
-	if flagAPIURL != "" {
-		cfg.APIURL = flagAPIURL
-	}
-	if flagDeviceName != "" {
-		cfg.DeviceName = flagDeviceName
-	}
-
-	if cfg.APIKey == "" || cfg.APIURL == "" {
-		return &internal.ExitError{Code: 2, Message: "api-key and api-url are required (via flags or --config)"}
-	}
-
-	if cfg.DeviceName == "" {
-		hostname, err := os.Hostname()
-		if err != nil {
-			return &internal.ExitError{Code: 2, Message: fmt.Sprintf("get hostname: %v", err)}
-		}
-		cfg.DeviceName = hostname
-	}
-
-	cfg.CLIVersion = version
-
-	if err := internal.SaveConfig(cfg); err != nil {
-		return &internal.ExitError{Code: 2, Message: fmt.Sprintf("failed to save config (required for remote upgrade): %v", err)}
+	sup, err := internal.NewSupervisor(profiles)
+	if err != nil {
+		return &internal.ExitError{Code: 2, Message: fmt.Sprintf("init supervisor: %v", err)}
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -81,17 +94,11 @@ func runStart(cmd *cobra.Command, args []string) error {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
-	d, err := internal.NewDaemon(cfg)
-	if err != nil {
-		return &internal.ExitError{Code: 2, Message: fmt.Sprintf("init daemon: %v", err)}
-	}
-
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- d.Run(ctx)
+		errCh <- sup.Run(ctx)
 	}()
 
-	// Run() 返回 nil 或 ExitError；Signal 触发的正常关停也走 Run() 退出链路。
 	select {
 	case sig := <-sigCh:
 		fmt.Printf("\nReceived %s, shutting down...\n", sig)
@@ -100,4 +107,48 @@ func runStart(cmd *cobra.Command, args []string) error {
 	case err := <-errCh:
 		return err
 	}
+}
+
+// daemonize re-execs the current binary as a detached background worker (new
+// session, stdio redirected to a log file) and returns once the child is
+// started. The single-instance lock is enforced by the worker itself; we
+// pre-check here only to give a clean error instead of a silently-dead child.
+func daemonize() error {
+	if internal.IsLocked() {
+		pid, _ := internal.ReadLockPID()
+		return &internal.ExitError{Code: 2, Message: fmt.Sprintf("daemon already running (pid %d) — run `octo-daemon stop` first", pid)}
+	}
+
+	exe, err := os.Executable()
+	if err != nil {
+		return &internal.ExitError{Code: 2, Message: fmt.Sprintf("resolve executable: %v", err)}
+	}
+
+	logPath := filepath.Join(internal.DataDir(), "daemon.log")
+	if err := os.MkdirAll(filepath.Dir(logPath), 0755); err != nil {
+		return &internal.ExitError{Code: 2, Message: fmt.Sprintf("create data dir: %v", err)}
+	}
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return &internal.ExitError{Code: 2, Message: fmt.Sprintf("open log %s: %v", logPath, err)}
+	}
+	defer func() { _ = logFile.Close() }()
+
+	// Re-exec with the same args (incl. --daemon, which the worker ignores via
+	// the env marker), detached into its own session so it survives the shell.
+	child := exec.Command(exe, os.Args[1:]...)
+	child.Stdin = nil
+	child.Stdout = logFile
+	child.Stderr = logFile
+	child.Env = append(os.Environ(), daemonWorkerEnv+"=1")
+	child.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+
+	if err := child.Start(); err != nil {
+		return &internal.ExitError{Code: 2, Message: fmt.Sprintf("start background daemon: %v", err)}
+	}
+	pid := child.Process.Pid
+	_ = child.Process.Release()
+
+	fmt.Printf("octo-daemon started in background (pid %d). Logs: %s\n", pid, logPath)
+	return nil
 }

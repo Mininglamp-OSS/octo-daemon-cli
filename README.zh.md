@@ -30,17 +30,16 @@
 > **OCTO 平台的本机 Agent Runtime 上报守护进程**。自动检测本机已安装的 AI Agent CLI（Claude Code、Codex、OpenClaw、Hermes），上报版本、agent 绑定和插件状态，支持远程一键升级。
 
 `octo-daemon` 是一个轻量级 Go 二进制，安装在团队成员的开发机或
-服务器上，以 `launchd` / `systemd` 服务方式运行，自动探测本机 AI
-Agent，并把实时清单上报给
+服务器上，自动探测本机 AI Agent，并把实时清单上报给
 [`octo-server`](https://github.com/Mininglamp-OSS/octo-server)，由
 [`octo-web`](https://github.com/Mininglamp-OSS/octo-web) 在 Runtimes
 页面渲染、做延迟测试和触发远程升级。
 
 ## 🌟 为什么用 Octo Daemon
 
-- **零配置清单。** 把二进制放到机器上，执行 `octo-daemon service install`，本机上所有 Claude / Codex / OpenClaw / Hermes 都会在数秒内出现在 OCTO Runtimes 页面。
+- **快速清单。** 用 `octo-daemon config` 把二进制对准一个 space，执行 `octo-daemon start`，本机上所有 Claude / Codex / OpenClaw / Hermes 都会在数秒内出现在 OCTO Runtimes 页面。一个 daemon 可同时服务**多个 space**。
 - **远程升级，无需 SSH。** Daemon 本身、OpenClaw 插件以及四个 provider CLI（Claude / Codex / Hermes / OpenClaw）都可以从 OCTO Web 一键升级 —— 服务端 atomic claim、版本 pin、register 时自动关单。
-- **天然自愈。** 两阶段探测（快注册 + 异步深探）、60s 周期重扫、服务端 30s sweeper、exit-code 驱动 service 重启。崩溃 10 秒内回来；API key 被踢则干净退出不无限重启。
+- **天然自愈。** 两阶段探测（快注册 + 异步深探）、60s 周期重扫、服务端 30s sweeper。每个 space 各跑一条受监管的循环：出问题的 space 会被隔离重试、不影响其他 space；API key 被踢则该 space 干净退出。
 
 ## 🚀 快速开始
 
@@ -65,59 +64,73 @@ octo-daemon version
 > PATH 上（nvm 或自定义 prefix 常见）。用 `echo "$(npm config get prefix)/bin"`
 > 打印该目录，加进 `PATH` 即可。
 
-### 2. 拿 API key
+### 2. 拿到连接参数
 
-在 OCTO 里向 BotFather 发 `/daemon`，会返回完整启动命令（含 API
-key 和服务器地址）。
+在 OCTO 里向 BotFather 发 `/daemon`，会返回下一步需要的参数：你的
+**space ID**、**server / fleet 地址**、以及 **API key**。
 
-### 3. 启动
-
-```bash
-octo-daemon start --api-key "uk_xxx" --api-url "http://your-server:8090"
-```
-
-`start` 默认**前台运行**（占住终端）——首次跑时方便观察注册过程。要常驻
-后台，用第 4 步的系统服务。
-
-> 单机部署 `--api-key` + `--api-url` 即可。**服务拆分部署**（fleet
-> 独立）时还需设 `OCTO_FLEET_URL` / `OCTO_SERVER_URL`——见下方
-> [环境变量](#-环境变量)。BotFather 的 `/daemon` 回复会给出适配你这套
-> 部署的完整命令，照抄即可。
-
-### 4.（推荐）装为系统服务
+### 3. 配置一个 space
 
 ```bash
-octo-daemon service install
+octo-daemon config \
+  --space-id "your_space_id" \
+  --server-url "http://your-server:8090" \
+  --fleet-url  "http://your-server:8090" \
+  --api-key    "uk_xxx"
 ```
 
-macOS 上会注册一个用户级 `launchd` agent（`ai.octo.daemon`）；Linux
-上注册 `systemd --user` unit。服务在用户登录时自启、崩溃 10 秒内
-重启、远程升级后用新二进制重新拉起。
+`config` 会创建 `~/.octo-daemon/<space_id>/`（生成该 space 的 `daemon.id`），
+并把这条 profile upsert 进 `~/.octo-daemon/config.json`。它**按 `--space-id`
+幂等**：重复执行只更新该 profile。要让一台机器连**多个 space**，对每个 space
+各跑一次 `config`——各自独立的 profile、独立的后端连接。
+
+> `--matter-url` 可传，会被存下供将来使用，目前可选。
+
+### 4. 启动
+
+```bash
+octo-daemon start            # 前台运行（占住终端）
+octo-daemon start --daemon   # 后台运行（脱离终端）；日志写到 ~/.octo-daemon/daemon.log
+octo-daemon stop             # 停止运行中的 daemon（前台或 --daemon 均可）
+```
+
+`start` 读取 `config.json` 里**所有** profile，在单进程内为每个 space 各维持
+一条后端连接。单个 space 出问题（URL 错、key 被踢）会被隔离重试，不影响其他
+space。
 
 ### 5. 查看状态
 
 ```bash
-octo-daemon status            # 进程 / 版本
-octo-daemon service status    # 服务安装状态 + 最后一条日志
+octo-daemon status            # 进程 / 版本 / 各 space profile
 ```
 
-## ⚙️ 环境变量
+> 以 `launchd` / `systemd` 系统服务方式托管运行已在路线图上，但尚未文档化——
+> 目前后台运行请用 `octo-daemon start --daemon`。
 
-单机部署只需 `--api-key` 和 `--api-url`。下面这些是可选的，daemon 从环境
-变量读取（在 `start` 前设好，或写进服务的 env 文件）。BotFather 的
-`/daemon` 回复已经会带上你这套部署所需的 URL——这里列出供自定义 / 拆分
-部署参考。
+## ⚙️ 配置与环境变量
+
+每个 space 的连接以一条 **profile** 存在 `~/.octo-daemon/config.json`
+（由 `octo-daemon config` 写入）：
+
+| 字段 | 必填 | 用途 |
+|---|---|---|
+| `space_id` | 是 | profile 主键 + 该 space 的数据目录名 |
+| `api_key` | 是 | space 级 API key |
+| `fleet_url` | 是 | runtime / bot 端点 + SSE |
+| `server_url` | 是 | auth + bot-token 端点 |
+| `matter_url` | 否 | 预留，将来使用（存下但暂未消费） |
+
+> **服务拆分部署**把 `fleet_url` 和 `server_url` 设成不同地址；单机部署两者
+> 指向同一地址即可。旧的 `OCTO_FLEET_URL` / `OCTO_SERVER_URL` 环境变量已
+> **移除**——路由现在按 profile 存在 `config.json` 里。也没有单独的 matter
+> URL 环境变量。
+
+剩下的环境变量是运行期开关，不是路由：
 
 | 变量 | 默认 | 何时设置 |
 |---|---|---|
-| `OCTO_FLEET_URL` | `--api-url` | **服务拆分部署**——fleet（runtime/bot 端点）地址与主 API 不同。 |
-| `OCTO_SERVER_URL` | `--api-url` | **服务拆分部署**——auth / bot-token 端点地址与主 API 不同。 |
 | `OCTO_SSE_DISABLED` | 未设 | 设为 `1` 关闭 SSE 反向派发，回退到 heartbeat 轮询（回滚开关）。 |
 | `OCTO_SLOW_DETECT_SECONDS` | `60` | 深度 agent 探测的重扫间隔——仅调优用。 |
-
-> daemon 通过上面的 fleet/server 端点够到 matter（任务 ack/拉取），**没有**
-> 单独的 matter URL 变量。（旧版 BotFather 输出里的 `OCTO_MATTER_URL`
-> daemon 并不读取。）
 
 ## 📦 支持的 Agent
 
@@ -135,21 +148,19 @@ octo-daemon service status    # 服务安装状态 + 最后一条日志
 3. **心跳（15s）** —— 维持 runtime 在线，服务端在响应里下发 pending ping / upgrade 任务。
 4. **重扫（60s）** —— 检测新装 CLI、版本变化、gateway 启停，变化触发 re-register。
 5. **服务端 sweeper（30s）** —— 45s 无心跳标 offline，7 天后删除；卡住的 ping/upgrade 任务自动 timeout。
-6. **Service 模式自愈** —— `launchd KeepAlive` / `systemd Restart=on-failure` + exit-code 映射（75 = 升级后 respawn；78 = api-key 失效不循环；0 = 干净退出）。
 
 ## 🗂 本地数据
 
 数据全部在 `~/.octo-daemon/` 下：
 
-| 文件 | 用途 |
+| 路径 | 用途 |
 |------|------|
-| `daemon.id` | 机器 UUID（v7，首次生成永久保留） |
-| `daemon.lock` | 文件锁，单实例保护 |
+| `config.json` | profile 列表（每 space 一条）；`octo-daemon config` 写、`start` 读 |
+| `<space_id>/daemon.id` | 该 space 的 daemon 身份（v7 UUID，首次生成永久保留） |
+| `<space_id>/events.state` | 该 space 的 SSE 去重游标 |
+| `daemon.lock` | 文件锁，单实例保护（一个进程服务所有 space） |
 | `daemon.pid` | 当前进程 PID |
-| `config.json` | `service install` 读它取 api-key / api-url |
-| `service-env/ai.octo.daemon.env` | Service 模式环境变量文件（HOME / PATH / OCTO_DAEMON_UNDER_SERVICE=1） |
-| `service-env/ai.octo.daemon-env-wrapper.sh` | Service 模式 `exec` wrapper |
-| `logs/daemon.log` | macOS service stdout（Linux 走 journal） |
+| `daemon.log` | 后台运行（`start --daemon`）的 stdout/stderr |
 
 ## 🛠 从源码构建
 

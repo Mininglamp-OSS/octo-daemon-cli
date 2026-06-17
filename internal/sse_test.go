@@ -75,12 +75,12 @@ func TestDedupState_AtomicWrite(t *testing.T) {
 		t.Fatalf("mark: %v", err)
 	}
 	// 没 leak .tmp file
-	tmpPath := filepath.Join(home, ".octo-daemon", "events-daemon-X.state.tmp")
+	tmpPath := filepath.Join(home, ".octo-daemon", "daemon-X", "events.state.tmp")
 	if _, err := os.Stat(tmpPath); err == nil {
 		t.Errorf("tmp file %s should not exist after rename", tmpPath)
 	}
 	// 真 file 存在
-	realPath := filepath.Join(home, ".octo-daemon", "events-daemon-X.state")
+	realPath := filepath.Join(home, ".octo-daemon", "daemon-X", "events.state")
 	if _, err := os.Stat(realPath); err != nil {
 		t.Errorf("real state file should exist: %v", err)
 	}
@@ -88,11 +88,11 @@ func TestDedupState_AtomicWrite(t *testing.T) {
 
 func TestDedupState_CorruptFileRecovery(t *testing.T) {
 	home := tempHome(t)
-	dataDir := filepath.Join(home, ".octo-daemon")
+	dataDir := filepath.Join(home, ".octo-daemon", "daemon-corrupt")
 	if err := os.MkdirAll(dataDir, 0700); err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(dataDir, "events-daemon-corrupt.state")
+	path := filepath.Join(dataDir, "events.state")
 	// 写入不合法 JSON, 模拟 crash-mid-write
 	if err := os.WriteFile(path, []byte("{not json"), 0600); err != nil {
 		t.Fatal(err)

@@ -13,13 +13,16 @@ import (
 	"github.com/Mininglamp-OSS/octo-daemon-cli/internal/adapter"
 )
 
+// Daemon is the per-space backend runner: one Client + optional SSEClient +
+// heartbeat/register loops bound to a single profile (space_id). The process
+// runs one Daemon per profile under a Supervisor; the single-instance lock and
+// the shared adapter registry live on the Supervisor, not here.
 type Daemon struct {
 	cfg       Config
 	client    *Client
 	registry  *adapter.Registry
 	sseClient *SSEClient
 	daemonID  string
-	lockFile  *os.File
 
 	mu                 sync.Mutex
 	registeredRuntimes []RegisteredRuntime
@@ -39,59 +42,22 @@ type Daemon struct {
 	cancel            context.CancelFunc
 }
 
-func NewDaemon(cfg Config) (*Daemon, error) {
+// newBackendRunner builds a per-space Daemon. The caller (Supervisor) supplies
+// the shared adapter registry and the space's daemonID (already ensured via
+// EnsureDaemonID). Backend URLs come from the profile config — there is no
+// OCTO_FLEET_URL/OCTO_SERVER_URL env routing anymore.
+func newBackendRunner(cfg Config, registry *adapter.Registry, daemonID string) *Daemon {
 	cfg.withDefaults()
 
-	daemonID, err := EnsureDaemonID()
-	if err != nil {
-		return nil, fmt.Errorf("ensure daemon id: %w", err)
-	}
-
-	// PR-A.2 URL routing:
-	//   OCTO_FLEET_URL  — runtime/bot endpoints (defaults to APIURL, so
-	//                     existing deployments still work pre-fleet-cutover)
-	//   OCTO_SERVER_URL — auth + bot_token endpoints (defaults to APIURL)
-	// When both env vars are set, the client uses JWT for fleet calls;
-	// otherwise it stays on the legacy api_key path so daemon binaries
-	// pointed at an old server still function.
-	fleetURL := os.Getenv("OCTO_FLEET_URL")
-	if fleetURL == "" {
-		fleetURL = cfg.APIURL
-	}
-	serverURL := os.Getenv("OCTO_SERVER_URL")
-	if serverURL == "" {
-		serverURL = cfg.APIURL
-	}
-	client := NewClient(fleetURL, cfg.APIKey, cfg.CLIVersion)
-	client.SetServerURL(serverURL)
-	// 合并 plan 决策一+二 Phase 3B: daemon 直接持 api_key 调 fleet/server,
-	// 不再换 JWT。fleet middleware 调 server /v1/auth/verify-api-key 验证。
-	if os.Getenv("OCTO_FLEET_URL") != "" {
-		log.Printf("[INFO] daemon api_key mode enabled (fleet=%s server=%s)", fleetURL, serverURL)
-	}
-
-	// Build the runtime-adapter registry. All four kinds are registered; only
-	// openclaw and hermes are implemented today, claude/codex are skeletons
-	// returning ErrUnsupported. Commands carry runtime_kind (fleet populates
-	// it); an empty kind falls back to openclaw via Registry.Get("").
-	reg := adapter.NewRegistry()
-	for _, a := range []adapter.RuntimeAdapter{
-		adapter.NewOpenclawAdapter(nil),
-		adapter.NewClaudeAdapter(nil),
-		adapter.NewCodexAdapter(nil),
-		adapter.NewHermesAdapter(nil),
-	} {
-		if err := reg.Register(a); err != nil {
-			return nil, fmt.Errorf("register runtime adapter: %w", err)
-		}
-	}
+	client := NewClient(cfg.FleetURL, cfg.APIKey, cfg.CLIVersion)
+	client.SetServerURL(cfg.ServerURL)
 
 	return &Daemon{
 		cfg:      cfg,
 		client:   client,
-		registry: reg,
+		registry: registry,
 		daemonID: daemonID,
-	}, nil
+	}
 }
 
 // runtimeAdapter resolves the adapter for a command's runtime_kind. An empty
@@ -101,28 +67,23 @@ func (d *Daemon) runtimeAdapter(kind string) (adapter.RuntimeAdapter, error) {
 	return d.registry.Get(kind)
 }
 
-// initSSEClient 构造 SSE client (在 NewDaemon 之外, lazy 因为 SSEClient.load
-// 读 dedup file 失败不应阻塞 NewDaemon — daemon 还能跑只是无 SSE).
+// initSSEClient 构造 SSE client (在 newBackendRunner 之外, lazy 因为
+// SSEClient.load 读 dedup file 失败不应阻塞构造 — daemon 还能跑只是无 SSE).
 // Run() 之前调一次, 失败则 SSE 不启 daemon 走 heartbeat 兜底.
 //
-// 决策三 §D3 SSE endpoint URL config: 直接复用 fleetURL (OCTO_FLEET_URL
-// 或 cfg.APIURL), SSE endpoint 是 fleet 子路径 /v1/daemon/events. 无需
-// 单独 SSE base URL. 紧急 rollback: set OCTO_SSE_DISABLED=1 跳过 init,
-// daemon 走 heartbeat 兜底 (Phase A 主路径 graceful; heartbeat-only rollback
-// 存在 terminal ack/report 失败后无 retry 路径的已知 caveat, task 会卡到
-// sweeper timeout — 见 runHeartbeatUpgrade / runHeartbeatBotProvision
-// sseClient==nil 分支 [WARN] log 和 TODO Phase B 注释). Phase B 后谨慎
-// — 那时 heartbeat 已不带 pending.
+// 决策三 §D3 SSE endpoint URL config: 直接复用 profile 的 fleet_url, SSE
+// endpoint 是 fleet 子路径 /v1/daemon/events. 无需单独 SSE base URL. 紧急
+// rollback: set OCTO_SSE_DISABLED=1 跳过 init, daemon 走 heartbeat 兜底
+// (Phase A 主路径 graceful; heartbeat-only rollback 存在 terminal ack/report
+// 失败后无 retry 路径的已知 caveat, task 会卡到 sweeper timeout — 见
+// runHeartbeatUpgrade / runHeartbeatBotProvision sseClient==nil 分支 [WARN]
+// log 和 TODO Phase B 注释). Phase B 后谨慎 — 那时 heartbeat 已不带 pending.
 func (d *Daemon) initSSEClient() {
 	if v := os.Getenv("OCTO_SSE_DISABLED"); v == "1" || v == "true" {
 		log.Printf("[INFO] SSE disabled by OCTO_SSE_DISABLED env, falling back to heartbeat pending")
 		return
 	}
-	fleetURL := os.Getenv("OCTO_FLEET_URL")
-	if fleetURL == "" {
-		fleetURL = d.cfg.APIURL
-	}
-	sse, err := NewSSEClient(fleetURL, d.cfg.APIKey, d.daemonID, d.client)
+	sse, err := NewSSEClient(d.cfg.FleetURL, d.cfg.APIKey, d.cfg.SpaceID, d.client)
 	if err != nil {
 		log.Printf("[WARN] SSE init failed (%v) — heartbeat 兜底继续工作", err)
 		return
@@ -344,24 +305,14 @@ func (d *Daemon) runHeartbeatBotProvision(ctx context.Context, cmd *PendingAgent
 	}
 }
 
+// Run drives one space's register + heartbeat/SSE loops until ctx is cancelled
+// or a fatal ExitError (403 → 78, upgrade → 75) is recorded. The single-instance
+// lock is held by the Supervisor, not acquired here.
 func (d *Daemon) Run(ctx context.Context) error {
-	lockFile, err := TryLock()
-	if err != nil {
-		// Lock conflict is a startup-level fatal (code 2). Under service
-		// manager the wrapper/Go main will map 2 → 0 to avoid restart loops.
-		return &ExitError{Code: 2, Message: fmt.Sprintf("acquire daemon lock: %v", err)}
-	}
-	d.lockFile = lockFile
-	defer func() {
-		RemovePID()
-		_ = d.lockFile.Close()
-		_ = os.Remove(LockFilePath())
-	}()
-
 	ctx, cancel := context.WithCancel(ctx)
 	d.cancel = cancel
 
-	log.Printf("[INFO] daemon starting (id=%s, device=%s)", d.daemonID, d.cfg.DeviceName)
+	log.Printf("[INFO] backend runner starting (space=%s id=%s device=%s)", d.cfg.SpaceID, d.daemonID, d.cfg.DeviceName)
 
 	if err := d.register(ctx); err != nil {
 		// If register tripped checkForbidden, an ExitError{78} is already
