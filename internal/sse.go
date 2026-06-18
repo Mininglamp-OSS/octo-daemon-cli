@@ -27,7 +27,7 @@ import (
 //
 // 事件类型 (跟 fleet sse.go eventType* 常量对齐):
 //   - upgrade         → call d.handleUpgrade
-//   - bot_provision   → fetch GET /v1/daemon/bot-provisions/:id → handleBotProvision
+//   - bot_provision   → fetch GET /v1/bots/:id/provision?runtime_id=N → handleBotProvision
 //   - managed_bots_changed → apply delta (idempotent, 不走 dedup)
 //
 // 关键设计:
@@ -41,7 +41,7 @@ import (
 //
 //   A3 bot_provision secret fetch:
 //     - SSE event 只含 command_id, secret 不进 stream
-//     - 收到后 GET /v1/daemon/bot-provisions/:id 拿完整 payload
+//     - 收到后 GET /v1/bots/:id/provision?runtime_id=N 拿完整 payload
 //     - 410 Gone (bot 已 active/archived) → log skip, 不重试
 //
 //   G7 reconnect jitter (caster review fleet round 1):
@@ -832,7 +832,7 @@ func (c *SSEClient) dispatch(
 		if !claimed {
 			return fmt.Errorf("bot_provision %s in-flight by another path, reconnect to retry", p.CommandID)
 		}
-		cmd, err := c.fetchBotProvision(ctx, p.CommandID)
+		cmd, err := c.fetchBotProvision(ctx, p.CommandID, runtimeID)
 		if err != nil {
 			log.Printf("[WARN] SSE bot_provision (runtime=%d id=%s) fetch: %v — unclaim + reconnect", runtimeID, p.CommandID, err)
 			if uerr := c.dedup.unclaim(ev.Type, p.CommandID); uerr != nil {
@@ -883,14 +883,19 @@ func (c *SSEClient) dispatch(
 	}
 }
 
-// fetchBotProvision GET /v1/bots/:bot_id/provision. 返回 (nil, nil) 表
-// 409 Conflict (bot 不再 provisionable: 已 active/archived/draft/failed).
+// fetchBotProvision GET /v1/bots/:bot_id/provision?runtime_id=N. 返回 (nil, nil)
+// 表 409 Conflict (bot 不再 provisionable: 已 active/archived/draft/failed).
+//
+// runtime_id 是 fleet 的硬契约 (fleet#44): api_key 只绑 (owner, space), fleet
+// 单凭 key 区分不出 caller 是哪台 runtime, 所以 daemon 必须自报 runtime_id —
+// fleet 校验它归 caller 所有且 bot.runtime_id 与之相等 (防同 owner+space 下
+// daemon A 拿 daemon B 的 bot.id 抢 claim)。缺这个 query 参数 fleet 直接 400.
 //
 // M5 fix (caster review final): 用 apiClient.httpClient (30s
 // timeout), 不用 http.DefaultClient — fetch 在 readLoop goroutine 内, fleet
 // 卡死会无限阻塞后续 SSE frame 处理.
-func (c *SSEClient) fetchBotProvision(ctx context.Context, commandID string) (*PendingAgentCommand, error) {
-	url := fmt.Sprintf("%s/v1/bots/%s/provision", c.fleetURL, commandID)
+func (c *SSEClient) fetchBotProvision(ctx context.Context, commandID string, runtimeID int64) (*PendingAgentCommand, error) {
+	url := fmt.Sprintf("%s/v1/bots/%s/provision?runtime_id=%d", c.fleetURL, commandID, runtimeID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
