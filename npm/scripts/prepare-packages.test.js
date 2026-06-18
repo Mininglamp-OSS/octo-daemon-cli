@@ -76,8 +76,14 @@ test("emits one package per platform and a pinned main package", (t) => {
 
   // Main package: version stamped, optionalDependencies exact-pinned to
   // every platform package, shim shipped, dev scripts stripped, and NO
-  // os/cpu constraints (unsupported platforms must reach the shim's
-  // build-from-source message, not die in npm with EBADPLATFORM).
+  // os/cpu constraints ON THE MAIN PACKAGE ITSELF (so the shim — not npm —
+  // owns the unsupported-platform message for the daemon binary).
+  //
+  // NOTE: the octo-cli hard dependency DOES carry an os/cpu matrix, so
+  // end-to-end "installs anywhere" no longer fully holds on platforms
+  // outside octo-cli's matrix — an intentional product trade-off (octo-cli
+  // is a required companion; see README). This assertion still guards the
+  // main package's own constraint-free shape, which is unchanged.
   const main = JSON.parse(
     fs.readFileSync(path.join(outDir, "octo-daemon", "package.json"), "utf8"),
   );

@@ -51,10 +51,21 @@ upgrades.
 npm install -g @mininglamp-oss/octo-daemon
 ```
 
-The matching prebuilt binary ships inside a platform sub-package selected
-automatically by npm (darwin / linux on x64 / arm64) — there is no
-postinstall download, so registry mirrors work transparently. Other
-platforms (including Windows): build from source (see below).
+The daemon's own prebuilt binary ships inside a platform sub-package selected
+automatically by npm (darwin / linux on x64 / arm64) — the daemon binary
+itself has no postinstall download. Other platforms (including Windows):
+build from source (see below).
+
+> **Bundled `octo-cli` — networked install (intentional).** This package
+> declares `@mininglamp-oss/octo-cli` as a dependency so the CLI lands on
+> every machine running the daemon. Unlike the daemon binary, octo-cli pulls
+> its binary via a **postinstall download**, so `npm install -g` reaches the
+> network for that dependency and is **not** fully mirror-transparent, and it
+> inherits octo-cli's `os`/`cpu` matrix (darwin/linux/win32 × x64/arm64). This
+> is a deliberate product decision: octo-cli is a required companion, so a
+> failed octo-cli install fails loudly rather than silently leaving it absent.
+> Air-gapped / mirror-only deployments must provision octo-cli's binary
+> out-of-band.
 
 `npm install -g` puts the `octo-daemon` command on your PATH automatically
 (a symlink in npm's global bin dir) — **no manual PATH editing needed**.
