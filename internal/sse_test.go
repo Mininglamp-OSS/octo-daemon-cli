@@ -756,6 +756,9 @@ func TestFetchBotProvision_OK(t *testing.T) {
 		if r.URL.Path != "/v1/bots/42/provision" {
 			t.Errorf("unexpected path: %s", r.URL.Path)
 		}
+		if got := r.URL.Query().Get("runtime_id"); got != "7" {
+			t.Errorf("missing/wrong runtime_id query: %q (fleet#44 requires daemon to self-report runtime_id)", got)
+		}
 		if r.Header.Get("Authorization") != "Bearer uk_test" {
 			t.Errorf("missing/wrong auth: %q", r.Header.Get("Authorization"))
 		}
@@ -781,7 +784,7 @@ func TestFetchBotProvision_OK(t *testing.T) {
 		apiClient: &Client{httpClient: &http.Client{Timeout: 30 * time.Second}},
 		dedup:     d,
 	}
-	cmd, err := client.fetchBotProvision(context.Background(), "42")
+	cmd, err := client.fetchBotProvision(context.Background(), "42", 7)
 	if err != nil {
 		t.Fatalf("fetch: %v", err)
 	}
@@ -809,7 +812,7 @@ func TestFetchBotProvision_409NotProvisionable(t *testing.T) {
 		apiClient: &Client{httpClient: &http.Client{Timeout: 30 * time.Second}},
 		dedup:     d,
 	}
-	cmd, err := client.fetchBotProvision(context.Background(), "99")
+	cmd, err := client.fetchBotProvision(context.Background(), "99", 7)
 	if err != nil {
 		t.Errorf("409 should return (nil, nil), not err: %v", err)
 	}
@@ -833,7 +836,7 @@ func TestFetchBotProvision_OtherError(t *testing.T) {
 		apiClient: &Client{httpClient: &http.Client{Timeout: 30 * time.Second}},
 		dedup:     d,
 	}
-	cmd, err := client.fetchBotProvision(context.Background(), "1")
+	cmd, err := client.fetchBotProvision(context.Background(), "1", 7)
 	if err == nil {
 		t.Error("500 should error")
 	}
