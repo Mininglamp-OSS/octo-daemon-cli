@@ -66,23 +66,32 @@ octo-daemon version
 
 ### 2. 拿到连接参数
 
-在 OCTO 里向 BotFather 发 `/daemon`，会返回下一步需要的参数：你的
-**space ID**、**server / fleet 地址**、以及 **API key**。
+在 OCTO 里向 BotFather 发 `/daemon`，会返回下一步需要的参数：**server 地址**
+和你的 **API key**。（space 会自动解析得到——见下文。）
 
 ### 3. 配置一个 space
 
 ```bash
 octo-daemon config \
-  --space-id "your_space_id" \
-  --server-url "http://your-server:8090" \
-  --fleet-url  "http://your-server:8090" \
+  --server-url "http://your-server:3000" \
   --api-key    "uk_xxx"
 ```
 
-`config` 会创建 `~/.octo-daemon/<space_id>/`（生成该 space 的 `daemon.id`），
-并把这条 profile upsert 进 `~/.octo-daemon/config.json`。它**按 `--space-id`
-幂等**：重复执行只更新该 profile。要让一台机器连**多个 space**，对每个 space
-各跑一次 `config`——各自独立的 profile、独立的后端连接。
+`config` 会先用 `--api-key` 向 fleet 发起校验
+（`POST <fleet-url>/v1/runtimes/verify`），**只有校验通过才会写入 profile**。
+`space_id` 由该接口返回——你不再需要传 `--space-id`。校验失败时（key 错、地址
+错、网络异常）不写任何配置，并打印错误信息。
+
+`--fleet-url` 现在**可选**：不传时默认取 `<server-url>/fleet/api`（即
+`http://your-server:8090` → `http://your-server:8090/fleet/api`）。仅当 fleet
+部署在别处的拆分场景才需要显式传 `--fleet-url`（例如 `--fleet-url
+http://localhost:8092` → 校验打到 `http://localhost:8092/v1/runtimes/verify`）。
+
+校验通过后，`config` 会创建 `~/.octo-daemon/<space_id>/`（生成该 space 的
+`daemon.id`），并把这条 profile upsert 进 `~/.octo-daemon/config.json`。它
+**按解析出的 `space_id` 幂等**：重复执行只更新该 profile。要让一台机器连
+**多个 space**，对每个 api-key 各跑一次 `config`——各自独立的 profile、独立的
+后端连接。
 
 > `--matter-url` 可传，会被存下供将来使用，目前可选。
 
@@ -114,16 +123,16 @@ octo-daemon status            # 进程 / 版本 / 各 space profile
 
 | 字段 | 必填 | 用途 |
 |---|---|---|
-| `space_id` | 是 | profile 主键 + 该 space 的数据目录名 |
+| `space_id` | 解析得到 | profile 主键 + 该 space 的数据目录名；由 `verify` 返回，不需手动传 |
 | `api_key` | 是 | space 级 API key |
-| `fleet_url` | 是 | runtime / bot 端点 + SSE |
 | `server_url` | 是 | auth + bot-token 端点 |
+| `fleet_url` | 否 | runtime / bot 端点 + SSE；默认取 `<server_url>/fleet/api` |
 | `matter_url` | 否 | 预留，将来使用（存下但暂未消费） |
 
-> **服务拆分部署**把 `fleet_url` 和 `server_url` 设成不同地址；单机部署两者
-> 指向同一地址即可。旧的 `OCTO_FLEET_URL` / `OCTO_SERVER_URL` 环境变量已
-> **移除**——路由现在按 profile 存在 `config.json` 里。也没有单独的 matter
-> URL 环境变量。
+> **服务拆分部署**显式传 `--fleet-url`，让 fleet 与 `server_url` 指向不同主机；
+> 单机部署省略即可，`fleet_url` 会从 `server_url` 推导。旧的 `OCTO_FLEET_URL` /
+> `OCTO_SERVER_URL` 环境变量已**移除**——路由现在按 profile 存在 `config.json`
+> 里。也没有单独的 matter URL 环境变量。
 
 剩下的环境变量是运行期开关，不是路由：
 

@@ -57,11 +57,11 @@ func runStart(cmd *cobra.Command, args []string) error {
 	if backup, err := internal.BackupLegacyConfig(cfgPath); err != nil {
 		return &internal.ExitError{Code: 2, Message: fmt.Sprintf("back up legacy config: %v", err)}
 	} else if backup != "" {
-		fmt.Printf("legacy config moved to %s — run `octo-daemon config --space-id=... --server-url=... --fleet-url=... --api-key=...` to reconfigure\n", backup)
+		fmt.Printf("legacy config moved to %s — run `octo-daemon config --server-url=... --api-key=... [--fleet-url=...]` to reconfigure\n", backup)
 	}
 
 	if _, err := os.Stat(cfgPath); os.IsNotExist(err) {
-		return &internal.ExitError{Code: 2, Message: fmt.Sprintf("no config at %s — run `octo-daemon config --space-id=... --server-url=... --fleet-url=... --api-key=...` first", cfgPath)}
+		return &internal.ExitError{Code: 2, Message: fmt.Sprintf("no config at %s — run `octo-daemon config --server-url=... --api-key=... [--fleet-url=...]` first", cfgPath)}
 	}
 
 	profiles, err := internal.LoadProfiles(cfgPath)
@@ -69,7 +69,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 		return &internal.ExitError{Code: 2, Message: fmt.Sprintf("load config: %v", err)}
 	}
 	if len(profiles) == 0 {
-		return &internal.ExitError{Code: 2, Message: "no profiles configured — run `octo-daemon config --space-id=... --server-url=... --fleet-url=... --api-key=...` first"}
+		return &internal.ExitError{Code: 2, Message: "no profiles configured — run `octo-daemon config --server-url=... --api-key=... [--fleet-url=...]` first"}
 	}
 
 	hostname, err := os.Hostname()
