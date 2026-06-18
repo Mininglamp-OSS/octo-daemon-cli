@@ -6,8 +6,23 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 )
+
+// fleetURLPrefix is appended to server_url to derive the default fleet base
+// when --fleet-url is not supplied:
+// http://host:3000 -> http://host:3000/fleet/api.
+const fleetURLPrefix = "/fleet/api"
+
+// ResolveFleetURL returns the fleet base URL: the explicit fleetURL when set,
+// otherwise serverURL + fleetURLPrefix. Trailing slashes are trimmed.
+func ResolveFleetURL(serverURL, fleetURL string) string {
+	if fleetURL != "" {
+		return strings.TrimRight(fleetURL, "/")
+	}
+	return strings.TrimRight(serverURL, "/") + fleetURLPrefix
+}
 
 // Config is the runtime config for ONE backendRunner (one space/profile).
 type Config struct {
@@ -53,9 +68,17 @@ type Profile struct {
 	HeartbeatIntervalSeconds int    `json:"heartbeat_interval_seconds,omitempty"`
 }
 
-// fileConfig is the on-disk top-level shape: {"profiles":[...]}.
+// ConfigMeta records who/when last wrote config.json. Refreshed on every
+// successful `octo-daemon config` write (the only path that mutates the file).
+type ConfigMeta struct {
+	LastDaemonCLIVersion string `json:"lastDaemonCliVersion"`
+	LastConfigModifyTime string `json:"lastConfigModifyTime"` // RFC3339 with local timezone offset
+}
+
+// fileConfig is the on-disk top-level shape: {"meta":{...},"profiles":[...]}.
 type fileConfig struct {
-	Profiles []Profile `json:"profiles"`
+	Meta     ConfigMeta `json:"meta"`
+	Profiles []Profile  `json:"profiles"`
 }
 
 func ConfigFilePath() string {
@@ -114,9 +137,17 @@ func LoadProfiles(path string) ([]Config, error) {
 }
 
 // SaveProfiles writes the profiles to config.json (0600), creating the data
-// directory if needed.
-func SaveProfiles(path string, cfgs []Config) error {
-	fc := fileConfig{Profiles: make([]Profile, 0, len(cfgs))}
+// directory if needed. It stamps the top-level meta with the supplied
+// daemon-cli version and the current local time (RFC3339 with tz offset,
+// e.g. 2026-06-18T15:17:00+08:00).
+func SaveProfiles(path string, cfgs []Config, version string) error {
+	fc := fileConfig{
+		Meta: ConfigMeta{
+			LastDaemonCLIVersion: version,
+			LastConfigModifyTime: time.Now().Format(time.RFC3339),
+		},
+		Profiles: make([]Profile, 0, len(cfgs)),
+	}
 	for _, c := range cfgs {
 		fc.Profiles = append(fc.Profiles, configToProfile(c))
 	}

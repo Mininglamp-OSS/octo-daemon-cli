@@ -1,12 +1,34 @@
 package internal
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestResolveFleetURL(t *testing.T) {
+	tests := []struct {
+		name      string
+		serverURL string
+		fleetURL  string
+		want      string
+	}{
+		{"derive from server", "http://127.0.0.1:3000", "", "http://127.0.0.1:3000/fleet/api"},
+		{"derive trims trailing slash", "http://127.0.0.1:3000/", "", "http://127.0.0.1:3000/fleet/api"},
+		{"explicit wins", "http://127.0.0.1:3000", "http://localhost:8092", "http://localhost:8092"},
+		{"explicit trims trailing slash", "http://127.0.0.1:3000", "http://localhost:8092/", "http://localhost:8092"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ResolveFleetURL(tt.serverURL, tt.fleetURL); got != tt.want {
+				t.Fatalf("ResolveFleetURL(%q, %q) = %q, want %q", tt.serverURL, tt.fleetURL, got, tt.want)
+			}
+		})
+	}
+}
 
 func TestWithDefaults_AppliesHeartbeatDefault(t *testing.T) {
 	c := Config{}
@@ -56,7 +78,7 @@ func TestLoadProfiles_NewFormatRoundTrip(t *testing.T) {
 		{SpaceID: "sp_a", APIKey: "uk_a", FleetURL: "http://f/a", ServerURL: "http://s/a", MatterURL: "http://m/a", DeviceName: "dev1", HeartbeatInterval: 3 * time.Second},
 		{SpaceID: "sp_b", APIKey: "uk_b", FleetURL: "http://f/b", ServerURL: "http://s/b"},
 	}
-	if err := SaveProfiles(path, want); err != nil {
+	if err := SaveProfiles(path, want, "v-test"); err != nil {
 		t.Fatal(err)
 	}
 	got, err := LoadProfiles(path)
@@ -81,7 +103,7 @@ func TestSaveProfiles_ZeroHeartbeatOmitsField(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
 	cfgs := []Config{{SpaceID: "sp_q", APIKey: "uk_q", FleetURL: "http://h:1", ServerURL: "http://h:1"}}
-	if err := SaveProfiles(path, cfgs); err != nil {
+	if err := SaveProfiles(path, cfgs, "v-test"); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(path)
@@ -90,6 +112,31 @@ func TestSaveProfiles_ZeroHeartbeatOmitsField(t *testing.T) {
 	}
 	if got := string(data); strings.Contains(got, "heartbeat_interval_seconds") {
 		t.Fatalf("zero HeartbeatInterval should omit field, got: %s", got)
+	}
+}
+
+func TestSaveProfiles_StampsMeta(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	cfgs := []Config{{SpaceID: "sp_m", APIKey: "uk_m", FleetURL: "http://h:1", ServerURL: "http://h:1"}}
+	if err := SaveProfiles(path, cfgs, "v9.9.9"); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fc struct {
+		Meta ConfigMeta `json:"meta"`
+	}
+	if err := json.Unmarshal(data, &fc); err != nil {
+		t.Fatal(err)
+	}
+	if fc.Meta.LastDaemonCLIVersion != "v9.9.9" {
+		t.Fatalf("lastDaemonCliVersion want v9.9.9, got %q", fc.Meta.LastDaemonCLIVersion)
+	}
+	if _, err := time.Parse(time.RFC3339, fc.Meta.LastConfigModifyTime); err != nil {
+		t.Fatalf("lastConfigModifyTime not RFC3339: %q (%v)", fc.Meta.LastConfigModifyTime, err)
 	}
 }
 

@@ -81,7 +81,7 @@ func runServiceInstall(cmd *cobra.Command, args []string) error {
 	// profile with a non-empty api_key and fleet/server URLs.
 	cfgPath := internal.ConfigFilePath()
 	if _, err := os.Stat(cfgPath); err != nil {
-		return fmt.Errorf("daemon config not found at %s — run `octo-daemon config --space-id=... --server-url=... --fleet-url=... --api-key=...` first, then retry", cfgPath)
+		return fmt.Errorf("daemon config not found at %s — run `octo-daemon config --server-url=... --api-key=... [--fleet-url=...]` first, then retry", cfgPath)
 	}
 	profiles, err := internal.LoadProfiles(cfgPath)
 	if err != nil {
@@ -95,7 +95,7 @@ func runServiceInstall(cmd *cobra.Command, args []string) error {
 		}
 	}
 	if !usable {
-		return fmt.Errorf("daemon config at %s has no usable profile (need a valid space_id + api_key + fleet_url + server_url) — run `octo-daemon config --space-id=... --server-url=... --fleet-url=... --api-key=...`, then retry", cfgPath)
+		return fmt.Errorf("daemon config at %s has no usable profile (need a valid space_id + api_key + fleet_url + server_url) — run `octo-daemon config --server-url=... --api-key=... [--fleet-url=...]`, then retry", cfgPath)
 	}
 
 	// Precheck 2: refuse double-install without --force.
