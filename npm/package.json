@@ -16,6 +16,9 @@
   "engines": {
     "node": ">=18"
   },
+  "dependencies": {
+    "@mininglamp-oss/octo-cli": "latest"
+  },
   "optionalDependencies": {},
   "keywords": [
     "octo",

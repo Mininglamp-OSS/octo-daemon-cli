@@ -5,10 +5,11 @@
 // that npm selected via this package's optionalDependencies (os/cpu
 // constrained), then forward all args and stdio to it.
 //
-// There is deliberately NO postinstall download here: every byte comes from
-// the npm registry itself (platform sub-packages carry the binary inside
-// their tarball), so registry mirrors work transparently and npm's own
-// integrity checks replace any custom checksum logic.
+// The daemon binary has deliberately NO postinstall download: every byte
+// comes from the npm registry itself (platform sub-packages carry the binary
+// inside their tarball), and npm's own integrity checks replace any custom
+// checksum logic. (The bundled octo-cli dependency does download its binary
+// via postinstall — see README.)
 //
 // The main package intentionally carries no os/cpu constraints — on a
 // platform with no prebuilt sub-package the install succeeds and THIS shim
