@@ -11,7 +11,7 @@ import (
 func TestFetchCcOctoConfig_404IsNilNil(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
-		w.Write([]byte(`{"error":{"code":"NOT_FOUND"}}`))
+		_, _ = w.Write([]byte(`{"error":{"code":"NOT_FOUND"}}`))
 	}))
 	defer srv.Close()
 
@@ -45,7 +45,7 @@ func TestFetchCcOctoConfig_ConflictIsMissingError(t *testing.T) {
 func TestFetchCcOctoConfig_500IsTransientError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(`{"error":"internal"}`))
+		_, _ = w.Write([]byte(`{"error":"internal"}`))
 	}))
 	defer srv.Close()
 
@@ -63,7 +63,7 @@ func TestFetchCcOctoConfig_500IsTransientError(t *testing.T) {
 func TestFetchCcOctoConfig_StaleIsError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusGone)
-		w.Write([]byte(`{"error":{"code":"TASK_TERMINAL"}}`))
+		_, _ = w.Write([]byte(`{"error":{"code":"TASK_TERMINAL"}}`))
 	}))
 	defer srv.Close()
 
@@ -81,7 +81,7 @@ func TestFetchCcOctoConfig_StaleIsError(t *testing.T) {
 func TestFetchCcOctoConfig_ForbiddenIsPermanentError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
-		w.Write([]byte(`{"error":{"code":"FORBIDDEN"}}`))
+		_, _ = w.Write([]byte(`{"error":{"code":"FORBIDDEN"}}`))
 	}))
 	defer srv.Close()
 
@@ -109,7 +109,7 @@ func TestFetchCcOctoConfig_ValidPayloadReturnsConfig(t *testing.T) {
 			t.Errorf("missing bearer auth: %q", r.Header.Get("Authorization"))
 		}
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"data":{"gateway_url":"https://gw.example.com","api_key":"sk-test-123"}}`))
+		_, _ = w.Write([]byte(`{"data":{"gateway_url":"https://gw.example.com","api_key":"sk-test-123"}}`))
 	}))
 	defer srv.Close()
 
