@@ -149,12 +149,27 @@ func truncateOutput(s string, max int) string {
 	return s[:max] + "...(truncated)"
 }
 
-// ccOctoConfigureArgs builds `cc-channel-octo configure --gateway-url <url>`.
-// The API key is passed via the CC_OCTO_CONFIGURE_API_KEY environment variable
-// (not argv) to avoid leaking it in ps output. Pure for unit testing.
-func ccOctoConfigureArgs(gatewayURL string) []string {
-	return []string{"configure", "--gateway-url", gatewayURL}
+// ccOctoConfigureArgs builds `cc-channel-octo configure --gateway-url <url>`,
+// optionally appending --model (gateway-level model id) and --api-url (the Octo
+// IM server url, so the freshly-installed zero-bot gateway can boot — cc
+// loadConfig requires apiUrl). The API key is passed via the
+// CC_OCTO_CONFIGURE_API_KEY environment variable (not argv) to avoid leaking it
+// in ps output. Pure for unit testing.
+func ccOctoConfigureArgs(gatewayURL, model, apiURL string) []string {
+	args := []string{"configure", "--gateway-url", gatewayURL}
+	if model != "" {
+		args = append(args, "--model", model)
+	}
+	if apiURL != "" {
+		args = append(args, "--api-url", apiURL)
+	}
+	return args
 }
+
+// ccOctoStartArgs starts the gateway after a fresh install so the claude runtime
+// comes online (idle, zero bots) without waiting for the first bot. Pure for
+// unit testing.
+func ccOctoStartArgs() []string { return []string{"start"} }
 
 // parseUpgradeRuntimeID extracts the target runtime_id that fleet stamps into
 // the upgrade task metadata (dispatchUpgrade forwards it). 0 if absent/bad.
@@ -201,7 +216,7 @@ func (d *Daemon) handleCcOctoInstall(ctx context.Context, up *PendingUpgrade, cf
 
 	// 2. configure: write LLM gateway + key into the global config via env var
 	// (CC_OCTO_CONFIGURE_API_KEY) to avoid leaking the key in ps output.
-	configureCmd := exec.CommandContext(installCtx, "cc-channel-octo", ccOctoConfigureArgs(cfg.GatewayURL)...)
+	configureCmd := exec.CommandContext(installCtx, "cc-channel-octo", ccOctoConfigureArgs(cfg.GatewayURL, cfg.Model, d.cfg.ServerURL)...)
 	configureCmd.Env = append(os.Environ(), "CC_OCTO_CONFIGURE_API_KEY="+cfg.APIKey)
 	cout, cerr := configureCmd.CombinedOutput()
 	if cerr != nil {
@@ -210,6 +225,16 @@ func (d *Daemon) handleCcOctoInstall(ctx context.Context, up *PendingUpgrade, cf
 		return d.reportUpgrade(ctx, up.TaskID, "failed", msg)
 	}
 	log.Printf("[INFO] cc-octo configured (task=%s)", up.TaskID)
+
+	// 2b. Start the gateway now so the claude runtime comes online immediately
+	// (idle, zero bots) instead of waiting for the first bot. A start failure is
+	// non-fatal: the first bot.provision runs `cc-channel-octo restart`, which
+	// starts it anyway — so we log and continue to enrich/register.
+	if sout, serr := exec.CommandContext(installCtx, "cc-channel-octo", ccOctoStartArgs()...).CombinedOutput(); serr != nil {
+		log.Printf("[WARN] cc-octo post-install start failed (provision restart will retry): %v\noutput: %s", serr, truncateOutput(string(sout), 400))
+	} else {
+		log.Printf("[INFO] cc-octo gateway started idle (task=%s)", up.TaskID)
+	}
 
 	// 3. enrich + register so the new cc-octo version reaches fleet and closes
 	// the task (completeUpgradeIfMatchedWithRuntime). No running-gateway probe.

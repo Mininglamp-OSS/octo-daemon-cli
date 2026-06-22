@@ -6,15 +6,21 @@ import (
 )
 
 func TestCcOctoConfigureArgs(t *testing.T) {
-	args := ccOctoConfigureArgs("https://gw")
-	want := []string{"configure", "--gateway-url", "https://gw"}
-	if len(args) != len(want) {
-		t.Fatalf("got %v want %v", args, want)
+	if got := ccOctoConfigureArgs("https://gw", "", ""); !equalStrings(got, []string{"configure", "--gateway-url", "https://gw"}) {
+		t.Errorf("minimal: %v", got)
 	}
-	for i := range want {
-		if args[i] != want[i] {
-			t.Fatalf("arg[%d]=%q want %q", i, args[i], want[i])
-		}
+	if got := ccOctoConfigureArgs("https://gw", "vertexai/claude-opus-4-8", "http://127.0.0.1:8090"); !equalStrings(got,
+		[]string{"configure", "--gateway-url", "https://gw", "--model", "vertexai/claude-opus-4-8", "--api-url", "http://127.0.0.1:8090"}) {
+		t.Errorf("with model + api-url: %v", got)
+	}
+	if got := ccOctoConfigureArgs("https://gw", "m1", ""); !equalStrings(got, []string{"configure", "--gateway-url", "https://gw", "--model", "m1"}) {
+		t.Errorf("model only: %v", got)
+	}
+}
+
+func TestCcOctoStartArgs(t *testing.T) {
+	if got := ccOctoStartArgs(); !equalStrings(got, []string{"start"}) {
+		t.Errorf("got %v", got)
 	}
 }
 

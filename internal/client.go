@@ -96,6 +96,7 @@ func (c *Client) GetBotToken(ctx context.Context, botUID string) (string, error)
 type CcOctoConfig struct {
 	GatewayURL string `json:"gateway_url"`
 	APIKey     string `json:"api_key"`
+	Model      string `json:"model"`
 }
 
 // FetchCcOctoConfig pulls the cc-octo install secret (LLM gateway url + key)
