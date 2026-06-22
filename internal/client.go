@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -25,6 +26,12 @@ const maxResponseSize = 1 << 20
 func (e *ForbiddenError) Error() string {
 	return fmt.Sprintf("forbidden: %s", e.Message)
 }
+
+// ErrCcOctoConfigUnavailable is returned when the cc-octo install config
+// endpoint returns 409 — meaning the install secret is missing/expired or
+// the upgrade task has reached a terminal state. Daemon should report the
+// task as failed rather than retrying.
+var ErrCcOctoConfigUnavailable = errors.New("cc-octo install config unavailable")
 
 type Client struct {
 	baseURL    string
@@ -109,6 +116,9 @@ func (c *Client) FetchCcOctoConfig(ctx context.Context, runtimeID int64, taskID 
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize))
 	if resp.StatusCode == http.StatusNotFound {
 		return nil, nil // no install secret for this task
+	}
+	if resp.StatusCode == http.StatusConflict {
+		return nil, fmt.Errorf("fetch cc-octo config: %w", ErrCcOctoConfigUnavailable)
 	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("fetch cc-octo config: status %d: %s", resp.StatusCode, string(body))

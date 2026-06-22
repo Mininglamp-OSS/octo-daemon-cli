@@ -3,8 +3,10 @@ package internal
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -37,9 +39,14 @@ func (d *Daemon) handlePluginUpgrade(ctx context.Context, up *PendingUpgrade) er
 		if runtimeID > 0 {
 			cfg, ferr := d.client.FetchCcOctoConfig(ctx, runtimeID, up.TaskID)
 			if ferr != nil {
-				msg := "fetch cc-octo install config: " + ferr.Error()
-				log.Printf("[ERROR] %s", msg)
-				return d.reportUpgrade(ctx, up.TaskID, "failed", msg)
+				// 409 = terminal (install secret gone/expired or task terminal)
+				if errors.Is(ferr, ErrCcOctoConfigUnavailable) {
+					msg := "cc-octo install config unavailable"
+					log.Printf("[ERROR] %s (task=%s)", msg, up.TaskID)
+					return d.reportUpgrade(ctx, up.TaskID, "failed", msg)
+				}
+				// transient (5xx / network) — return error so fleet-side retry kicks in
+				return ferr
 			}
 			if cfg != nil {
 				return d.handleCcOctoInstall(ctx, up, cfg)
@@ -137,11 +144,11 @@ func truncateOutput(s string, max int) string {
 	return s[:max] + "...(truncated)"
 }
 
-// ccOctoConfigureArgs builds `cc-channel-octo configure --gateway-url <url>
-// --api-key <key>`. Pure for unit testing; values are passed as separate argv
-// elements (no shell), so no quoting/escaping needed.
-func ccOctoConfigureArgs(gatewayURL, apiKey string) []string {
-	return []string{"configure", "--gateway-url", gatewayURL, "--api-key", apiKey}
+// ccOctoConfigureArgs builds `cc-channel-octo configure --gateway-url <url>`.
+// The API key is passed via the CC_OCTO_CONFIGURE_API_KEY environment variable
+// (not argv) to avoid leaking it in ps output. Pure for unit testing.
+func ccOctoConfigureArgs(gatewayURL string) []string {
+	return []string{"configure", "--gateway-url", gatewayURL}
 }
 
 // parseUpgradeRuntimeID extracts the target runtime_id that fleet stamps into
@@ -187,8 +194,11 @@ func (d *Daemon) handleCcOctoInstall(ctx context.Context, up *PendingUpgrade, cf
 		return d.reportUpgrade(ctx, up.TaskID, "failed", msg)
 	}
 
-	// 2. configure: write LLM gateway + key into the global config.
-	cout, cerr := exec.CommandContext(installCtx, "cc-channel-octo", ccOctoConfigureArgs(cfg.GatewayURL, cfg.APIKey)...).CombinedOutput()
+	// 2. configure: write LLM gateway + key into the global config via env var
+	// (CC_OCTO_CONFIGURE_API_KEY) to avoid leaking the key in ps output.
+	configureCmd := exec.CommandContext(installCtx, "cc-channel-octo", ccOctoConfigureArgs(cfg.GatewayURL)...)
+	configureCmd.Env = append(os.Environ(), "CC_OCTO_CONFIGURE_API_KEY="+cfg.APIKey)
+	cout, cerr := configureCmd.CombinedOutput()
 	if cerr != nil {
 		msg := redactSecret(fmt.Sprintf("cc-channel-octo configure failed: %v\noutput: %s", cerr, truncateOutput(string(cout), 800)), cfg.APIKey)
 		log.Printf("[ERROR] %s", msg)

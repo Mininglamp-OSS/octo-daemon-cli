@@ -6,8 +6,8 @@ import (
 )
 
 func TestCcOctoConfigureArgs(t *testing.T) {
-	args := ccOctoConfigureArgs("https://gw", "sk-secret")
-	want := []string{"configure", "--gateway-url", "https://gw", "--api-key", "sk-secret"}
+	args := ccOctoConfigureArgs("https://gw")
+	want := []string{"configure", "--gateway-url", "https://gw"}
 	if len(args) != len(want) {
 		t.Fatalf("got %v want %v", args, want)
 	}

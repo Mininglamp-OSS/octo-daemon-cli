@@ -2,6 +2,7 @@ package internal
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -69,5 +70,26 @@ func TestFetchCcOctoConfig_ConflictIsError(t *testing.T) {
 	cfg, err := c.FetchCcOctoConfig(context.Background(), 7, "task_x")
 	if err == nil || cfg != nil {
 		t.Fatalf("409 must be an error (install secret gone), got cfg=%+v err=%v", cfg, err)
+	}
+	if !errors.Is(err, ErrCcOctoConfigUnavailable) {
+		t.Fatalf("409 should map to ErrCcOctoConfigUnavailable, got %v", err)
+	}
+}
+
+// 500 = transient server error. Should return an error that is NOT the sentinel.
+func TestFetchCcOctoConfig_500IsTransientError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(`{"error":"internal"}`))
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL, "k1", "dev")
+	_, err := c.FetchCcOctoConfig(context.Background(), 7, "task_x")
+	if err == nil {
+		t.Fatal("500 should be an error")
+	}
+	if errors.Is(err, ErrCcOctoConfigUnavailable) {
+		t.Fatalf("500 should NOT map to ErrCcOctoConfigUnavailable, got %v", err)
 	}
 }
