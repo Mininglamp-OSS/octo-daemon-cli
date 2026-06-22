@@ -204,6 +204,15 @@ func (d *Daemon) handleCcOctoInstall(ctx context.Context, up *PendingUpgrade, cf
 	log.Printf("[INFO] cc-octo install task: %s (task=%s)", up.TargetVersion, up.TaskID)
 	_ = d.reportUpgrade(ctx, up.TaskID, "installing", "")
 
+	// d.cfg.ServerURL becomes the gateway's top-level apiUrl (Octo IM server),
+	// which cc loadConfig REQUIRES — without it the zero-bot idle gateway (and a
+	// later provisioned bot) can't boot and gap #1 silently regresses. It is set
+	// during `octo-daemon config` and is effectively always present here; warn
+	// loudly if it ever isn't rather than install a non-bootable gateway.
+	if d.cfg.ServerURL == "" {
+		log.Printf("[WARN] cc-octo install: empty server URL — installed gateway will lack apiUrl and cannot start until reconfigured")
+	}
+
 	installCtx, cancel := context.WithTimeout(ctx, 9*time.Minute)
 	defer cancel()
 
