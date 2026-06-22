@@ -80,6 +80,51 @@ func (c *Client) GetBotToken(ctx context.Context, botUID string) (string, error)
 	return r.BotToken, nil
 }
 
+// CcOctoConfig holds the cc-octo install secret: LLM gateway URL + API key.
+type CcOctoConfig struct {
+	GatewayURL string `json:"gateway_url"`
+	APIKey     string `json:"api_key"`
+}
+
+// FetchCcOctoConfig pulls the cc-octo install secret (LLM gateway url + key)
+// for an upgrade task out of band — the secret never rides the SSE/upgrade
+// payload (same pattern as bot.provision fetch).
+//
+//	Status mapping:
+//	  200 → (*CcOctoConfig, nil)
+//	  404 → (nil, nil): no install secret for this task (plain upgrade path)
+//	  other non-2xx → error (secret gone/expired or terminal task)
+func (c *Client) FetchCcOctoConfig(ctx context.Context, runtimeID int64, taskID string) (*CcOctoConfig, error) {
+	url := fmt.Sprintf("%s/v1/upgrades/%s/cc-octo-config?runtime_id=%d", c.baseURL, taskID, runtimeID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize))
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, nil // no install secret for this task
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("fetch cc-octo config: status %d: %s", resp.StatusCode, string(body))
+	}
+	var env struct {
+		Data CcOctoConfig `json:"data"`
+	}
+	if err := json.Unmarshal(body, &env); err != nil {
+		return nil, fmt.Errorf("fetch cc-octo config unmarshal: %w", err)
+	}
+	if env.Data.GatewayURL == "" || env.Data.APIKey == "" {
+		return nil, fmt.Errorf("fetch cc-octo config: empty payload")
+	}
+	return &env.Data, nil
+}
+
 type RegisterRequest struct {
 	DaemonID            string        `json:"daemon_id"`
 	DeviceName          string        `json:"device_name"`
