@@ -23,9 +23,6 @@ const claudeChannelBin = "cc-channel-octo"
 // config.json plus one config subdirectory per provisioned bot.
 const claudeChannelDir = ".cc-channel-octo"
 
-// claudeModel is the SDK model written into every bot's config.json.
-const claudeModel = "vertexai/claude-opus-4-8"
-
 // claudeRestartTimeout caps the `cc-channel-octo restart` subprocess.
 const claudeRestartTimeout = 60 * time.Second
 
@@ -74,10 +71,11 @@ func (a *ClaudeAdapter) Health(ctx context.Context) error {
 }
 
 // Provision lays down one bot's on-disk config: ~/.cc-channel-octo/<bot_uid>/
-// config.json carrying the bot's real token and the SDK model, then registers
+// config.json carrying the bot's real token (and its server url), then registers
 // the bot in the shared ~/.cc-channel-octo/config.json bots list and restarts
-// the channel host so the new bot takes effect. Spawning the per-bot sidecar
-// service is still TODO.
+// the channel host so the new bot takes effect. The model is NOT written here —
+// it is gateway-level global config. Spawning the per-bot sidecar service is
+// still TODO.
 func (a *ClaudeAdapter) Provision(ctx context.Context, req ProvisionRequest) (ProvisionResult, error) {
 	if req.BotUID == "" {
 		return ProvisionResult{}, fmt.Errorf("%w: missing bot_uid", ErrInvalidConfig)
@@ -95,8 +93,11 @@ func (a *ClaudeAdapter) Provision(ctx context.Context, req ProvisionRequest) (Pr
 	}
 	cfg := map[string]any{
 		"botToken": req.BotToken,
-		"sdk":      map[string]any{"model": claudeModel},
 	}
+	// Model is intentionally NOT written here. It is a gateway-level attribute
+	// (same for every bot on this runtime), set once in the global config at
+	// install time (cc-channel-octo configure --model). Writing it per-bot would
+	// override the global value and pin one gateway's model name onto all bots.
 	// Pin this bot's server in its own per-bot config (mirrors openclaw's
 	// accounts.<uid>.apiUrl). Without it cc-channel-octo falls back to the
 	// shared global config.apiUrl, which can be stale/wrong-env and cause a
