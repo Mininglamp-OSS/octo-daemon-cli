@@ -44,11 +44,23 @@ func (d *Daemon) handlePluginUpgrade(ctx context.Context, up *PendingUpgrade) er
 					log.Printf("[INFO] stale cc-octo install event (task terminal), skipping (task=%s)", up.TaskID)
 					return nil
 				}
-				// Genuine/permanent failure: report failed.
-				if errors.Is(ferr, ErrCcOctoConfigMissing) || errors.Is(ferr, ErrCcOctoConfigPermanent) {
+				// Missing secret (install in-flight, secret gone): genuine failure — best-effort report then stop.
+				if errors.Is(ferr, ErrCcOctoConfigMissing) {
+					msg := "cc-octo install secret unavailable"
+					log.Printf("[ERROR] %s (task=%s)", msg, up.TaskID)
+					if rerr := d.reportUpgrade(ctx, up.TaskID, "failed", msg); rerr != nil {
+						log.Printf("[WARN] report failed for missing cc-octo secret (task=%s): %v", up.TaskID, rerr)
+					}
+					return nil
+				}
+				// Permanent 4xx (e.g. 403/400): terminal condition — best-effort report then stop.
+				if errors.Is(ferr, ErrCcOctoConfigPermanent) {
 					msg := fmt.Sprintf("cc-octo install config error: %v", ferr)
 					log.Printf("[ERROR] %s (task=%s)", msg, up.TaskID)
-					return d.reportUpgrade(ctx, up.TaskID, "failed", msg)
+					if rerr := d.reportUpgrade(ctx, up.TaskID, "failed", msg); rerr != nil {
+						log.Printf("[WARN] report failed for permanent cc-octo config error (task=%s): %v", up.TaskID, rerr)
+					}
+					return nil
 				}
 				// Transient (5xx / network): return error so fleet-side retry kicks in.
 				return ferr
