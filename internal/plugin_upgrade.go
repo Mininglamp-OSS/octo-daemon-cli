@@ -2,9 +2,13 @@ package internal
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
+	"os"
 	"os/exec"
+	"strings"
 	"time"
 )
 
@@ -12,21 +16,49 @@ import (
 //   - npx -y create-openclaw-octo install
 //   - create-openclaw-octo 是统一安装入口 CLI (跟 botfather /install 命令一致),
 //     内部:
-//       1. 检测当前状态 (老版 npm 包 / 已迁移到 ClawHub / 未装)
-//       2. 老版本自动卸载 + 装 ClawHub 版本 (legacy → octo prefix 迁移)
-//       3. 已是 ClawHub 版本 → 升级到 latest
-//       4. 失败完整回滚 (cli/install.ts runMigration: pre-migration backup +
-//          rollback closure: 清 partial install + 恢复 cfg + 重启 legacy plugin)
-//       5. 自动重启 openclaw gateway
+//     1. 检测当前状态 (老版 npm 包 / 已迁移到 ClawHub / 未装)
+//     2. 老版本自动卸载 + 装 ClawHub 版本 (legacy → octo prefix 迁移)
+//     3. 已是 ClawHub 版本 → 升级到 latest
+//     4. 失败完整回滚 (cli/install.ts runMigration: pre-migration backup +
+//     rollback closure: 清 partial install + 恢复 cfg + 重启 legacy plugin)
+//     5. 自动重启 openclaw gateway
 //   - daemon 不主动上报 completed, 靠 register handler 里的 plugin 关单路径关闭
 //     (register 上报 metadata.plugins 含新版本 → 服务端
-//      completeUpgradeIfMatchedWithRuntime 关单)
+//     completeUpgradeIfMatchedWithRuntime 关单)
 //
 // Phase B (所有 daemon 都迁完到 ClawHub 后) 可以切到 `openclaw plugins update octo`
 // 跳过 npx wrapper 直接 ClawHub native, 但**当前不行** — 还有装老版 npm 包的用户,
 // `openclaw plugins update` 在他们机器上找不到注册的 ClawHub 插件会失败.
 func (d *Daemon) handlePluginUpgrade(ctx context.Context, up *PendingUpgrade) error {
 	log.Printf("[INFO] plugin upgrade task: %s → %s (task=%s)", up.Component, up.TargetVersion, up.TaskID)
+
+	// cc-octo 一键安装:先尝试取 install secret(LLM 网关+key)。取到 → 走 install
+	// 路径(npm install + configure),取不到(404)→ 落回下方普通 upgrade 路径。
+	if up.Component == ccOctoPluginName {
+		runtimeID := parseUpgradeRuntimeID(up.Metadata)
+		if runtimeID > 0 {
+			cfg, ferr := d.client.FetchCcOctoConfig(ctx, runtimeID, up.TaskID)
+			if ferr != nil {
+				if errors.Is(ferr, ErrCcOctoConfigUnavailable) {
+					// Non-retryable: terminal/stale task, in-flight secret gone, or a 4xx
+					// rejection. Skip without reporting failed — a terminal task would
+					// reject the failed-transition and loop on replay; a stuck in-flight
+					// install is reclaimed by fleet's sweeper timeout. Only transient
+					// 5xx/network errors fall through to retry.
+					log.Printf("[INFO] cc-octo install config unavailable (task terminal or secret gone), skipping (task=%s): %v", up.TaskID, ferr)
+					return nil
+				}
+				// Transient (5xx / network): return error so SSE/heartbeat retry kicks in.
+				return ferr
+			}
+			if cfg != nil {
+				return d.handleCcOctoInstall(ctx, up, cfg)
+			}
+		} else if runtimeID <= 0 {
+			log.Printf("[WARN] cc-octo install task %s: missing runtime_id in metadata, cannot fetch install config — falling back to plain upgrade", up.TaskID)
+		}
+		// cfg==nil / runtimeID==0 → 普通 upgrade,继续往下。
+	}
 
 	bin, args, ok := pluginUpgradeCommand(up.Component, up.TargetVersion)
 	if !ok {
@@ -115,6 +147,94 @@ func truncateOutput(s string, max int) string {
 		return s
 	}
 	return s[:max] + "...(truncated)"
+}
+
+// ccOctoConfigureArgs builds `cc-channel-octo configure --gateway-url <url>`.
+// The API key is passed via the CC_OCTO_CONFIGURE_API_KEY environment variable
+// (not argv) to avoid leaking it in ps output. Pure for unit testing.
+func ccOctoConfigureArgs(gatewayURL string) []string {
+	return []string{"configure", "--gateway-url", gatewayURL}
+}
+
+// parseUpgradeRuntimeID extracts the target runtime_id that fleet stamps into
+// the upgrade task metadata (dispatchUpgrade forwards it). 0 if absent/bad.
+func parseUpgradeRuntimeID(metadata string) int64 {
+	if metadata == "" {
+		return 0
+	}
+	var m struct {
+		RuntimeID int64 `json:"runtime_id"`
+	}
+	if json.Unmarshal([]byte(metadata), &m) != nil {
+		return 0
+	}
+	return m.RuntimeID
+}
+
+// redactSecret removes the api key from a string before logging.
+func redactSecret(s, secret string) string {
+	if secret == "" {
+		return s
+	}
+	return strings.ReplaceAll(s, secret, "***redacted***")
+}
+
+// handleCcOctoInstall installs cc-channel-octo and writes the operator's LLM
+// gateway + key into its global config. Unlike a plain upgrade it does NOT
+// probe for a running gateway: a fresh install has no bound bot, so the gateway
+// is not expected to be up. "Completion" is the daemon re-registering with the
+// cc-octo plugin version (read from the installed binary by EnrichClaudeRuntime),
+// which closes the task server-side.
+func (d *Daemon) handleCcOctoInstall(ctx context.Context, up *PendingUpgrade, cfg *CcOctoConfig) error {
+	log.Printf("[INFO] cc-octo install task: %s (task=%s)", up.TargetVersion, up.TaskID)
+	_ = d.reportUpgrade(ctx, up.TaskID, "installing", "")
+
+	installCtx, cancel := context.WithTimeout(ctx, 9*time.Minute)
+	defer cancel()
+
+	// 1. npm install -g the gateway so the `cc-channel-octo` bin exists.
+	if out, err := exec.CommandContext(installCtx, "npm", ccOctoNpmInstallArgs(up.TargetVersion)...).CombinedOutput(); err != nil {
+		msg := fmt.Sprintf("cc-octo npm install failed: %v\noutput: %s", err, truncateOutput(string(out), 1200))
+		log.Printf("[ERROR] %s", msg)
+		return d.reportUpgrade(ctx, up.TaskID, "failed", msg)
+	}
+
+	// 2. configure: write LLM gateway + key into the global config via env var
+	// (CC_OCTO_CONFIGURE_API_KEY) to avoid leaking the key in ps output.
+	configureCmd := exec.CommandContext(installCtx, "cc-channel-octo", ccOctoConfigureArgs(cfg.GatewayURL)...)
+	configureCmd.Env = append(os.Environ(), "CC_OCTO_CONFIGURE_API_KEY="+cfg.APIKey)
+	cout, cerr := configureCmd.CombinedOutput()
+	if cerr != nil {
+		msg := truncateOutput(redactSecret(fmt.Sprintf("cc-channel-octo configure failed: %v\noutput: %s", cerr, string(cout)), cfg.APIKey), 800)
+		log.Printf("[ERROR] %s", msg)
+		return d.reportUpgrade(ctx, up.TaskID, "failed", msg)
+	}
+	log.Printf("[INFO] cc-octo configured (task=%s)", up.TaskID)
+
+	// 3. enrich + register so the new cc-octo version reaches fleet and closes
+	// the task (completeUpgradeIfMatchedWithRuntime). No running-gateway probe.
+	const maxAttempts = 3
+	var lastErr error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				log.Printf("[WARN] cc-octo install enrich aborted: %v", ctx.Err())
+				return nil
+			case <-time.After(time.Duration(attempt*5) * time.Second):
+			}
+		}
+		enrichCtx, enrichCancel := context.WithTimeout(context.Background(), 60*time.Second)
+		_, lastErr = d.enrichDetectAndRegister(enrichCtx)
+		enrichCancel()
+		if lastErr == nil {
+			return nil
+		}
+		log.Printf("[WARN] cc-octo install enrich register attempt %d/%d failed: %v", attempt+1, maxAttempts, lastErr)
+	}
+	log.Printf("[WARN] cc-octo install enrich exhausted retries (last: %v), scheduling slow detect", lastErr)
+	d.requestSlowDetect(ctx)
+	return nil
 }
 
 // pluginUpgradeCommand maps an octo-adapter plugin component to the install

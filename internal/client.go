@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -25,6 +26,17 @@ const maxResponseSize = 1 << 20
 func (e *ForbiddenError) Error() string {
 	return fmt.Sprintf("forbidden: %s", e.Message)
 }
+
+// ErrCcOctoConfigUnavailable signals that the cc-octo install secret cannot be
+// fetched for a non-retryable reason: the task is terminal/stale, the in-flight
+// secret is missing/expired, or an ownership/validation rejection (any 4xx).
+// fleet returns CONFLICT/NOT_FOUND/FORBIDDEN here (no dedicated wire code — the
+// error-code set is fixed at 12). The daemon skips such an event idempotently
+// (no report) to avoid a report-failed→rejected-transition→replay loop; a
+// genuinely missing in-flight secret is reclaimed by fleet's sweeper timeout.
+// Transient (5xx / network) errors are returned as plain errors instead, so the
+// SSE/heartbeat path retries them.
+var ErrCcOctoConfigUnavailable = errors.New("cc-octo install config unavailable")
 
 type Client struct {
 	baseURL    string
@@ -78,6 +90,63 @@ func (c *Client) GetBotToken(ctx context.Context, botUID string) (string, error)
 		return "", err
 	}
 	return r.BotToken, nil
+}
+
+// CcOctoConfig holds the cc-octo install secret: LLM gateway URL + API key.
+type CcOctoConfig struct {
+	GatewayURL string `json:"gateway_url"`
+	APIKey     string `json:"api_key"`
+}
+
+// FetchCcOctoConfig pulls the cc-octo install secret (LLM gateway url + key)
+// for an upgrade task out of band — the secret never rides the SSE/upgrade
+// payload (same pattern as bot.provision fetch).
+//
+//	Status mapping:
+//	  200 → (*CcOctoConfig, nil)
+//	  404 → (nil, nil): no install secret for this task (plain upgrade path)
+//	  any other 4xx (409 terminal/in-flight-missing, 403, 400, empty payload)
+//	      → (nil, ErrCcOctoConfigUnavailable wrapped): skip idempotently
+//	  5xx / transport error → (nil, plain transient error): retry
+func (c *Client) FetchCcOctoConfig(ctx context.Context, runtimeID int64, taskID string) (*CcOctoConfig, error) {
+	url := fmt.Sprintf("%s/v1/upgrades/%s/cc-octo-config?runtime_id=%d", c.baseURL, taskID, runtimeID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize))
+
+	switch {
+	case resp.StatusCode == http.StatusOK:
+		// fall through to unmarshal below
+	case resp.StatusCode == http.StatusNotFound:
+		return nil, nil // no install secret for this task → plain upgrade path
+	case resp.StatusCode >= 400 && resp.StatusCode < 500:
+		// 409 (terminal/stale or in-flight-missing), 403, 400, etc. — non-retryable;
+		// skip the event idempotently rather than report failed (avoids a
+		// report-failed→rejected-transition→replay loop on terminal tasks).
+		return nil, fmt.Errorf("fetch cc-octo config: status %d: %s: %w", resp.StatusCode, string(body), ErrCcOctoConfigUnavailable)
+	default:
+		// 5xx or transport-level errors remain plain transient errors → retry
+		return nil, fmt.Errorf("fetch cc-octo config: status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var env struct {
+		Data CcOctoConfig `json:"data"`
+	}
+	if err := json.Unmarshal(body, &env); err != nil {
+		return nil, fmt.Errorf("fetch cc-octo config unmarshal: %w", err)
+	}
+	if env.Data.GatewayURL == "" || env.Data.APIKey == "" {
+		return nil, fmt.Errorf("fetch cc-octo config: empty payload: %w", ErrCcOctoConfigUnavailable)
+	}
+	return &env.Data, nil
 }
 
 type RegisterRequest struct {
