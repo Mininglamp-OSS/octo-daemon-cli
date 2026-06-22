@@ -62,6 +62,8 @@ func (d *Daemon) handlePluginUpgrade(ctx context.Context, up *PendingUpgrade) er
 			if cfg != nil {
 				return d.handleCcOctoInstall(ctx, up, cfg)
 			}
+		} else if runtimeID <= 0 {
+			log.Printf("[WARN] cc-octo install task %s: missing runtime_id in metadata, cannot fetch install config — falling back to plain upgrade", up.TaskID)
 		}
 		// cfg==nil / runtimeID==0 → 普通 upgrade,继续往下。
 	}
@@ -211,7 +213,7 @@ func (d *Daemon) handleCcOctoInstall(ctx context.Context, up *PendingUpgrade, cf
 	configureCmd.Env = append(os.Environ(), "CC_OCTO_CONFIGURE_API_KEY="+cfg.APIKey)
 	cout, cerr := configureCmd.CombinedOutput()
 	if cerr != nil {
-		msg := redactSecret(fmt.Sprintf("cc-channel-octo configure failed: %v\noutput: %s", cerr, truncateOutput(string(cout), 800)), cfg.APIKey)
+		msg := truncateOutput(redactSecret(fmt.Sprintf("cc-channel-octo configure failed: %v\noutput: %s", cerr, string(cout)), cfg.APIKey), 800)
 		log.Printf("[ERROR] %s", msg)
 		return d.reportUpgrade(ctx, up.TaskID, "failed", msg)
 	}
