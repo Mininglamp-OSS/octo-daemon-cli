@@ -8,7 +8,9 @@ Local agent runtime reporter for the [OCTO](https://github.com/Mininglamp-OSS) p
 npm install -g @mininglamp-oss/octo-daemon
 ```
 
-The matching prebuilt Go binary ships inside a platform sub-package (`@mininglamp-oss/octo-daemon-<os>-<cpu>`) selected automatically by npm — there is no postinstall download, so registry mirrors work transparently.
+The daemon's own prebuilt Go binary ships inside a platform sub-package (`@mininglamp-oss/octo-daemon-<os>-<cpu>`) selected automatically by npm.
+
+> Installing also pulls in `@mininglamp-oss/octo-cli`, which downloads its binary on install — so `npm install -g` needs network access (a registry mirror alone is not enough); air-gapped installs must provide octo-cli's binary separately.
 
 The `octo-daemon` command goes on your PATH automatically (npm symlinks it into its global bin dir — no manual PATH editing). Verify:
 

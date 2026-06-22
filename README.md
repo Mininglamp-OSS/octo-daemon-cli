@@ -51,10 +51,14 @@ upgrades.
 npm install -g @mininglamp-oss/octo-daemon
 ```
 
-The matching prebuilt binary ships inside a platform sub-package selected
-automatically by npm (darwin / linux on x64 / arm64) — there is no
-postinstall download, so registry mirrors work transparently. Other
-platforms (including Windows): build from source (see below).
+The daemon's own prebuilt binary ships inside a platform sub-package selected
+automatically by npm (darwin / linux on x64 / arm64). Other platforms
+(including Windows): build from source (see below).
+
+> Installing also pulls in `@mininglamp-oss/octo-cli`, which downloads its
+> binary on install — so `npm install -g` needs network access (a registry
+> mirror alone is not enough); air-gapped installs must provide octo-cli's
+> binary separately.
 
 `npm install -g` puts the `octo-daemon` command on your PATH automatically
 (a symlink in npm's global bin dir) — **no manual PATH editing needed**.
@@ -71,23 +75,34 @@ octo-daemon version
 ### 2. Get your connection values
 
 In OCTO, send `/daemon` to BotFather. It returns the values you need for the
-next step: your **space ID**, the **server / fleet URLs**, and your **API key**.
+next step: the **server URL** and your **API key**. (The space is resolved
+automatically — see below.)
 
 ### 3. Configure a space
 
 ```bash
 octo-daemon config \
-  --space-id "your_space_id" \
-  --server-url "http://your-server:8090" \
-  --fleet-url  "http://your-server:8090" \
+  --server-url "http://your-server:3000" \
   --api-key    "uk_xxx"
 ```
 
-`config` creates `~/.octo-daemon/<space_id>/` (generating that space's
-`daemon.id`) and upserts the profile into `~/.octo-daemon/config.json`. It is
-**idempotent by `--space-id`**: re-running updates that profile in place. To
-connect one machine to **multiple spaces**, run `config` once per space — each
-gets its own profile and its own backend connection.
+`config` verifies your `--api-key` against fleet
+(`POST <fleet-url>/v1/runtimes/verify`) and **only persists a profile when
+verification succeeds**. The `space_id` is returned by that call — you no longer
+pass `--space-id`. On failure (bad key, wrong URL, network error) nothing is
+written and the error is printed.
+
+`--fleet-url` is **optional**: when omitted it defaults to
+`<server-url>/fleet/api` (so `http://your-server:8090` →
+`http://your-server:8090/fleet/api`). Pass `--fleet-url` only for split-service
+deployments where fleet lives elsewhere (e.g. `--fleet-url http://localhost:8092`
+→ verify hits `http://localhost:8092/v1/runtimes/verify`).
+
+On success `config` creates `~/.octo-daemon/<space_id>/` (generating that
+space's `daemon.id`) and upserts the profile into `~/.octo-daemon/config.json`.
+It is **idempotent by the resolved `space_id`**: re-running updates that profile
+in place. To connect one machine to **multiple spaces**, run `config` once per
+api-key — each gets its own profile and its own backend connection.
 
 > `--matter-url` is accepted and stored for future use but is optional.
 
@@ -120,17 +135,18 @@ Each space's connection is stored as a **profile** in
 
 | Field | Required | Purpose |
 |---|---|---|
-| `space_id` | yes | Profile key + per-space data directory name |
+| `space_id` | resolved | Profile key + per-space data directory name; returned by `verify`, not supplied |
 | `api_key` | yes | Space-scoped API key |
-| `fleet_url` | yes | Runtime / bot endpoints + SSE |
 | `server_url` | yes | Auth + bot-token endpoints |
+| `fleet_url` | no | Runtime / bot endpoints + SSE; defaults to `<server_url>/fleet/api` |
 | `matter_url` | no | Reserved for future use (stored, not yet consumed) |
 
-> **Split-service deployments** set `fleet_url` and `server_url` to different
-> URLs; a single-host deployment points both at the same address. The old
-> `OCTO_FLEET_URL` / `OCTO_SERVER_URL` environment variables have been
-> **removed** — routing now lives per-profile in `config.json`. There is no
-> separate matter URL env var either.
+> **Split-service deployments** pass an explicit `--fleet-url` so fleet and
+> `server_url` point at different hosts; a single-host deployment omits it and
+> lets `fleet_url` derive from `server_url`. The old `OCTO_FLEET_URL` /
+> `OCTO_SERVER_URL` environment variables have been **removed** — routing now
+> lives per-profile in `config.json`. There is no separate matter URL env var
+> either.
 
 The remaining environment variables are runtime knobs, not routing:
 

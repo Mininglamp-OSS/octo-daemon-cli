@@ -183,6 +183,24 @@ func (c *Client) Register(ctx context.Context, req RegisterRequest) (*RegisterRe
 	return &resp, nil
 }
 
+// VerifyResponse echoes the owner + space resolved from the api_key. fleet
+// performs no DB write — the auth middleware already validated the key against
+// octo-server; this lets `config` confirm the key and learn its bound space_id.
+type VerifyResponse struct {
+	SpaceID  string `json:"space_id"`
+	OwnerUID string `json:"owner_uid"`
+}
+
+// Verify validates the api_key against fleet and returns the bound space.
+// Used by `config` as a setup gate before any profile is persisted.
+func (c *Client) Verify(ctx context.Context) (*VerifyResponse, error) {
+	var resp VerifyResponse
+	if err := c.postJSON(ctx, "/v1/runtimes/verify", struct{}{}, &resp); err != nil {
+		return nil, fmt.Errorf("verify: %w", err)
+	}
+	return &resp, nil
+}
+
 type PendingUpgrade struct {
 	TaskID        string `json:"task_id"`
 	Component     string `json:"component"` // "octo-daemon" or "octo"
