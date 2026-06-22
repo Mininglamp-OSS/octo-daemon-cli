@@ -39,13 +39,18 @@ func (d *Daemon) handlePluginUpgrade(ctx context.Context, up *PendingUpgrade) er
 		if runtimeID > 0 {
 			cfg, ferr := d.client.FetchCcOctoConfig(ctx, runtimeID, up.TaskID)
 			if ferr != nil {
-				// 409 = terminal (install secret gone/expired or task terminal)
-				if errors.Is(ferr, ErrCcOctoConfigUnavailable) {
-					msg := "cc-octo install config unavailable"
+				// Stale replay (task already terminal): skip idempotently.
+				if errors.Is(ferr, ErrCcOctoConfigStale) {
+					log.Printf("[INFO] stale cc-octo install event (task terminal), skipping (task=%s)", up.TaskID)
+					return nil
+				}
+				// Genuine/permanent failure: report failed.
+				if errors.Is(ferr, ErrCcOctoConfigMissing) || errors.Is(ferr, ErrCcOctoConfigPermanent) {
+					msg := fmt.Sprintf("cc-octo install config error: %v", ferr)
 					log.Printf("[ERROR] %s (task=%s)", msg, up.TaskID)
 					return d.reportUpgrade(ctx, up.TaskID, "failed", msg)
 				}
-				// transient (5xx / network) — return error so fleet-side retry kicks in
+				// Transient (5xx / network): return error so fleet-side retry kicks in.
 				return ferr
 			}
 			if cfg != nil {

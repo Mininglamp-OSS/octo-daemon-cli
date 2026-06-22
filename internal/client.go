@@ -27,11 +27,20 @@ func (e *ForbiddenError) Error() string {
 	return fmt.Sprintf("forbidden: %s", e.Message)
 }
 
-// ErrCcOctoConfigUnavailable is returned when the cc-octo install config
-// endpoint returns 409 — meaning the install secret is missing/expired or
-// the upgrade task has reached a terminal state. Daemon should report the
-// task as failed rather than retrying.
-var ErrCcOctoConfigUnavailable = errors.New("cc-octo install config unavailable")
+// Cc-octo config fetch sentinels (distinct signals matching fleet contract).
+var (
+	// ErrCcOctoConfigMissing — 409 Conflict: install task exists but the
+	// secret is missing/expired. Genuine failure; daemon must report failed.
+	ErrCcOctoConfigMissing = errors.New("cc-octo install config missing")
+
+	// ErrCcOctoConfigStale — 410 Gone: task already terminal (completed/
+	// failed/timeout). Stale replay; skip idempotently.
+	ErrCcOctoConfigStale = errors.New("cc-octo install config stale")
+
+	// ErrCcOctoConfigPermanent — other 4xx (403/400/empty payload): permanent
+	// failure such as ownership mismatch or bad request.
+	ErrCcOctoConfigPermanent = errors.New("cc-octo install config permanent error")
+)
 
 type Client struct {
 	baseURL    string
@@ -100,7 +109,10 @@ type CcOctoConfig struct {
 //	Status mapping:
 //	  200 → (*CcOctoConfig, nil)
 //	  404 → (nil, nil): no install secret for this task (plain upgrade path)
-//	  other non-2xx → error (secret gone/expired or terminal task)
+//	  409 → (nil, ErrCcOctoConfigMissing): in-flight install secret gone
+//	  410 → (nil, ErrCcOctoConfigStale): task terminal / stale replay
+//	  other 4xx (400/403/empty payload) → (nil, ErrCcOctoConfigPermanent wrapped)
+//	  5xx / transport error → (nil, plain transient error)
 func (c *Client) FetchCcOctoConfig(ctx context.Context, runtimeID int64, taskID string) (*CcOctoConfig, error) {
 	url := fmt.Sprintf("%s/v1/upgrades/%s/cc-octo-config?runtime_id=%d", c.baseURL, taskID, runtimeID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -114,15 +126,25 @@ func (c *Client) FetchCcOctoConfig(ctx context.Context, runtimeID int64, taskID 
 	}
 	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize))
-	if resp.StatusCode == http.StatusNotFound {
+
+	switch resp.StatusCode {
+	case http.StatusOK:
+		// fall through to unmarshal below
+	case http.StatusNotFound:
 		return nil, nil // no install secret for this task
-	}
-	if resp.StatusCode == http.StatusConflict {
-		return nil, fmt.Errorf("fetch cc-octo config: %w", ErrCcOctoConfigUnavailable)
-	}
-	if resp.StatusCode != http.StatusOK {
+	case http.StatusConflict:
+		return nil, fmt.Errorf("fetch cc-octo config: %w", ErrCcOctoConfigMissing)
+	case http.StatusGone:
+		return nil, fmt.Errorf("fetch cc-octo config: %w", ErrCcOctoConfigStale)
+	default:
+		if resp.StatusCode >= 400 && resp.StatusCode < 500 {
+			// other permanent 4xx errors
+			return nil, fmt.Errorf("fetch cc-octo config: status %d: %s: %w", resp.StatusCode, string(body), ErrCcOctoConfigPermanent)
+		}
+		// 5xx or transport-level errors remain plain transient errors
 		return nil, fmt.Errorf("fetch cc-octo config: status %d: %s", resp.StatusCode, string(body))
 	}
+
 	var env struct {
 		Data CcOctoConfig `json:"data"`
 	}
@@ -130,7 +152,7 @@ func (c *Client) FetchCcOctoConfig(ctx context.Context, runtimeID int64, taskID 
 		return nil, fmt.Errorf("fetch cc-octo config unmarshal: %w", err)
 	}
 	if env.Data.GatewayURL == "" || env.Data.APIKey == "" {
-		return nil, fmt.Errorf("fetch cc-octo config: empty payload")
+		return nil, fmt.Errorf("fetch cc-octo config: empty payload: %w", ErrCcOctoConfigPermanent)
 	}
 	return &env.Data, nil
 }
