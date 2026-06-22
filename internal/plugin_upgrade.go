@@ -16,15 +16,15 @@ import (
 //   - npx -y create-openclaw-octo install
 //   - create-openclaw-octo 是统一安装入口 CLI (跟 botfather /install 命令一致),
 //     内部:
-//       1. 检测当前状态 (老版 npm 包 / 已迁移到 ClawHub / 未装)
-//       2. 老版本自动卸载 + 装 ClawHub 版本 (legacy → octo prefix 迁移)
-//       3. 已是 ClawHub 版本 → 升级到 latest
-//       4. 失败完整回滚 (cli/install.ts runMigration: pre-migration backup +
-//          rollback closure: 清 partial install + 恢复 cfg + 重启 legacy plugin)
-//       5. 自动重启 openclaw gateway
+//     1. 检测当前状态 (老版 npm 包 / 已迁移到 ClawHub / 未装)
+//     2. 老版本自动卸载 + 装 ClawHub 版本 (legacy → octo prefix 迁移)
+//     3. 已是 ClawHub 版本 → 升级到 latest
+//     4. 失败完整回滚 (cli/install.ts runMigration: pre-migration backup +
+//     rollback closure: 清 partial install + 恢复 cfg + 重启 legacy plugin)
+//     5. 自动重启 openclaw gateway
 //   - daemon 不主动上报 completed, 靠 register handler 里的 plugin 关单路径关闭
 //     (register 上报 metadata.plugins 含新版本 → 服务端
-//      completeUpgradeIfMatchedWithRuntime 关单)
+//     completeUpgradeIfMatchedWithRuntime 关单)
 //
 // Phase B (所有 daemon 都迁完到 ClawHub 后) 可以切到 `openclaw plugins update octo`
 // 跳过 npx wrapper 直接 ClawHub native, 但**当前不行** — 还有装老版 npm 包的用户,
@@ -39,24 +39,16 @@ func (d *Daemon) handlePluginUpgrade(ctx context.Context, up *PendingUpgrade) er
 		if runtimeID > 0 {
 			cfg, ferr := d.client.FetchCcOctoConfig(ctx, runtimeID, up.TaskID)
 			if ferr != nil {
-				// Stale replay (task already terminal): skip idempotently.
-				if errors.Is(ferr, ErrCcOctoConfigStale) {
-					log.Printf("[INFO] stale cc-octo install event (task terminal), skipping (task=%s)", up.TaskID)
+				if errors.Is(ferr, ErrCcOctoConfigUnavailable) {
+					// Non-retryable: terminal/stale task, in-flight secret gone, or a 4xx
+					// rejection. Skip without reporting failed — a terminal task would
+					// reject the failed-transition and loop on replay; a stuck in-flight
+					// install is reclaimed by fleet's sweeper timeout. Only transient
+					// 5xx/network errors fall through to retry.
+					log.Printf("[INFO] cc-octo install config unavailable (task terminal or secret gone), skipping (task=%s): %v", up.TaskID, ferr)
 					return nil
 				}
-				// Missing secret (install in-flight, secret gone): genuine failure — propagate per daemon invariant.
-				if errors.Is(ferr, ErrCcOctoConfigMissing) {
-					msg := "cc-octo install secret unavailable"
-					log.Printf("[ERROR] %s (task=%s)", msg, up.TaskID)
-					return d.reportUpgrade(ctx, up.TaskID, "failed", msg)
-				}
-				// Permanent 4xx (e.g. 403/400): terminal condition — propagate per daemon invariant.
-				if errors.Is(ferr, ErrCcOctoConfigPermanent) {
-					msg := fmt.Sprintf("cc-octo install config error: %v", ferr)
-					log.Printf("[ERROR] %s (task=%s)", msg, up.TaskID)
-					return d.reportUpgrade(ctx, up.TaskID, "failed", msg)
-				}
-				// Transient (5xx / network): return error so fleet-side retry kicks in.
+				// Transient (5xx / network): return error so SSE/heartbeat retry kicks in.
 				return ferr
 			}
 			if cfg != nil {

@@ -23,8 +23,8 @@ func TestFetchCcOctoConfig_404IsNilNil(t *testing.T) {
 }
 
 // 409 = install task but secret missing/expired (or terminal task). MUST be an
-// error so the install reports failed — never silently fall back to a no-key
-// plain upgrade. Only 404 (plain upgrade, no secret expected) maps to (nil,nil).
+// Any 4xx (409/403/etc.) maps to ErrCcOctoConfigUnavailable (skip). Only 404
+// (plain upgrade, no secret expected) maps to (nil,nil); 5xx is transient.
 func TestFetchCcOctoConfig_ConflictIsMissingError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusConflict)
@@ -36,8 +36,8 @@ func TestFetchCcOctoConfig_ConflictIsMissingError(t *testing.T) {
 	if err == nil || cfg != nil {
 		t.Fatalf("409 must be an error (install secret gone), got cfg=%+v err=%v", cfg, err)
 	}
-	if !errors.Is(err, ErrCcOctoConfigMissing) {
-		t.Fatalf("409 should map to ErrCcOctoConfigMissing, got %v", err)
+	if !errors.Is(err, ErrCcOctoConfigUnavailable) {
+		t.Fatalf("409 should map to ErrCcOctoConfigUnavailable, got %v", err)
 	}
 }
 
@@ -54,12 +54,12 @@ func TestFetchCcOctoConfig_500IsTransientError(t *testing.T) {
 	if err == nil {
 		t.Fatal("500 should be an error")
 	}
-	if errors.Is(err, ErrCcOctoConfigMissing) || errors.Is(err, ErrCcOctoConfigStale) || errors.Is(err, ErrCcOctoConfigPermanent) {
-		t.Fatalf("500 should NOT map to any sentinel, got %v", err)
+	if errors.Is(err, ErrCcOctoConfigUnavailable) {
+		t.Fatalf("500 (transient) should NOT map to ErrCcOctoConfigUnavailable, got %v", err)
 	}
 }
 
-// 410 Gone = task already terminal (stale replay). Must map to ErrCcOctoConfigStale.
+// 410 (defensive: fleet returns 409 for terminal, but any 4xx maps to Unavailable).
 func TestFetchCcOctoConfig_StaleIsError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusGone)
@@ -72,12 +72,12 @@ func TestFetchCcOctoConfig_StaleIsError(t *testing.T) {
 	if err == nil || cfg != nil {
 		t.Fatalf("410 must be an error (stale replay), got cfg=%+v err=%v", cfg, err)
 	}
-	if !errors.Is(err, ErrCcOctoConfigStale) {
-		t.Fatalf("410 should map to ErrCcOctoConfigStale, got %v", err)
+	if !errors.Is(err, ErrCcOctoConfigUnavailable) {
+		t.Fatalf("410 should map to ErrCcOctoConfigUnavailable, got %v", err)
 	}
 }
 
-// 403 Forbidden = permanent failure (ownership mismatch). Must map to ErrCcOctoConfigPermanent.
+// 403 Forbidden = non-retryable rejection. Must map to ErrCcOctoConfigUnavailable.
 func TestFetchCcOctoConfig_ForbiddenIsPermanentError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
@@ -90,12 +90,8 @@ func TestFetchCcOctoConfig_ForbiddenIsPermanentError(t *testing.T) {
 	if err == nil || cfg != nil {
 		t.Fatalf("403 must be an error (permanent), got cfg=%+v err=%v", cfg, err)
 	}
-	if !errors.Is(err, ErrCcOctoConfigPermanent) {
-		t.Fatalf("403 should map to ErrCcOctoConfigPermanent, got %v", err)
-	}
-	// Also verify it's NOT Stale or Missing
-	if errors.Is(err, ErrCcOctoConfigStale) || errors.Is(err, ErrCcOctoConfigMissing) {
-		t.Fatalf("403 should NOT map to Stale or Missing, got %v", err)
+	if !errors.Is(err, ErrCcOctoConfigUnavailable) {
+		t.Fatalf("403 should map to ErrCcOctoConfigUnavailable, got %v", err)
 	}
 }
 
