@@ -35,8 +35,8 @@ octo-daemon config \
 # Start (foreground, blocks; good for a first run to watch it register):
 octo-daemon start
 
-# Or run it detached in the background:
-octo-daemon start --daemon       # logs to ~/.octo-daemon/daemon.log
+# Or supervise it with pm2 (installs pm2 if missing, then keeps it alive):
+octo-daemon start --daemon
 octo-daemon status
 ```
 

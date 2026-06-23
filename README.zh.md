@@ -99,22 +99,44 @@ http://localhost:8092` → 校验打到 `http://localhost:8092/v1/runtimes/verif
 
 ```bash
 octo-daemon start            # 前台运行（占住终端）
-octo-daemon start --daemon   # 后台运行（脱离终端）；日志写到 ~/.octo-daemon/daemon.log
-octo-daemon stop             # 停止运行中的 daemon（前台或 --daemon 均可）
+octo-daemon start --daemon   # 引导 pm2 托管 daemon，完成后自身退出
+octo-daemon stop             # 停止前台运行的 daemon
 ```
 
 `start` 读取 `config.json` 里**所有** profile，在单进程内为每个 space 各维持
 一条后端连接。单个 space 出问题（URL 错、key 被踢）会被隔离重试，不影响其他
 space。
 
+`start --daemon` **不会**自己跑 daemon——它把 daemon 注册成 pm2 托管的服务：
+缺 pm2 就装、写 `~/.octo-daemon/ecosystem.config.js`（让 pm2 以前台模式拉起
+Go 二进制）、执行 `pm2 startOrRestart` + `pm2 save`，然后自身退出。pm2 负责保活，
+升级后会重新 exec 新二进制。可选地跑 `pm2 startup`（会打印一条 sudo 命令）让
+pm2——以及 daemon——开机自启。
+
+注册之后,直接用 pm2 管理它:
+
+```bash
+pm2 stop octo-daemon          # 停止 pm2 托管的 daemon
+pm2 restart octo-daemon       # 重启（升级后也用它重新 exec 新二进制）
+pm2 delete octo-daemon        # 从 pm2 中彻底移除
+pm2 logs octo-daemon          # 查看日志
+```
+
+> `octo-daemon stop` 只停**前台** daemon（给持锁 pid 发信号）。pm2 托管的 daemon
+> 请用 `pm2 stop octo-daemon`——否则 pm2 会立刻把它重启回来。
+
 ### 5. 查看状态
 
 ```bash
 octo-daemon status            # 进程 / 版本 / 各 space profile
+pm2 list                      # pm2 托管的 daemon 状态（经 --daemon 注册后）
 ```
 
-> 以 `launchd` / `systemd` 系统服务方式托管运行已在路线图上，但尚未文档化——
-> 目前后台运行请用 `octo-daemon start --daemon`。
+### 6. 升级
+
+```bash
+octo-daemon upgrade           # npm install -g @latest，然后 pm2 restart
+```
 
 ## ⚙️ 配置与环境变量
 
@@ -167,7 +189,7 @@ octo-daemon status            # 进程 / 版本 / 各 space profile
 | `<space_id>/events.state` | 该 space 的 SSE 去重游标 |
 | `daemon.lock` | 文件锁，单实例保护（一个进程服务所有 space） |
 | `daemon.pid` | 当前进程 PID |
-| `daemon.log` | 后台运行（`start --daemon`）的 stdout/stderr |
+| `ecosystem.config.js` | pm2 服务定义（`start --daemon` 写入）；日志由 pm2 管理 |
 
 ## 🛠 从源码构建
 
