@@ -96,6 +96,7 @@ func (c *Client) GetBotToken(ctx context.Context, botUID string) (string, error)
 type CcOctoConfig struct {
 	GatewayURL string `json:"gateway_url"`
 	APIKey     string `json:"api_key"`
+	Model      string `json:"model"`
 }
 
 // FetchCcOctoConfig pulls the cc-octo install secret (LLM gateway url + key)
@@ -103,9 +104,11 @@ type CcOctoConfig struct {
 // payload (same pattern as bot.provision fetch).
 //
 //	Status mapping:
-//	  200 → (*CcOctoConfig, nil)
+//	  200 (well-formed)        → (*CcOctoConfig, nil)
+//	  200 (empty/bad payload)  → (nil, plain transient error): retry — a one-off
+//	      bad/empty body shouldn't make daemon permanently abandon the install
 //	  404 → (nil, nil): no install secret for this task (plain upgrade path)
-//	  any other 4xx (409 terminal/in-flight-missing, 403, 400, empty payload)
+//	  any other 4xx (409 terminal/in-flight-missing, 403, 400)
 //	      → (nil, ErrCcOctoConfigUnavailable wrapped): skip idempotently
 //	  5xx / transport error → (nil, plain transient error): retry
 func (c *Client) FetchCcOctoConfig(ctx context.Context, runtimeID int64, taskID string) (*CcOctoConfig, error) {
@@ -144,7 +147,10 @@ func (c *Client) FetchCcOctoConfig(ctx context.Context, runtimeID int64, taskID 
 		return nil, fmt.Errorf("fetch cc-octo config unmarshal: %w", err)
 	}
 	if env.Data.GatewayURL == "" || env.Data.APIKey == "" {
-		return nil, fmt.Errorf("fetch cc-octo config: empty payload: %w", ErrCcOctoConfigUnavailable)
+		// 200 但 payload 空/字段缺失 → 当作服务端瞬时协议错误(可重试),不归入
+		// ErrCcOctoConfigUnavailable —— 后者是 4xx 终态语义,会让 daemon 永久跳过该安装;
+		// 一次坏/空的 200 不该让整个安装放弃,交给 SSE/心跳重试。
+		return nil, fmt.Errorf("fetch cc-octo config: empty payload from a 200 response")
 	}
 	return &env.Data, nil
 }

@@ -77,8 +77,9 @@ func TestClaudeProvisionWritesConfig(t *testing.T) {
 	if got.BotToken != "bf_secret" {
 		t.Errorf("botToken = %q, want bf_secret", got.BotToken)
 	}
-	if got.SDK.Model != claudeModel {
-		t.Errorf("sdk.model = %q, want %q", got.SDK.Model, claudeModel)
+	// Model is gateway-level global config now — Provision must NOT pin it per-bot.
+	if got.SDK.Model != "" {
+		t.Errorf("sdk.model must not be written per-bot, got %q", got.SDK.Model)
 	}
 
 	if ids := readBotIDs(t, home); len(ids) != 1 || ids[0] != "bot-123" {
