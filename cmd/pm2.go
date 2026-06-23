@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 
 	"github.com/Mininglamp-OSS/octo-daemon-cli/internal"
 )
@@ -111,6 +110,10 @@ func resolveConfigPath() string {
 // --daemon, or pm2 would re-run the bootstrapper on every restart (infinite
 // recursion). args is emitted as a JSON array so paths containing spaces are
 // passed as single argv entries instead of being word-split by pm2.
+//
+// stop_exit_codes lists the daemon's permanent-failure codes (2 = startup/config
+// fatal, 78 = API key permanently rejected): pm2 will not restart on these, so a
+// misconfigured or deprovisioned daemon stops cleanly instead of crash-looping.
 func writeEcosystem(goBin, cfgPath string) (string, error) {
 	dir := internal.DataDir()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -127,6 +130,7 @@ module.exports = {
     interpreter: "none",
     args: %s,
     autorestart: true,
+    stop_exit_codes: [2, 78],
     max_restarts: 10,
     restart_delay: 2000,
     kill_timeout: 5000,
@@ -141,21 +145,28 @@ module.exports = {
 }
 
 // pm2HasApp reports whether pm2 already manages an app with the given name.
-// `pm2 id <name>` prints a JSON array of process ids ("[]" when absent).
+// `pm2 jlist` emits the full process list as JSON on stdout.
 func pm2HasApp(name string) bool {
 	pm2, err := exec.LookPath("pm2")
 	if err != nil {
 		return false
 	}
-	out, err := exec.Command(pm2, "id", name).Output()
+	out, err := exec.Command(pm2, "jlist").Output()
 	if err != nil {
 		return false
 	}
-	var ids []int
-	if err := json.Unmarshal([]byte(strings.TrimSpace(string(out))), &ids); err != nil {
+	var apps []struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(out, &apps); err != nil {
 		return false
 	}
-	return len(ids) > 0
+	for _, a := range apps {
+		if a.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 // runPM2 runs a pm2 subcommand with its output streamed to the user.

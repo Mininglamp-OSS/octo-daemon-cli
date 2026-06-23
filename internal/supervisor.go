@@ -53,7 +53,8 @@ func NewSupervisor(profiles []Config) (*Supervisor, error) {
 }
 
 // Run acquires the global lock, fans out one runner per profile, and blocks
-// until ctx is cancelled or a process-wide fatal is escalated.
+// until ctx is cancelled, a process-wide fatal is escalated, or every profile
+// has permanently stopped (all 403 → exit 78).
 func (s *Supervisor) Run(ctx context.Context) error {
 	if len(s.profiles) == 0 {
 		return &ExitError{Code: 2, Message: "no profiles configured — run `octo-daemon config` first"}
@@ -71,6 +72,10 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		_ = os.Remove(LockFilePath())
 	}()
 
+	// Capture the parent before deriving the cancellable child, so we can later
+	// distinguish a graceful signal shutdown (parent cancelled) from every
+	// runner self-terminating on a permanent 403.
+	parentCtx := ctx
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -116,7 +121,17 @@ func (s *Supervisor) Run(ctx context.Context) error {
 
 	fatalMu.Lock()
 	defer fatalMu.Unlock()
-	return fatalExit // nil = graceful shutdown
+	if fatalExit != nil {
+		return fatalExit // process-wide fatal (e.g. upgrade → 75)
+	}
+	// All runners have stopped without a process-wide fatal. If this was not a
+	// graceful signal shutdown, every profile self-terminated on a permanent
+	// 403 — surface exit 78 so pm2's stop_exit_codes halts the service instead
+	// of restarting a daemon whose every key is dead.
+	if parentCtx.Err() == nil {
+		return &ExitError{Code: 78, Message: "all profiles stopped: API key permanently rejected (403)"}
+	}
+	return nil // graceful shutdown
 }
 
 // runProfile runs one backendRunner with panic recovery and backoff restart,
