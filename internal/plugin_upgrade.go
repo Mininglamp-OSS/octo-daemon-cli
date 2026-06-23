@@ -186,12 +186,16 @@ func parseUpgradeRuntimeID(metadata string) int64 {
 	return m.RuntimeID
 }
 
-// redactSecret removes the api key from a string before logging.
-func redactSecret(s, secret string) string {
-	if secret == "" {
-		return s
+// redactSecret removes the given secrets (api key, gateway url, …) from a string
+// before logging. A gateway url can itself carry credentials (userinfo or a
+// ?token= query), so it is scrubbed alongside the api key.
+func redactSecret(s string, secrets ...string) string {
+	for _, secret := range secrets {
+		if secret != "" {
+			s = strings.ReplaceAll(s, secret, "***redacted***")
+		}
 	}
-	return strings.ReplaceAll(s, secret, "***redacted***")
+	return s
 }
 
 // handleCcOctoInstall installs cc-channel-octo and writes the operator's LLM
@@ -229,7 +233,7 @@ func (d *Daemon) handleCcOctoInstall(ctx context.Context, up *PendingUpgrade, cf
 	configureCmd.Env = append(os.Environ(), "CC_OCTO_CONFIGURE_API_KEY="+cfg.APIKey)
 	cout, cerr := configureCmd.CombinedOutput()
 	if cerr != nil {
-		msg := truncateOutput(redactSecret(fmt.Sprintf("cc-channel-octo configure failed: %v\noutput: %s", cerr, string(cout)), cfg.APIKey), 800)
+		msg := truncateOutput(redactSecret(fmt.Sprintf("cc-channel-octo configure failed: %v\noutput: %s", cerr, string(cout)), cfg.APIKey, cfg.GatewayURL), 800)
 		log.Printf("[ERROR] %s", msg)
 		return d.reportUpgrade(ctx, up.TaskID, "failed", msg)
 	}
@@ -240,7 +244,7 @@ func (d *Daemon) handleCcOctoInstall(ctx context.Context, up *PendingUpgrade, cf
 	// non-fatal: the first bot.provision runs `cc-channel-octo restart`, which
 	// starts it anyway — so we log and continue to enrich/register.
 	if sout, serr := exec.CommandContext(installCtx, "cc-channel-octo", ccOctoStartArgs()...).CombinedOutput(); serr != nil {
-		log.Printf("[WARN] cc-octo post-install start failed (provision restart will retry): %v\noutput: %s", serr, truncateOutput(redactSecret(string(sout), cfg.APIKey), 400))
+		log.Printf("[WARN] cc-octo post-install start failed (provision restart will retry): %v\noutput: %s", serr, truncateOutput(redactSecret(string(sout), cfg.APIKey, cfg.GatewayURL), 400))
 	} else {
 		log.Printf("[INFO] cc-octo gateway started idle (task=%s)", up.TaskID)
 	}
