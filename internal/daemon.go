@@ -48,22 +48,15 @@ type Daemon struct {
 }
 
 // newBackendRunner builds a per-space Daemon. The caller (Supervisor) supplies
-// the shared adapter registry and the space's daemonID (already ensured via
-// EnsureDaemonID). Backend URLs come from the profile config — there is no
-// OCTO_FLEET_URL/OCTO_SERVER_URL env routing anymore.
-func newBackendRunner(cfg Config, registry *adapter.Registry, daemonID string) *Daemon {
+// the shared adapter registry, the space's daemonID (ensured via EnsureDaemonID),
+// and the machine-level deviceID (ensured once before the per-profile fan-out so
+// concurrent profiles can't mint divergent ids). Backend URLs come from the
+// profile config — there is no OCTO_FLEET_URL/OCTO_SERVER_URL env routing anymore.
+func newBackendRunner(cfg Config, registry *adapter.Registry, daemonID, deviceID string) *Daemon {
 	cfg.withDefaults()
 
 	client := NewClient(cfg.FleetURL, cfg.APIKey, cfg.CLIVersion)
 	client.SetServerURL(cfg.ServerURL)
-
-	// Machine-level fingerprint; shared across profiles/daemons on this device.
-	// A failure here is non-fatal — the daemon runs on with an empty device_id
-	// (reported as "" inside the device_info JSON).
-	deviceID, err := EnsureDeviceID()
-	if err != nil {
-		log.Printf("[WARN] device.id unavailable: %v", err)
-	}
 
 	return &Daemon{
 		cfg:       cfg,
