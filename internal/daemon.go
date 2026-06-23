@@ -24,11 +24,6 @@ type Daemon struct {
 	sseClient *SSEClient
 	daemonID  string
 	deviceID  string
-	// deviceComponents is the machine-level npm global component snapshot, cached
-	// once (npm ls is ~0.6s) and reused across re-registers. Machine-level so
-	// it's reported on register only, not the per-runtime heartbeat hot path.
-	deviceComponents     []DeviceComponent
-	deviceComponentsOnce sync.Once
 	// providers is this daemon's own runtime-provider snapshot. Per-daemon (not
 	// package-global) so multi-profile fan-out doesn't let one space's refresh
 	// clobber another's.
@@ -63,7 +58,8 @@ func newBackendRunner(cfg Config, registry *adapter.Registry, daemonID string) *
 	client.SetServerURL(cfg.ServerURL)
 
 	// Machine-level fingerprint; shared across profiles/daemons on this device.
-	// A failure here is non-fatal — device_id is omitempty in the payload.
+	// A failure here is non-fatal — the daemon runs on with an empty device_id
+	// (reported as "" inside the device_info JSON).
 	deviceID, err := EnsureDeviceID()
 	if err != nil {
 		log.Printf("[WARN] device.id unavailable: %v", err)
@@ -638,18 +634,11 @@ func (d *Daemon) buildRegisterRequest(runtimes []RuntimeInfo) RegisterRequest {
 		CLIVersion:          d.cfg.CLIVersion,
 		HeartbeatIntervalMs: d.cfg.HeartbeatInterval.Milliseconds(),
 		Runtimes:            runtimes,
-		DeviceComponents:    d.componentsSnapshot(),
+		// Probed fresh on every register (a low-frequency path, minutes apart at
+		// most) so post-upgrade re-registers report the new versions rather than a
+		// stale snapshot. Deliberately not on the per-runtime heartbeat hot path.
+		DeviceComponents: DetectDeviceComponents(),
 	}
-}
-
-// componentsSnapshot returns the machine-level npm component versions, running
-// the npm probe at most once per daemon and caching the result for subsequent
-// re-registers.
-func (d *Daemon) componentsSnapshot() []DeviceComponent {
-	d.deviceComponentsOnce.Do(func() {
-		d.deviceComponents = DetectDeviceComponents()
-	})
-	return d.deviceComponents
 }
 
 func (d *Daemon) sendHeartbeats(ctx context.Context) {
