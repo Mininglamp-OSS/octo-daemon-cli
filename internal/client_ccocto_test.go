@@ -59,6 +59,26 @@ func TestFetchCcOctoConfig_500IsTransientError(t *testing.T) {
 	}
 }
 
+// 200 with an empty/missing-field payload is a server-side glitch, not a
+// terminal rejection — it must be a retryable error, NOT the sentinel, so a
+// one-off bad body doesn't make daemon permanently abandon the install.
+func TestFetchCcOctoConfig_Empty200IsTransientError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"data":{"gateway_url":"","api_key":""}}`))
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL, "k1", "dev")
+	cfg, err := c.FetchCcOctoConfig(context.Background(), 7, "task_x")
+	if err == nil || cfg != nil {
+		t.Fatalf("empty 200 must be an error, got cfg=%+v err=%v", cfg, err)
+	}
+	if errors.Is(err, ErrCcOctoConfigUnavailable) {
+		t.Fatalf("empty 200 (transient) should NOT map to ErrCcOctoConfigUnavailable, got %v", err)
+	}
+}
+
 // 410 (defensive: fleet returns 409 for terminal, but any 4xx maps to Unavailable).
 func TestFetchCcOctoConfig_StaleIsError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

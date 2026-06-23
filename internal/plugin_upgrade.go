@@ -240,7 +240,7 @@ func (d *Daemon) handleCcOctoInstall(ctx context.Context, up *PendingUpgrade, cf
 	// non-fatal: the first bot.provision runs `cc-channel-octo restart`, which
 	// starts it anyway — so we log and continue to enrich/register.
 	if sout, serr := exec.CommandContext(installCtx, "cc-channel-octo", ccOctoStartArgs()...).CombinedOutput(); serr != nil {
-		log.Printf("[WARN] cc-octo post-install start failed (provision restart will retry): %v\noutput: %s", serr, truncateOutput(string(sout), 400))
+		log.Printf("[WARN] cc-octo post-install start failed (provision restart will retry): %v\noutput: %s", serr, truncateOutput(redactSecret(string(sout), cfg.APIKey), 400))
 	} else {
 		log.Printf("[INFO] cc-octo gateway started idle (task=%s)", up.TaskID)
 	}
