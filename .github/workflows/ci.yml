@@ -23,7 +23,7 @@ permissions:
 jobs:
   build:
     name: Build
-    runs-on: ubuntu-latest
+    runs-on: octo-runners
     timeout-minutes: 15
     steps:
       - name: Checkout
@@ -56,7 +56,7 @@ jobs:
 
   test:
     name: Test
-    runs-on: ubuntu-latest
+    runs-on: octo-runners
     timeout-minutes: 30
     steps:
       - name: Checkout
@@ -75,7 +75,7 @@ jobs:
   # packaging regressions before a release tag is cut.
   npm-packaging:
     name: npm packaging tests
-    runs-on: ubuntu-latest
+    runs-on: octo-runners
     timeout-minutes: 10
     steps:
       - name: Checkout
@@ -128,7 +128,7 @@ jobs:
 
   vet:
     name: Vet
-    runs-on: ubuntu-latest
+    runs-on: octo-runners
     timeout-minutes: 15
     steps:
       - name: Checkout
@@ -144,7 +144,7 @@ jobs:
 
   lint:
     name: Lint
-    runs-on: ubuntu-latest
+    runs-on: octo-runners
     timeout-minutes: 15
     steps:
       - name: Checkout

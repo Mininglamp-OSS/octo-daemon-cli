@@ -39,7 +39,7 @@ concurrency:
 jobs:
   dispatch:
     name: Resolve CI evidence and dispatch release
-    runs-on: ubuntu-latest
+    runs-on: octo-runners
     timeout-minutes: 10
     permissions:
       actions: write # dispatch release-publish.yml
