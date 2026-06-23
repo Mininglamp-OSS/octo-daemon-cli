@@ -607,9 +607,9 @@ func (d *Daemon) checkForbidden(err error) bool {
 	var forbiddenErr *ForbiddenError
 	if errors.As(err, &forbiddenErr) {
 		log.Printf("[ERROR] API key rejected (403): user is no longer a member of this space. Stopping daemon.")
-		// Record exit 78 (config-level fatal). Under service manager main
-		// maps 78 → 0 to prevent an infinite restart loop on a permanently
-		// bad api key.
+		// Record exit 78 (config-level fatal) for a permanently bad api key.
+		// Under pm2 the process may be restarted (bounded by max_restarts in
+		// ecosystem.config.js) rather than stopped on this code.
 		d.requestExit(&ExitError{Code: 78, Message: "API key rejected: user is no longer a member of this space"})
 		return true
 	}

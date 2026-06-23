@@ -4,24 +4,17 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"os/signal"
-	"path/filepath"
 	"syscall"
 
 	"github.com/Mininglamp-OSS/octo-daemon-cli/internal"
 	"github.com/spf13/cobra"
 )
 
-// daemonWorkerEnv marks the re-exec'd background worker so it runs in the
-// foreground instead of forking again. It is intentionally an env var, not a
-// flag, so it never appears in `--help`.
-const daemonWorkerEnv = "OCTO_DAEMON_WORKER"
-
 var startCmd = &cobra.Command{
 	Use:   "start",
 	Short: "Start the daemon",
-	Long:  "Start detecting local agent runtimes and reporting to Octo server.\n\nReads profiles from the config file (default ~/.octo-daemon/config.json) and\nsupervises one backend connection per space. Configure profiles first with\n`octo-daemon config`.",
+	Long:  "Start detecting local agent runtimes and reporting to Octo server.\n\nReads profiles from the config file (default ~/.octo-daemon/config.json) and\nsupervises one backend connection per space. Configure profiles first with\n`octo-daemon config`.\n\nRuns in the foreground (pm2 / a service manager keeps it alive). Use\n`octo-daemon start --daemon` to register it as a pm2-managed service.",
 	RunE:  runStart,
 }
 
@@ -31,19 +24,19 @@ var (
 )
 
 func init() {
-	// --config is optional; it exists mainly so `service install` can bake an
-	// absolute path into the launchd/systemd unit. Interactive/k8s runs use the
-	// default ~/.octo-daemon/config.json.
+	// --config is optional; the pm2 bootstrapper bakes an absolute path into
+	// ecosystem.config.js. Interactive/k8s runs use the default
+	// ~/.octo-daemon/config.json.
 	startCmd.Flags().StringVar(&flagConfigFile, "config", "", "Config file path (default ~/.octo-daemon/config.json)")
-	startCmd.Flags().BoolVar(&flagDaemon, "daemon", false, "Run in the background (detached); logs to ~/.octo-daemon/daemon.log")
+	startCmd.Flags().BoolVar(&flagDaemon, "daemon", false, "Bootstrap pm2 to supervise the daemon (installs pm2, writes ecosystem.config.js, then exits)")
 }
 
 func runStart(cmd *cobra.Command, args []string) error {
-	// Launcher role: --daemon set and we are not already the worker → re-exec
-	// self detached, then exit. The worker (same binary with the env marker)
-	// falls through to the foreground path below.
-	if flagDaemon && os.Getenv(daemonWorkerEnv) == "" {
-		return daemonize()
+	// Bootstrapper role: --daemon installs/registers the daemon under pm2 and
+	// exits. The long-running server is the foreground path below, which pm2
+	// (re-)execs from the generated ecosystem.config.js.
+	if flagDaemon {
+		return bootstrapPM2()
 	}
 
 	cfgPath := flagConfigFile
@@ -107,48 +100,4 @@ func runStart(cmd *cobra.Command, args []string) error {
 	case err := <-errCh:
 		return err
 	}
-}
-
-// daemonize re-execs the current binary as a detached background worker (new
-// session, stdio redirected to a log file) and returns once the child is
-// started. The single-instance lock is enforced by the worker itself; we
-// pre-check here only to give a clean error instead of a silently-dead child.
-func daemonize() error {
-	if internal.IsLocked() {
-		pid, _ := internal.ReadLockPID()
-		return &internal.ExitError{Code: 2, Message: fmt.Sprintf("daemon already running (pid %d) — run `octo-daemon stop` first", pid)}
-	}
-
-	exe, err := os.Executable()
-	if err != nil {
-		return &internal.ExitError{Code: 2, Message: fmt.Sprintf("resolve executable: %v", err)}
-	}
-
-	logPath := filepath.Join(internal.DataDir(), "daemon.log")
-	if err := os.MkdirAll(filepath.Dir(logPath), 0755); err != nil {
-		return &internal.ExitError{Code: 2, Message: fmt.Sprintf("create data dir: %v", err)}
-	}
-	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-	if err != nil {
-		return &internal.ExitError{Code: 2, Message: fmt.Sprintf("open log %s: %v", logPath, err)}
-	}
-	defer func() { _ = logFile.Close() }()
-
-	// Re-exec with the same args (incl. --daemon, which the worker ignores via
-	// the env marker), detached into its own session so it survives the shell.
-	child := exec.Command(exe, os.Args[1:]...)
-	child.Stdin = nil
-	child.Stdout = logFile
-	child.Stderr = logFile
-	child.Env = append(os.Environ(), daemonWorkerEnv+"=1")
-	child.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-
-	if err := child.Start(); err != nil {
-		return &internal.ExitError{Code: 2, Message: fmt.Sprintf("start background daemon: %v", err)}
-	}
-	pid := child.Process.Pid
-	_ = child.Process.Release()
-
-	fmt.Printf("octo-daemon started in background (pid %d). Logs: %s\n", pid, logPath)
-	return nil
 }

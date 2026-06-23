@@ -110,23 +110,46 @@ api-key — each gets its own profile and its own backend connection.
 
 ```bash
 octo-daemon start            # foreground (blocks the terminal)
-octo-daemon start --daemon   # background (detached); logs to ~/.octo-daemon/daemon.log
-octo-daemon stop             # stop a running daemon (foreground or --daemon)
+octo-daemon start --daemon   # bootstrap pm2 to supervise the daemon, then exit
+octo-daemon stop             # stop a foreground daemon
 ```
 
 `start` reads **every** configured profile from `config.json` and supervises one
 backend connection per space inside a single process. A single space's failure
 (bad URL, evicted key) is isolated and retried without affecting the others.
 
+`start --daemon` does **not** run the daemon itself — it registers it as a
+pm2-managed service: it installs pm2 if missing, writes
+`~/.octo-daemon/ecosystem.config.js` (pointing pm2 at the Go binary in
+foreground mode), runs `pm2 startOrRestart` + `pm2 save`, then exits. pm2 keeps
+the daemon alive and re-execs it after an upgrade. Optionally run `pm2 startup`
+(prints a sudo command) to start pm2 — and the daemon — on boot.
+
+Once registered, manage it directly through pm2:
+
+```bash
+pm2 stop octo-daemon          # stop the pm2-managed daemon
+pm2 restart octo-daemon       # restart it (also re-execs after an upgrade)
+pm2 delete octo-daemon        # remove it from pm2 entirely
+pm2 logs octo-daemon          # tail its logs
+```
+
+> `octo-daemon stop` only stops a **foreground** daemon (it signals the locked
+> pid). For a pm2-managed daemon use `pm2 stop octo-daemon` — otherwise pm2 will
+> just restart it.
+
 ### 5. Check status
 
 ```bash
 octo-daemon status            # process / version / per-space profiles
+pm2 list                      # pm2-managed daemon status (when run via --daemon)
 ```
 
-> Running as a managed `launchd` / `systemd` service is on the roadmap but not
-> documented yet — for now use `octo-daemon start --daemon` for a background
-> process.
+### 6. Upgrade
+
+```bash
+octo-daemon upgrade           # npm install -g @latest, then pm2 restart
+```
 
 ## ⚙️ Configuration & environment
 
@@ -187,7 +210,7 @@ Everything lives under `~/.octo-daemon/`:
 | `<space_id>/events.state` | Per-space SSE dedup cursor |
 | `daemon.lock` | File lock — single-instance guard (one process serves all spaces) |
 | `daemon.pid` | Current process PID |
-| `daemon.log` | Background (`start --daemon`) stdout/stderr |
+| `ecosystem.config.js` | pm2 service definition (written by `start --daemon`); pm2 owns the logs |
 
 ## 🛠 Build from source
 

@@ -1,0 +1,200 @@
+package cmd
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+
+	"github.com/Mininglamp-OSS/octo-daemon-cli/internal"
+)
+
+const pm2AppName = "octo-daemon"
+
+// bootstrapPM2 registers the daemon as a pm2-managed service. It is idempotent:
+// running it repeatedly installs pm2 only if missing, rewrites the ecosystem
+// file, and restarts (not duplicates) the app via startOrRestart.
+//
+// The bootstrapper itself is short-lived — it hands the long-running foreground
+// server (`octo-daemon start`, no --daemon) to pm2 and exits.
+func bootstrapPM2() error {
+	// Refuse if the lock is held by a daemon that is NOT the online pm2-managed
+	// process — e.g. a manual `octo-daemon start`, or a foreground daemon while a
+	// stale/stopped pm2 entry lingers. Only proceed when the lock owner is the
+	// online pm2 app (an idempotent re-run: startOrRestart restarts it cleanly).
+	// Checking name presence alone is not enough: a stopped pm2 entry would let
+	// the bootstrap continue, pm2's child would lose the lock and exit, and we'd
+	// falsely report "managed". Fail closed when ownership is ambiguous.
+	if internal.IsLocked() {
+		lockPID, _ := internal.ReadLockPID()
+		pm2PID, online, _ := pm2AppStatus(pm2AppName)
+		if !online || pm2PID != lockPID {
+			return &internal.ExitError{Code: 2, Message: fmt.Sprintf("a daemon is already running (pid %d) outside pm2 — run `octo-daemon stop` first", lockPID)}
+		}
+	}
+
+	pm2, err := ensurePM2()
+	if err != nil {
+		return err
+	}
+
+	// pm2 manages the resolved Go binary directly (interpreter: none), not the
+	// npm JS shim — so SIGTERM on restart reaches Go, no orphaned child. The
+	// resolved path lives inside the platform sub-package and is stable across
+	// `npm install @latest`, so upgrades take effect without rewriting it.
+	goBin, err := os.Executable()
+	if err != nil {
+		return &internal.ExitError{Code: 2, Message: fmt.Sprintf("resolve executable: %v", err)}
+	}
+	if resolved, err := filepath.EvalSymlinks(goBin); err == nil {
+		goBin = resolved
+	}
+
+	ecoPath, err := writeEcosystem(goBin, resolveConfigPath())
+	if err != nil {
+		return err
+	}
+	fmt.Printf("wrote pm2 ecosystem: %s\n", ecoPath)
+
+	if err := runPM2(pm2, "startOrRestart", ecoPath); err != nil {
+		return &internal.ExitError{Code: 1, Message: fmt.Sprintf("pm2 startOrRestart failed: %v", err)}
+	}
+	if err := runPM2(pm2, "save"); err != nil {
+		return &internal.ExitError{Code: 1, Message: fmt.Sprintf("pm2 save failed: %v", err)}
+	}
+
+	fmt.Printf("octo-daemon is now managed by pm2 (app %q).\n", pm2AppName)
+	fmt.Println("To start pm2 (and the daemon) on boot, run the command printed by:")
+	fmt.Println("  pm2 startup")
+	return nil
+}
+
+// ensurePM2 returns the pm2 executable path, installing it globally via npm if
+// it is not already on PATH. Install failures surface a clear error instead of
+// failing silently (global npm installs often need sudo / a writable prefix).
+func ensurePM2() (string, error) {
+	if path, err := exec.LookPath("pm2"); err == nil {
+		return path, nil
+	}
+
+	if _, err := exec.LookPath("npm"); err != nil {
+		return "", &internal.ExitError{Code: 2, Message: "pm2 not found and npm is unavailable — install Node.js (which provides npm), then `npm install -g pm2`"}
+	}
+
+	fmt.Println("pm2 not found — installing globally via `npm install -g pm2`...")
+	cmd := exec.Command("npm", "install", "-g", "pm2")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return "", &internal.ExitError{Code: 1, Message: fmt.Sprintf("`npm install -g pm2` failed (%v) — global installs may need sudo or a writable npm prefix; install pm2 manually and retry", err)}
+	}
+
+	path, err := exec.LookPath("pm2")
+	if err != nil {
+		return "", &internal.ExitError{Code: 1, Message: "pm2 installed but not found on PATH — ensure the npm global bin directory is on PATH, then retry"}
+	}
+	return path, nil
+}
+
+// resolveConfigPath returns the absolute config path the pm2-managed daemon
+// should read: the value of --config when given, else the default. It is made
+// absolute because pm2 launches the daemon from its own working directory, so a
+// relative path would not resolve.
+func resolveConfigPath() string {
+	cfgPath := flagConfigFile
+	if cfgPath == "" {
+		cfgPath = internal.ConfigFilePath()
+	}
+	if abs, err := filepath.Abs(cfgPath); err == nil {
+		cfgPath = abs
+	}
+	return cfgPath
+}
+
+// writeEcosystem renders ~/.octo-daemon/ecosystem.config.js. The launched
+// command is the foreground server (`start --config <abs>`); it MUST NOT carry
+// --daemon, or pm2 would re-run the bootstrapper on every restart (infinite
+// recursion). args is emitted as a JSON array so paths containing spaces are
+// passed as single argv entries instead of being word-split by pm2.
+//
+// stop_exit_codes lists the daemon's permanent-failure codes (2 = startup/config
+// fatal, 78 = API key permanently rejected): pm2 will not restart on these, so a
+// misconfigured or deprovisioned daemon stops cleanly instead of crash-looping.
+func writeEcosystem(goBin, cfgPath string) (string, error) {
+	dir := internal.DataDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", &internal.ExitError{Code: 2, Message: fmt.Sprintf("create data dir: %v", err)}
+	}
+	ecoPath := filepath.Join(dir, "ecosystem.config.js")
+
+	argv := []string{"start", "--config", cfgPath}
+	content := fmt.Sprintf(`// Generated by `+"`octo-daemon start --daemon`"+`. Do not edit by hand.
+module.exports = {
+  apps: [{
+    name: %s,
+    script: %s,
+    interpreter: "none",
+    args: %s,
+    autorestart: true,
+    stop_exit_codes: [2, 78],
+    max_restarts: 10,
+    restart_delay: 2000,
+    kill_timeout: 5000,
+  }]
+};
+`, jsValue(pm2AppName), jsValue(goBin), jsValue(argv))
+
+	if err := os.WriteFile(ecoPath, []byte(content), 0o644); err != nil {
+		return "", &internal.ExitError{Code: 2, Message: fmt.Sprintf("write ecosystem file: %v", err)}
+	}
+	return ecoPath, nil
+}
+
+// pm2AppStatus looks up a pm2-managed app by name and reports its OS process id
+// and whether it is currently online. `pm2 jlist` emits the full process list as
+// JSON on stdout; a stopped/errored app reports pid 0 and status != "online".
+// found is false (with pid 0, online false) when pm2 is missing, the query
+// fails, or no app with that name exists.
+func pm2AppStatus(name string) (pid int, online bool, found bool) {
+	pm2, err := exec.LookPath("pm2")
+	if err != nil {
+		return 0, false, false
+	}
+	out, err := exec.Command(pm2, "jlist").Output()
+	if err != nil {
+		return 0, false, false
+	}
+	var apps []struct {
+		Name   string `json:"name"`
+		PID    int    `json:"pid"`
+		PM2Env struct {
+			Status string `json:"status"`
+		} `json:"pm2_env"`
+	}
+	if err := json.Unmarshal(out, &apps); err != nil {
+		return 0, false, false
+	}
+	for _, a := range apps {
+		if a.Name == name {
+			return a.PID, a.PM2Env.Status == "online", true
+		}
+	}
+	return 0, false, false
+}
+
+// runPM2 runs a pm2 subcommand with its output streamed to the user.
+func runPM2(pm2 string, args ...string) error {
+	cmd := exec.Command(pm2, args...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+// jsValue encodes a Go value as a JS/JSON literal for embedding in
+// ecosystem.config.js — strings become double-quoted literals (paths escaped
+// safely) and a []string becomes a JSON array of argv entries.
+func jsValue(v any) string {
+	b, _ := json.Marshal(v)
+	return string(b)
+}

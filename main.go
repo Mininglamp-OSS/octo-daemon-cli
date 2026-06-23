@@ -28,11 +28,6 @@ func main() {
 		if ee.Message != "" {
 			fmt.Fprintln(os.Stderr, ee.Message)
 		}
-		// under-service 模式下把"别重启"语义的 code 压成 0，避免 launchd/systemd
-		// 循环拉起。详见 plan §二.2.3 / §二.2.4。
-		if os.Getenv("OCTO_DAEMON_UNDER_SERVICE") == "1" && (ee.Code == 2 || ee.Code == 78) {
-			os.Exit(0)
-		}
 		os.Exit(ee.Code)
 	}
 
