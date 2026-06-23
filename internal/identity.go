@@ -78,3 +78,31 @@ func LoadDaemonID(spaceID string) (string, error) {
 	}
 	return strings.TrimSpace(string(data)), nil
 }
+
+func deviceIDPath() string {
+	return filepath.Join(DataDir(), "device.id")
+}
+
+// EnsureDeviceID returns the stable machine-level device fingerprint, generating
+// and persisting a 32-char hex id (UUIDv7 with dashes stripped) on first use.
+// Unlike daemon.id this is per-machine, not per-space — multiple daemons on the
+// same device share one device.id.
+func EnsureDeviceID() (string, error) {
+	idPath := deviceIDPath()
+
+	if data, err := os.ReadFile(idPath); err == nil {
+		if id := strings.TrimSpace(string(data)); id != "" {
+			return id, nil
+		}
+	}
+
+	if err := os.MkdirAll(filepath.Dir(idPath), 0700); err != nil {
+		return "", fmt.Errorf("create data dir: %w", err)
+	}
+
+	id := strings.ReplaceAll(uuid.Must(uuid.NewV7()).String(), "-", "")
+	if err := os.WriteFile(idPath, []byte(id+"\n"), 0600); err != nil {
+		return "", fmt.Errorf("write device id: %w", err)
+	}
+	return id, nil
+}

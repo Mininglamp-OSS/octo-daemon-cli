@@ -23,6 +23,7 @@ type Daemon struct {
 	registry  *adapter.Registry
 	sseClient *SSEClient
 	daemonID  string
+	deviceID  string
 	// providers is this daemon's own runtime-provider snapshot. Per-daemon (not
 	// package-global) so multi-profile fan-out doesn't let one space's refresh
 	// clobber another's.
@@ -47,10 +48,11 @@ type Daemon struct {
 }
 
 // newBackendRunner builds a per-space Daemon. The caller (Supervisor) supplies
-// the shared adapter registry and the space's daemonID (already ensured via
-// EnsureDaemonID). Backend URLs come from the profile config — there is no
-// OCTO_FLEET_URL/OCTO_SERVER_URL env routing anymore.
-func newBackendRunner(cfg Config, registry *adapter.Registry, daemonID string) *Daemon {
+// the shared adapter registry, the space's daemonID (ensured via EnsureDaemonID),
+// and the machine-level deviceID (ensured once before the per-profile fan-out so
+// concurrent profiles can't mint divergent ids). Backend URLs come from the
+// profile config — there is no OCTO_FLEET_URL/OCTO_SERVER_URL env routing anymore.
+func newBackendRunner(cfg Config, registry *adapter.Registry, daemonID, deviceID string) *Daemon {
 	cfg.withDefaults()
 
 	client := NewClient(cfg.FleetURL, cfg.APIKey, cfg.CLIVersion)
@@ -61,6 +63,7 @@ func newBackendRunner(cfg Config, registry *adapter.Registry, daemonID string) *
 		client:    client,
 		registry:  registry,
 		daemonID:  daemonID,
+		deviceID:  deviceID,
 		providers: newProviderStore(),
 	}
 }
@@ -620,10 +623,14 @@ func (d *Daemon) buildRegisterRequest(runtimes []RuntimeInfo) RegisterRequest {
 	return RegisterRequest{
 		DaemonID:            d.daemonID,
 		DeviceName:          d.cfg.DeviceName,
-		DeviceInfo:          GetDeviceInfo(),
+		DeviceInfo:          GetDeviceInfo(d.deviceID),
 		CLIVersion:          d.cfg.CLIVersion,
 		HeartbeatIntervalMs: d.cfg.HeartbeatInterval.Milliseconds(),
 		Runtimes:            runtimes,
+		// Probed fresh on every register (a low-frequency path, minutes apart at
+		// most) so post-upgrade re-registers report the new versions rather than a
+		// stale snapshot. Deliberately not on the per-runtime heartbeat hot path.
+		DeviceComponents: DetectDeviceComponents(),
 	}
 }
 

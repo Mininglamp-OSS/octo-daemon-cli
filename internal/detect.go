@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"os"
 	"os/exec"
 	goruntime "runtime"
 	"regexp"
@@ -35,13 +36,35 @@ type AgentEntry struct {
 	Routes   []string `json:"routes,omitempty"`
 }
 
-func GetDeviceInfo() string {
+func GetDeviceInfo(deviceID string) string {
 	info := map[string]string{
-		"os":   goruntime.GOOS,
-		"arch": goruntime.GOARCH,
+		"os":         goruntime.GOOS,
+		"arch":       goruntime.GOARCH,
+		"os_version": osVersion(),
+		"device_id":  deviceID,
 	}
 	data, _ := json.Marshal(info)
 	return string(data)
+}
+
+// osVersion returns a best-effort human OS version (e.g. "15.5" on macOS,
+// "22.04" on Ubuntu). Empty string when it can't be determined. Stdlib only.
+func osVersion() string {
+	switch goruntime.GOOS {
+	case "darwin":
+		if out, err := exec.Command("sw_vers", "-productVersion").Output(); err == nil {
+			return strings.TrimSpace(string(out))
+		}
+	case "linux":
+		if data, err := os.ReadFile("/etc/os-release"); err == nil {
+			for _, line := range strings.Split(string(data), "\n") {
+				if v, ok := strings.CutPrefix(line, "VERSION_ID="); ok {
+					return strings.Trim(strings.TrimSpace(v), `"`)
+				}
+			}
+		}
+	}
+	return ""
 }
 
 // DetectRuntimesFast does quick detection only (LookPath + version + gateway port probe).

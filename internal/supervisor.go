@@ -93,6 +93,16 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		cancel() // unwind all runners
 	}
 
+	// Machine-level device fingerprint — computed once here, serially, before the
+	// per-profile goroutine fan-out (same pattern as EnsureDaemonID below). Doing
+	// it per-goroutine would race on first install: concurrent profiles would all
+	// miss the file and mint divergent ids. Non-fatal: an empty id degrades to
+	// "" in the payload rather than taking the daemon down.
+	deviceID, err := EnsureDeviceID()
+	if err != nil {
+		log.Printf("[WARN] device.id unavailable: %v", err)
+	}
+
 	started := 0
 	for _, cfg := range s.profiles {
 		cfg := cfg
@@ -106,7 +116,7 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			s.runProfile(ctx, cfg, daemonID, setFatal)
+			s.runProfile(ctx, cfg, daemonID, deviceID, setFatal)
 		}()
 	}
 
@@ -137,13 +147,13 @@ func (s *Supervisor) Run(ctx context.Context) error {
 // runProfile runs one backendRunner with panic recovery and backoff restart,
 // returning when ctx is cancelled. A per-space 403 (78) stops this runner; an
 // upgrade (75) is escalated to a process-wide fatal via setFatal.
-func (s *Supervisor) runProfile(ctx context.Context, cfg Config, daemonID string, setFatal func(*ExitError)) {
+func (s *Supervisor) runProfile(ctx context.Context, cfg Config, daemonID, deviceID string, setFatal func(*ExitError)) {
 	delay := runnerRestartBaseDelay
 	for {
 		if ctx.Err() != nil {
 			return
 		}
-		err := s.runOnce(ctx, cfg, daemonID)
+		err := s.runOnce(ctx, cfg, daemonID, deviceID)
 		if ctx.Err() != nil {
 			return
 		}
@@ -181,12 +191,12 @@ func (s *Supervisor) runProfile(ctx context.Context, cfg Config, daemonID string
 
 // runOnce builds and runs a single backendRunner, converting a panic into an
 // error so one space's crash never takes down the process.
-func (s *Supervisor) runOnce(ctx context.Context, cfg Config, daemonID string) (err error) {
+func (s *Supervisor) runOnce(ctx context.Context, cfg Config, daemonID, deviceID string) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("panic in backend runner: %v", r)
 		}
 	}()
-	d := newBackendRunner(cfg, s.registry, daemonID)
+	d := newBackendRunner(cfg, s.registry, daemonID, deviceID)
 	return d.Run(ctx)
 }

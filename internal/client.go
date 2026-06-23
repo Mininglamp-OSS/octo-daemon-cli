@@ -156,12 +156,24 @@ func (c *Client) FetchCcOctoConfig(ctx context.Context, runtimeID int64, taskID 
 }
 
 type RegisterRequest struct {
-	DaemonID            string        `json:"daemon_id"`
-	DeviceName          string        `json:"device_name"`
-	DeviceInfo          string        `json:"device_info"`
-	CLIVersion          string        `json:"cli_version"`
-	HeartbeatIntervalMs int64         `json:"heartbeat_interval_ms,omitempty"` // fleet uses for per-runtime stale = 3× this
-	Runtimes            []RuntimeInfo `json:"runtimes"`
+	DaemonID            string            `json:"daemon_id"`
+	DeviceName          string            `json:"device_name"`
+	DeviceInfo          string            `json:"device_info"` // JSON: {os, arch, os_version, device_id}
+	CLIVersion          string            `json:"cli_version"`
+	HeartbeatIntervalMs int64             `json:"heartbeat_interval_ms,omitempty"` // fleet uses for per-runtime stale = 3× this
+	Runtimes            []RuntimeInfo     `json:"runtimes"`
+	DeviceComponents    []DeviceComponent `json:"device_components,omitempty"`
+}
+
+// DeviceComponent is a machine-level (not runtime-level) software component
+// reported in the register payload. It backs machine_component.reported_version
+// in the desired/reported reconciliation model. Currently sourced from npm
+// global packages; Type leaves room for other distribution formats later.
+type DeviceComponent struct {
+	Type         string `json:"type"`          // package-manager/runtime type; currently only "nodejs"
+	Name         string `json:"name"`          // short name without scope, e.g. "cc-channel-octo"
+	ComponentKey string `json:"component_key"` // full npm package name, e.g. "@mininglamp-oss/cc-channel-octo"
+	Version      string `json:"version"`       // installed version; "" when not installed
 }
 
 type RegisteredRuntime struct {
