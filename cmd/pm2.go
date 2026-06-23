@@ -19,12 +19,19 @@ const pm2AppName = "octo-daemon"
 // The bootstrapper itself is short-lived — it hands the long-running foreground
 // server (`octo-daemon start`, no --daemon) to pm2 and exits.
 func bootstrapPM2() error {
-	// Refuse if a daemon is already running outside pm2 (e.g. a manual
-	// `octo-daemon start`). pm2's own managed instance is fine — startOrRestart
-	// below restarts it cleanly.
-	if internal.IsLocked() && !pm2HasApp(pm2AppName) {
-		pid, _ := internal.ReadLockPID()
-		return &internal.ExitError{Code: 2, Message: fmt.Sprintf("a daemon is already running (pid %d) outside pm2 — run `octo-daemon stop` first", pid)}
+	// Refuse if the lock is held by a daemon that is NOT the online pm2-managed
+	// process — e.g. a manual `octo-daemon start`, or a foreground daemon while a
+	// stale/stopped pm2 entry lingers. Only proceed when the lock owner is the
+	// online pm2 app (an idempotent re-run: startOrRestart restarts it cleanly).
+	// Checking name presence alone is not enough: a stopped pm2 entry would let
+	// the bootstrap continue, pm2's child would lose the lock and exit, and we'd
+	// falsely report "managed". Fail closed when ownership is ambiguous.
+	if internal.IsLocked() {
+		lockPID, _ := internal.ReadLockPID()
+		pm2PID, online, _ := pm2AppStatus(pm2AppName)
+		if !online || pm2PID != lockPID {
+			return &internal.ExitError{Code: 2, Message: fmt.Sprintf("a daemon is already running (pid %d) outside pm2 — run `octo-daemon stop` first", lockPID)}
+		}
 	}
 
 	pm2, err := ensurePM2()
@@ -144,29 +151,36 @@ module.exports = {
 	return ecoPath, nil
 }
 
-// pm2HasApp reports whether pm2 already manages an app with the given name.
-// `pm2 jlist` emits the full process list as JSON on stdout.
-func pm2HasApp(name string) bool {
+// pm2AppStatus looks up a pm2-managed app by name and reports its OS process id
+// and whether it is currently online. `pm2 jlist` emits the full process list as
+// JSON on stdout; a stopped/errored app reports pid 0 and status != "online".
+// found is false (with pid 0, online false) when pm2 is missing, the query
+// fails, or no app with that name exists.
+func pm2AppStatus(name string) (pid int, online bool, found bool) {
 	pm2, err := exec.LookPath("pm2")
 	if err != nil {
-		return false
+		return 0, false, false
 	}
 	out, err := exec.Command(pm2, "jlist").Output()
 	if err != nil {
-		return false
+		return 0, false, false
 	}
 	var apps []struct {
-		Name string `json:"name"`
+		Name   string `json:"name"`
+		PID    int    `json:"pid"`
+		PM2Env struct {
+			Status string `json:"status"`
+		} `json:"pm2_env"`
 	}
 	if err := json.Unmarshal(out, &apps); err != nil {
-		return false
+		return 0, false, false
 	}
 	for _, a := range apps {
 		if a.Name == name {
-			return true
+			return a.PID, a.PM2Env.Status == "online", true
 		}
 	}
-	return false
+	return 0, false, false
 }
 
 // runPM2 runs a pm2 subcommand with its output streamed to the user.
