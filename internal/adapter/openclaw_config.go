@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -84,11 +85,16 @@ func mergeOctoBot(cfg map[string]any, workspaceID, botUID, botToken, apiURL stri
 	return cfg
 }
 
-// childMap returns parent[key] as a map[string]any, creating it if absent or if
-// the existing value is not an object (defensive against hand-edited config).
+// childMap returns parent[key] as a map[string]any, creating it if absent. If
+// the existing value is present but not an object (only possible from a
+// hand-edited / corrupt config), it is replaced with a fresh map and a [WARN] is
+// logged so the overwrite is traceable rather than silent.
 func childMap(parent map[string]any, key string) map[string]any {
-	if m, ok := parent[key].(map[string]any); ok {
-		return m
+	if existing, ok := parent[key]; ok {
+		if m, ok := existing.(map[string]any); ok {
+			return m
+		}
+		log.Printf("[WARN] [openclaw] config key %q was not an object (%T); overwriting with a fresh map", key, existing)
 	}
 	m := map[string]any{}
 	parent[key] = m
@@ -154,6 +160,12 @@ func mergeAndWriteOctoConfig(path, workspaceID, botUID, botToken, apiURL string)
 		dec.UseNumber()
 		if err := dec.Decode(&cfg); err != nil {
 			return fmt.Errorf("parse openclaw config %s: %w", path, err)
+		}
+		// Decode reads only the first JSON value; reject trailing garbage so a
+		// corrupt config fails closed instead of being silently truncated when
+		// we marshal cfg back (json.Unmarshal would have rejected it too).
+		if err := dec.Decode(&struct{}{}); err != io.EOF {
+			return fmt.Errorf("parse openclaw config %s: unexpected trailing content after JSON", path)
 		}
 	}
 

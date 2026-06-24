@@ -257,3 +257,16 @@ func TestWriteOctoConfigResolvesPathAndWrites(t *testing.T) {
 		t.Error("bot not written")
 	}
 }
+
+// A config file with trailing content after the first JSON value is corrupt and
+// must fail closed, not be silently truncated on rewrite.
+func TestMergeAndWriteOctoConfigRejectsTrailingGarbage(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "openclaw.json")
+	if err := os.WriteFile(path, []byte(`{"a":1} garbage`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := mergeAndWriteOctoConfig(path, "ws-1", "bot-abc", "bf_tok", "https://api.x"); err == nil {
+		t.Error("expected parse error on trailing garbage, got nil")
+	}
+}
