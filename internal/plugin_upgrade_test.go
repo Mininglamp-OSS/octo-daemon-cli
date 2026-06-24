@@ -72,3 +72,9 @@ func TestCcOctoNpmInstallArgs(t *testing.T) {
 		t.Errorf("empty → latest: %v", got)
 	}
 }
+
+func TestCcOctoSdkInstallArgs(t *testing.T) {
+	if got := ccOctoSdkInstallArgs(); !equalStrings(got, []string{"install", "-g", "@anthropic-ai/claude-agent-sdk@latest"}) {
+		t.Errorf("sdk install args: %v", got)
+	}
+}

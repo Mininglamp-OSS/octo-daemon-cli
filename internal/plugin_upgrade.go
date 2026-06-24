@@ -80,6 +80,18 @@ func (d *Daemon) handlePluginUpgrade(ctx context.Context, up *PendingUpgrade) er
 	// npm 全局安装 + 重启)。但现网旧版 cc-channel-octo 可能没有 upgrade 子命令
 	// (首次 rollout 的 chicken-egg),失败则回退 daemon 直接 `npm install -g` +
 	// `cc-channel-octo restart`(restart 子命令旧版也有)。
+	// cc-octo (claude): 升级前先 best-effort 刷一次 claude-agent-sdk(@latest)。
+	// 它是 cc-channel-octo 的 peerDependency,`cc-channel-octo upgrade` / restart
+	// 会重启 gateway,先把新 SDK 落地再重启才生效。放在升级命令之前覆盖 upgrade
+	// 子命令和 npm fallback 两条路径。升级场景下 SDK 刷新失败可接受:旧 SDK 仍能
+	// 跑,只 log [WARN] 不影响关单。
+	if up.Component == ccOctoPluginName {
+		if out, err := exec.CommandContext(installCtx, "npm", ccOctoSdkInstallArgs()...).CombinedOutput(); err != nil {
+			log.Printf("[WARN] cc-octo claude-agent-sdk refresh failed (non-fatal, keeping existing sdk): %v\noutput: %s",
+				err, truncateOutput(string(out), 400))
+		}
+	}
+
 	cmd := exec.CommandContext(installCtx, bin, args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -227,6 +239,16 @@ func (d *Daemon) handleCcOctoInstall(ctx context.Context, up *PendingUpgrade, cf
 		return d.reportUpgrade(ctx, up.TaskID, "failed", msg)
 	}
 
+	// 1b. npm install -g the claude-agent-sdk peer dependency. cc-channel-octo
+	// declares it only as a peerDependency, and `npm install -g` does NOT pull
+	// peers into the global tree — so the gateway would crash on require() at
+	// startup without this. On a fresh install this is FATAL: no SDK, no gateway.
+	if out, err := exec.CommandContext(installCtx, "npm", ccOctoSdkInstallArgs()...).CombinedOutput(); err != nil {
+		msg := fmt.Sprintf("cc-octo claude-agent-sdk install failed: %v\noutput: %s", err, truncateOutput(string(out), 1200))
+		log.Printf("[ERROR] %s", msg)
+		return d.reportUpgrade(ctx, up.TaskID, "failed", msg)
+	}
+
 	// 2. configure: write LLM gateway + key into the global config via env var
 	// (CC_OCTO_CONFIGURE_API_KEY) to avoid leaking the key in ps output.
 	configureCmd := exec.CommandContext(installCtx, "cc-channel-octo", ccOctoConfigureArgs(cfg.GatewayURL, cfg.Model, d.cfg.ServerURL)...)
@@ -307,6 +329,15 @@ func ccOctoNpmInstallArgs(targetVersion string) []string {
 		v = "latest"
 	}
 	return []string{"install", "-g", "@mininglamp-oss/cc-channel-octo@" + v}
+}
+
+// ccOctoSdkInstallArgs builds `npm install -g @anthropic-ai/claude-agent-sdk@latest`.
+// The SDK is a peerDependency of cc-channel-octo (not a regular dependency), and
+// `npm install -g` does not pull peers into the global tree, so the daemon must
+// install it explicitly. Pinned to @latest (the peer range is just >=0.3.0).
+// Pure for unit testing.
+func ccOctoSdkInstallArgs() []string {
+	return []string{"install", "-g", "@anthropic-ai/claude-agent-sdk@latest"}
 }
 
 // ccOctoNpmFallback drives the upgrade directly via npm + restart when the
