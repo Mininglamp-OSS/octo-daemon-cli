@@ -240,9 +240,13 @@ func TestWriteOctoConfigResolvesPathAndWrites(t *testing.T) {
 	path := filepath.Join(dir, "openclaw.json")
 	runner := &configFileRunner{pathLine: path}
 
+	// writeOctoConfig requires the caller to hold openclawConfigMu (Provision
+	// does); mirror that contract here.
+	openclawConfigMu.Lock()
 	err := writeOctoConfig(context.Background(), runner, ProvisionRequest{
 		WorkspaceID: "ws-1", BotUID: "bot-abc", BotToken: "bf_tok", APIURL: "https://api.x",
 	})
+	openclawConfigMu.Unlock()
 	if err != nil {
 		t.Fatalf("writeOctoConfig: %v", err)
 	}

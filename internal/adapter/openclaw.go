@@ -82,6 +82,13 @@ func (a *OpenclawAdapter) Provision(ctx context.Context, req ProvisionRequest) (
 	if req.WorkspaceID == "" || req.BotUID == "" {
 		return ProvisionResult{}, fmt.Errorf("%w: missing workspace_id/bot_uid", ErrInvalidConfig)
 	}
+	// Hold openclawConfigMu across the whole openclaw mutation sequence. Both
+	// `agents add` (a subprocess that writes agents.* into openclaw.json) and the
+	// account+binding rewrite touch the same file; serializing the pair prevents a
+	// concurrent provision's `agents add` from interleaving between our read and
+	// rename and clobbering the freshly-written agents entry.
+	openclawConfigMu.Lock()
+	defer openclawConfigMu.Unlock()
 	if err := a.addWorkspace(ctx, req); err != nil {
 		return ProvisionResult{}, err
 	}

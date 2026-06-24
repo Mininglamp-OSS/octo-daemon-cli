@@ -137,18 +137,33 @@ func upsertBinding(raw any, workspaceID, botUID string) []any {
 	})
 }
 
-// openclawConfigMu serializes the read-merge-write cycle against openclaw.json.
-// The daemon provisions up to openclawMaxConcurrency (5) bots in parallel; two
-// concurrent read-modify-write cycles on the same file would otherwise drop
-// whichever account/binding the slower writer never saw. One process-wide mutex
-// is correct because a single daemon process owns its openclaw.json.
+// openclawConfigMu serializes every daemon-side mutation of openclaw.json.
+// It must cover the WHOLE provision sequence, not just the Go-side rewrite:
+// `openclaw agents add` is a separate subprocess writer to the same file, so a
+// second provision's `agents add` could otherwise interleave between this
+// provision's read and rename and clobber the freshly-written agents entry.
+// Provision holds this across addWorkspace + writeOctoConfig; the bare
+// mergeAndWriteOctoConfig (used by tests / direct callers) takes it itself.
+// One process-wide mutex is correct because a single daemon process owns its
+// openclaw.json; cross-process writers (a human running `openclaw config …`)
+// are out of scope — only openclaw could honor that lock.
 var openclawConfigMu sync.Mutex
 
-// mergeAndWriteOctoConfig reads openclaw.json at path (absent → empty config),
-// upserts the bot via mergeOctoBot, and writes the result back atomically
-// (unique temp file + rename) so the gateway's file watcher never observes a
-// half-written file. A missing file is created. The whole cycle holds
-// openclawConfigMu so concurrent provisions don't clobber each other.
+// mergeAndWriteOctoConfig is the lock-acquiring entry point for callers that are
+// not already holding openclawConfigMu (tests, direct callers). The provision
+// path goes through writeOctoConfig under a Provision-held lock instead.
+func mergeAndWriteOctoConfig(path, workspaceID, botUID, botToken, apiURL string) error {
+	openclawConfigMu.Lock()
+	defer openclawConfigMu.Unlock()
+	return mergeAndWriteOctoConfigLocked(path, workspaceID, botUID, botToken, apiURL)
+}
+
+// mergeAndWriteOctoConfigLocked reads openclaw.json at path (absent → empty
+// config), upserts the bot via mergeOctoBot, and writes the result back
+// atomically (unique temp file + rename) so the gateway's file watcher never
+// observes a half-written file. A missing file is created.
+//
+// The caller MUST hold openclawConfigMu.
 //
 // Known boundary (openclaw noop-reload): this writes account + binding together,
 // so it never produces a "account present, binding missing" half-state itself.
@@ -157,10 +172,7 @@ var openclawConfigMu sync.Mutex
 // bindings — which is a noop reload in openclaw and won't take routing effect
 // without a manual `openclaw gateway restart`. We do not paper over this with a
 // forced dummy change; see the design doc.
-func mergeAndWriteOctoConfig(path, workspaceID, botUID, botToken, apiURL string) error {
-	openclawConfigMu.Lock()
-	defer openclawConfigMu.Unlock()
-
+func mergeAndWriteOctoConfigLocked(path, workspaceID, botUID, botToken, apiURL string) error {
 	cfg := map[string]any{}
 	data, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
@@ -189,6 +201,14 @@ func mergeAndWriteOctoConfig(path, workspaceID, botUID, botToken, apiURL string)
 	if err != nil {
 		return fmt.Errorf("marshal openclaw config: %w", err)
 	}
+	// Preserve the existing file's mode so a rename never silently strips the
+	// gateway's ability to read its own config (e.g. an operator's 0640
+	// group-read, or a gateway running under a different uid/gid). New files
+	// default to 0600.
+	mode := os.FileMode(0o600)
+	if fi, statErr := os.Stat(path); statErr == nil {
+		mode = fi.Mode().Perm()
+	}
 	// Unique temp file in the same dir so parallel writers never share a tmp
 	// path; rename within the dir is atomic.
 	dir := filepath.Dir(path)
@@ -198,7 +218,7 @@ func mergeAndWriteOctoConfig(path, workspaceID, botUID, botToken, apiURL string)
 	}
 	tmpName := tmp.Name()
 	defer func() { _ = os.Remove(tmpName) }() // no-op after a successful rename
-	if err := tmp.Chmod(0o600); err != nil {
+	if err := tmp.Chmod(mode); err != nil {
 		_ = tmp.Close()
 		return fmt.Errorf("chmod temp openclaw config: %w", err)
 	}
@@ -220,6 +240,9 @@ func mergeAndWriteOctoConfig(path, workspaceID, botUID, botToken, apiURL string)
 // `config patch` + `agents bind` CLI steps: writing account and binding in one
 // file mutation lets openclaw hot-reload pick up the new routing without a full
 // gateway restart.
+//
+// The caller MUST hold openclawConfigMu (Provision does, so the lock also covers
+// the preceding `agents add` writer to the same file).
 func writeOctoConfig(ctx context.Context, runner CLIRunner, req ProvisionRequest) error {
 	cctx, cancel := context.WithTimeout(ctx, openclawConfigTimeout)
 	defer cancel()
@@ -231,7 +254,7 @@ func writeOctoConfig(ctx context.Context, runner CLIRunner, req ProvisionRequest
 	if err != nil {
 		return err
 	}
-	if err := mergeAndWriteOctoConfig(path, req.WorkspaceID, req.BotUID, req.BotToken, req.APIURL); err != nil {
+	if err := mergeAndWriteOctoConfigLocked(path, req.WorkspaceID, req.BotUID, req.BotToken, req.APIURL); err != nil {
 		return err
 	}
 	log.Printf("[DEBUG] [openclaw] wrote octo account+binding for bot_uid=%s into %s", req.BotUID, path)
