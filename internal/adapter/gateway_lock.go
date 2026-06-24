@@ -1,39 +1,52 @@
 package adapter
 
-import "sync"
+import "context"
 
 // GatewayLock serializes every cc-channel-octo lifecycle subprocess call
-// (start / restart / upgrade) across the process. The daemon's own provision /
-// upgrade paths hold it with the blocking Lock while they run; the machine-level
-// auto-start watchdog probes it with TryLock and skips its tick when the lock is
-// held, so it never races a daemon-initiated restart (the exact conflict that
-// rules out pm2 supervising cc-channel-octo).
+// (start / restart / upgrade) across the process. Daemon-initiated provision /
+// upgrade paths take it with the context-aware Acquire so a wedged holder
+// degrades to a bounded, logged error instead of hanging forever; the
+// machine-level auto-start watchdog probes it with TryLock and skips its tick
+// when the lock is held, so it never races a daemon-initiated restart (the
+// exact conflict that rules out pm2 supervising cc-channel-octo).
 //
-// All methods are nil-safe: a nil *GatewayLock behaves as "no coordination"
-// (Lock/Unlock are no-ops, TryLock always succeeds), so tests and adapters that
-// don't need coordination can pass nil.
+// Backed by a capacity-1 channel rather than a sync.Mutex so Acquire can race
+// the caller's context. All methods are nil-safe: a nil *GatewayLock behaves as
+// "no coordination" (Acquire/Unlock no-op, TryLock always succeeds), so tests
+// and adapters that don't need coordination can pass nil.
 type GatewayLock struct {
-	mu sync.Mutex
+	ch chan struct{}
 }
 
 // NewGatewayLock returns a ready-to-use lock.
-func NewGatewayLock() *GatewayLock { return &GatewayLock{} }
+func NewGatewayLock() *GatewayLock { return &GatewayLock{ch: make(chan struct{}, 1)} }
 
-// Lock blocks until the lock is acquired. Used by daemon-initiated lifecycle
-// calls that must run to completion.
-func (g *GatewayLock) Lock() {
+// Acquire blocks until the lock is acquired or ctx is done, returning ctx.Err()
+// in the latter case. Used by daemon-initiated lifecycle calls so a hung holder
+// (e.g. a stuck watchdog start) caps out at the caller's timeout instead of
+// blocking the whole host's provision/upgrade path indefinitely.
+func (g *GatewayLock) Acquire(ctx context.Context) error {
 	if g == nil {
-		return
+		return nil
 	}
-	g.mu.Lock()
+	select {
+	case g.ch <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
-// Unlock releases the lock.
+// Unlock releases the lock. The non-blocking drain makes a stray Unlock (one not
+// paired with a successful Acquire/TryLock) a no-op rather than a deadlock.
 func (g *GatewayLock) Unlock() {
 	if g == nil {
 		return
 	}
-	g.mu.Unlock()
+	select {
+	case <-g.ch:
+	default:
+	}
 }
 
 // TryLock acquires the lock without blocking, returning false if it is already
@@ -43,5 +56,10 @@ func (g *GatewayLock) TryLock() bool {
 	if g == nil {
 		return true
 	}
-	return g.mu.TryLock()
+	select {
+	case g.ch <- struct{}{}:
+		return true
+	default:
+		return false
+	}
 }

@@ -172,12 +172,15 @@ func registerClaudeBot(home, botUID string) error {
 }
 
 func (a *ClaudeAdapter) restart(ctx context.Context) error {
-	// Serialize against the auto-start watchdog and the upgrade path so a
-	// concurrent `cc-channel-octo start` never races this restart.
-	a.gwLock.Lock()
-	defer a.gwLock.Unlock()
 	cctx, cancel := context.WithTimeout(ctx, claudeRestartTimeout)
 	defer cancel()
+	// Acquire under cctx so the timeout bounds the lock wait too (not just the
+	// subprocess): a wedged auto-start watchdog degrades to a logged error here
+	// instead of blocking the provision forever.
+	if err := a.gwLock.Acquire(cctx); err != nil {
+		return fmt.Errorf("cc-channel-octo restart: acquire gateway lock: %w", err)
+	}
+	defer a.gwLock.Unlock()
 	log.Printf("[DEBUG] [claude] exec: %s restart", claudeChannelBin)
 	out, err := a.runner.Run(cctx, claudeChannelBin, []string{"restart"}, nil)
 	if err != nil {

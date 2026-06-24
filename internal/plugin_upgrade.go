@@ -369,7 +369,11 @@ func (d *Daemon) ccOctoNpmFallback(ctx context.Context, targetVersion string) er
 // concurrent `cc-channel-octo start`. Plain npm installs and `configure` are not
 // routed through here — they don't spawn/stop the gateway process.
 func (d *Daemon) runGatewayLifecycle(ctx context.Context, name string, args ...string) ([]byte, error) {
-	d.gwLock.Lock()
+	// Acquire under the caller's (already time-bounded) ctx so a wedged watchdog
+	// start can't block the upgrade indefinitely.
+	if err := d.gwLock.Acquire(ctx); err != nil {
+		return nil, fmt.Errorf("acquire gateway lock: %w", err)
+	}
 	defer d.gwLock.Unlock()
 	return exec.CommandContext(ctx, name, args...).CombinedOutput()
 }

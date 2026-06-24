@@ -21,6 +21,11 @@ const (
 	// ccOctoStartVerifyDelay gives a freshly forked gateway time to come up before
 	// we re-check status to decide whether the attempt succeeded.
 	ccOctoStartVerifyDelay = 3 * time.Second
+	// ccOctoStartTimeout bounds a single `cc-channel-octo start` attempt so a
+	// hung start can never hold the gateway lock for the whole daemon lifetime
+	// (which would stall every provision/upgrade on the host). start is normally
+	// sub-second; 10s is a generous ceiling.
+	ccOctoStartTimeout = 10 * time.Second
 	// ccOctoConfigDir is the per-host cc-channel-octo root under $HOME. Mirrors the
 	// adapter's claudeChannelDir (kept local to avoid exporting it just for this).
 	ccOctoConfigDir = ".cc-channel-octo"
@@ -90,7 +95,10 @@ func (s *Supervisor) ccOctoAutoStartTick(ctx context.Context) {
 			return
 		}
 		log.Printf("[INFO] cc-channel-octo stopped, auto-start attempt %d/%d", attempt, ccOctoStartMaxAttempts)
-		if out, err := exec.CommandContext(ctx, "cc-channel-octo", "start").CombinedOutput(); err != nil {
+		startCtx, cancel := context.WithTimeout(ctx, ccOctoStartTimeout)
+		out, err := exec.CommandContext(startCtx, "cc-channel-octo", "start").CombinedOutput()
+		cancel()
+		if err != nil {
 			log.Printf("[WARN] cc-channel-octo auto-start attempt %d/%d failed: %v\noutput: %s",
 				attempt, ccOctoStartMaxAttempts, err, truncateOutput(string(out), 400))
 		}
