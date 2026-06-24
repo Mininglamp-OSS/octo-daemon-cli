@@ -37,14 +37,18 @@ var _ RuntimeAdapter = (*ClaudeAdapter)(nil)
 // return ErrUnsupported. This is 吕思佳's implementation surface.
 type ClaudeAdapter struct {
 	runner CLIRunner
+	// gwLock serializes cc-channel-octo lifecycle calls against the machine-level
+	// auto-start watchdog and the daemon's upgrade path. Nil → no coordination.
+	gwLock *GatewayLock
 }
 
 // NewClaudeAdapter builds a ClaudeAdapter. A nil runner defaults to ExecRunner.
-func NewClaudeAdapter(runner CLIRunner) *ClaudeAdapter {
+// A nil gwLock disables lifecycle coordination (acceptable in unit tests).
+func NewClaudeAdapter(runner CLIRunner, gwLock *GatewayLock) *ClaudeAdapter {
 	if runner == nil {
 		runner = ExecRunner{}
 	}
-	return &ClaudeAdapter{runner: runner}
+	return &ClaudeAdapter{runner: runner, gwLock: gwLock}
 }
 
 func (a *ClaudeAdapter) Kind() string                        { return KindClaude }
@@ -170,6 +174,13 @@ func registerClaudeBot(home, botUID string) error {
 func (a *ClaudeAdapter) restart(ctx context.Context) error {
 	cctx, cancel := context.WithTimeout(ctx, claudeRestartTimeout)
 	defer cancel()
+	// Acquire under cctx so the timeout bounds the lock wait too (not just the
+	// subprocess): a wedged auto-start watchdog degrades to a logged error here
+	// instead of blocking the provision forever.
+	if err := a.gwLock.Acquire(cctx); err != nil {
+		return fmt.Errorf("cc-channel-octo restart: acquire gateway lock: %w", err)
+	}
+	defer a.gwLock.Unlock()
 	log.Printf("[DEBUG] [claude] exec: %s restart", claudeChannelBin)
 	out, err := a.runner.Run(cctx, claudeChannelBin, []string{"restart"}, nil)
 	if err != nil {

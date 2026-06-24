@@ -9,8 +9,8 @@ import (
 	"net"
 	"os"
 	"os/exec"
-	goruntime "runtime"
 	"regexp"
+	goruntime "runtime"
 	"strings"
 	"sync"
 	"time"
@@ -240,7 +240,6 @@ func DetectRuntimes() []RuntimeInfo {
 	return EnrichOpenclawRuntime(runtimes)
 }
 
-
 type openclawAgentJSON struct {
 	ID        string   `json:"id"`
 	Name      string   `json:"name"`
@@ -368,8 +367,10 @@ func isOpenclawGatewayRunning(binPath string) bool {
 // (= claude bot 跑不起来 = 标 offline, 跟"cc-channel-octo 死了"语义一致).
 //
 // status 命令输出有两种 (实测纯 ASCII, 无 ANSI 转义):
-//   "cc-channel-octo: running (pid 1306), logs at /Users/.../gateway.log"
-//   "cc-channel-octo: stopped"
+//
+//	"cc-channel-octo: running (pid 1306), logs at /Users/.../gateway.log"
+//	"cc-channel-octo: stopped"
+//
 // 用 ": running" 子串匹配区分死活. "not running" / "stopped" 都不含此子串.
 //
 // 跟 isOpenclawGatewayRunning 同模式 (fork 子命令 + 解析人类格式), 等

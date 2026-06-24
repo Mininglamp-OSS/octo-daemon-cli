@@ -80,8 +80,27 @@ func (d *Daemon) handlePluginUpgrade(ctx context.Context, up *PendingUpgrade) er
 	// npm 全局安装 + 重启)。但现网旧版 cc-channel-octo 可能没有 upgrade 子命令
 	// (首次 rollout 的 chicken-egg),失败则回退 daemon 直接 `npm install -g` +
 	// `cc-channel-octo restart`(restart 子命令旧版也有)。
-	cmd := exec.CommandContext(installCtx, bin, args...)
-	out, err := cmd.CombinedOutput()
+	// cc-octo (claude): 升级前先 best-effort 刷一次 claude-agent-sdk(@latest)。
+	// 它是 cc-channel-octo 的 peerDependency,`cc-channel-octo upgrade` / restart
+	// 会重启 gateway,先把新 SDK 落地再重启才生效。放在升级命令之前覆盖 upgrade
+	// 子命令和 npm fallback 两条路径。升级场景下 SDK 刷新失败可接受:旧 SDK 仍能
+	// 跑,只 log [WARN] 不影响关单。
+	if up.Component == ccOctoPluginName {
+		if out, err := exec.CommandContext(installCtx, "npm", ccOctoSdkInstallArgs()...).CombinedOutput(); err != nil {
+			log.Printf("[WARN] cc-octo claude-agent-sdk refresh failed (non-fatal, keeping existing sdk): %v\noutput: %s",
+				err, truncateOutput(string(out), 400))
+		}
+	}
+
+	// cc-octo 的 `upgrade` 子命令内部会 restart gateway,必须持锁防止 watchdog 撞车;
+	// openclaw 的 npx 安装不碰 cc gateway,直接跑。
+	var out []byte
+	var err error
+	if up.Component == ccOctoPluginName {
+		out, err = d.runGatewayLifecycle(installCtx, bin, args...)
+	} else {
+		out, err = exec.CommandContext(installCtx, bin, args...).CombinedOutput()
+	}
 	if err != nil {
 		if up.Component == ccOctoPluginName {
 			log.Printf("[WARN] cc-channel-octo upgrade subcommand failed (%v), falling back to npm install: %s",
@@ -227,6 +246,16 @@ func (d *Daemon) handleCcOctoInstall(ctx context.Context, up *PendingUpgrade, cf
 		return d.reportUpgrade(ctx, up.TaskID, "failed", msg)
 	}
 
+	// 1b. npm install -g the claude-agent-sdk peer dependency. cc-channel-octo
+	// declares it only as a peerDependency, and `npm install -g` does NOT pull
+	// peers into the global tree — so the gateway would crash on require() at
+	// startup without this. On a fresh install this is FATAL: no SDK, no gateway.
+	if out, err := exec.CommandContext(installCtx, "npm", ccOctoSdkInstallArgs()...).CombinedOutput(); err != nil {
+		msg := fmt.Sprintf("cc-octo claude-agent-sdk install failed: %v\noutput: %s", err, truncateOutput(string(out), 1200))
+		log.Printf("[ERROR] %s", msg)
+		return d.reportUpgrade(ctx, up.TaskID, "failed", msg)
+	}
+
 	// 2. configure: write LLM gateway + key into the global config via env var
 	// (CC_OCTO_CONFIGURE_API_KEY) to avoid leaking the key in ps output.
 	configureCmd := exec.CommandContext(installCtx, "cc-channel-octo", ccOctoConfigureArgs(cfg.GatewayURL, cfg.Model, d.cfg.ServerURL)...)
@@ -243,7 +272,7 @@ func (d *Daemon) handleCcOctoInstall(ctx context.Context, up *PendingUpgrade, cf
 	// (idle, zero bots) instead of waiting for the first bot. A start failure is
 	// non-fatal: the first bot.provision runs `cc-channel-octo restart`, which
 	// starts it anyway — so we log and continue to enrich/register.
-	if sout, serr := exec.CommandContext(installCtx, "cc-channel-octo", ccOctoStartArgs()...).CombinedOutput(); serr != nil {
+	if sout, serr := d.runGatewayLifecycle(installCtx, "cc-channel-octo", ccOctoStartArgs()...); serr != nil {
 		log.Printf("[WARN] cc-octo post-install start failed (provision restart will retry): %v\noutput: %s", serr, truncateOutput(redactSecret(string(sout), cfg.APIKey, cfg.GatewayURL), 400))
 	} else {
 		log.Printf("[INFO] cc-octo gateway started idle (task=%s)", up.TaskID)
@@ -309,6 +338,15 @@ func ccOctoNpmInstallArgs(targetVersion string) []string {
 	return []string{"install", "-g", "@mininglamp-oss/cc-channel-octo@" + v}
 }
 
+// ccOctoSdkInstallArgs builds `npm install -g @anthropic-ai/claude-agent-sdk@latest`.
+// The SDK is a peerDependency of cc-channel-octo (not a regular dependency), and
+// `npm install -g` does not pull peers into the global tree, so the daemon must
+// install it explicitly. Pinned to @latest (the peer range is just >=0.3.0).
+// Pure for unit testing.
+func ccOctoSdkInstallArgs() []string {
+	return []string{"install", "-g", "@anthropic-ai/claude-agent-sdk@latest"}
+}
+
 // ccOctoNpmFallback drives the upgrade directly via npm + restart when the
 // cc-channel-octo `upgrade` subcommand is unavailable. npm install does NOT
 // restart, so we explicitly run `cc-channel-octo restart` (which old versions
@@ -318,11 +356,26 @@ func (d *Daemon) ccOctoNpmFallback(ctx context.Context, targetVersion string) er
 	if err != nil {
 		return fmt.Errorf("npm install: %v (output: %s)", err, truncateOutput(string(out), 800))
 	}
-	rout, rerr := exec.CommandContext(ctx, "cc-channel-octo", "restart").CombinedOutput()
+	rout, rerr := d.runGatewayLifecycle(ctx, "cc-channel-octo", "restart")
 	if rerr != nil {
 		return fmt.Errorf("restart after npm install: %v (output: %s)", rerr, truncateOutput(string(rout), 800))
 	}
 	return nil
+}
+
+// runGatewayLifecycle runs a cc-channel-octo lifecycle subprocess (upgrade /
+// start / restart) while holding the shared gateway lock, so the machine-level
+// auto-start watchdog (which probes the same lock with TryLock) can never run a
+// concurrent `cc-channel-octo start`. Plain npm installs and `configure` are not
+// routed through here — they don't spawn/stop the gateway process.
+func (d *Daemon) runGatewayLifecycle(ctx context.Context, name string, args ...string) ([]byte, error) {
+	// Acquire under the caller's (already time-bounded) ctx so a wedged watchdog
+	// start can't block the upgrade indefinitely.
+	if err := d.gwLock.Acquire(ctx); err != nil {
+		return nil, fmt.Errorf("acquire gateway lock: %w", err)
+	}
+	defer d.gwLock.Unlock()
+	return exec.CommandContext(ctx, name, args...).CombinedOutput()
 }
 
 // probePluginGateway verifies the relevant gateway came back up after an

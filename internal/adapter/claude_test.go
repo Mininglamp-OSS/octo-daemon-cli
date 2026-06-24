@@ -47,7 +47,7 @@ func TestClaudeProvisionWritesConfig(t *testing.T) {
 	t.Setenv("HOME", home)
 
 	runner := &recordingRunner{}
-	a := NewClaudeAdapter(runner)
+	a := NewClaudeAdapter(runner, nil)
 	res, err := a.Provision(context.Background(), ProvisionRequest{
 		WorkspaceID: "ws-1",
 		BotUID:      "bot-123",
@@ -94,7 +94,7 @@ func TestClaudeProvisionWritesConfig(t *testing.T) {
 func TestClaudeProvisionRegistersBotsIdempotently(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	a := NewClaudeAdapter(&recordingRunner{})
+	a := NewClaudeAdapter(&recordingRunner{}, nil)
 
 	for _, uid := range []string{"bot-a", "bot-b", "bot-a"} {
 		if _, err := a.Provision(context.Background(), ProvisionRequest{
@@ -113,7 +113,7 @@ func TestClaudeProvisionRegistersBotsIdempotently(t *testing.T) {
 func TestClaudeProvisionSwallowsRestartFailure(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	a := NewClaudeAdapter(&recordingRunner{err: errors.New("boom")})
+	a := NewClaudeAdapter(&recordingRunner{err: errors.New("boom")}, nil)
 
 	if _, err := a.Provision(context.Background(), ProvisionRequest{
 		BotUID: "bot-1", BotToken: "bf_x",
@@ -127,7 +127,7 @@ func TestClaudeProvisionSwallowsRestartFailure(t *testing.T) {
 
 func TestClaudeProvisionRejectsMissingFields(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	a := NewClaudeAdapter(&recordingRunner{})
+	a := NewClaudeAdapter(&recordingRunner{}, nil)
 
 	tests := []struct {
 		name string
@@ -162,7 +162,7 @@ func readBotConfig(t *testing.T, home, botUID string) map[string]any {
 func TestClaudeProvisionWritesApiUrl(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	a := NewClaudeAdapter(&recordingRunner{})
+	a := NewClaudeAdapter(&recordingRunner{}, nil)
 	if _, err := a.Provision(context.Background(), ProvisionRequest{
 		BotUID:   "bot-x",
 		BotToken: "bf_x",
@@ -179,7 +179,7 @@ func TestClaudeProvisionWritesApiUrl(t *testing.T) {
 func TestClaudeProvisionOmitsEmptyApiUrl(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	a := NewClaudeAdapter(&recordingRunner{})
+	a := NewClaudeAdapter(&recordingRunner{}, nil)
 	if _, err := a.Provision(context.Background(), ProvisionRequest{
 		BotUID:   "bot-y",
 		BotToken: "bf_y",
