@@ -2,13 +2,20 @@ package adapter
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 )
+
+// openclawConfigTimeout bounds the `openclaw config file` lookup + local file
+// rewrite.
+const openclawConfigTimeout = 30 * time.Second
 
 // parseConfigFilePath extracts the openclaw.json path from `openclaw config
 // file` output. openclaw may prepend a banner or plugin log lines to stdout,
@@ -182,4 +189,25 @@ func mergeAndWriteOctoConfig(path, workspaceID, botUID, botToken, apiURL string)
 	return nil
 }
 
-
+// writeOctoConfig locates openclaw.json via `openclaw config file`, then merges
+// the bot's account + binding into it atomically. It replaces the old
+// `config patch` + `agents bind` CLI steps: writing account and binding in one
+// file mutation lets openclaw hot-reload pick up the new routing without a full
+// gateway restart.
+func writeOctoConfig(ctx context.Context, runner CLIRunner, req ProvisionRequest) error {
+	cctx, cancel := context.WithTimeout(ctx, openclawConfigTimeout)
+	defer cancel()
+	out, err := runner.Run(cctx, openclawBin, []string{"config", "file"}, nil)
+	if err != nil {
+		return fmt.Errorf("openclaw config file: %w (output: %s)", err, truncate(string(out), 800))
+	}
+	path, err := parseConfigFilePath(string(out))
+	if err != nil {
+		return err
+	}
+	if err := mergeAndWriteOctoConfig(path, req.WorkspaceID, req.BotUID, req.BotToken, req.APIURL); err != nil {
+		return err
+	}
+	log.Printf("[DEBUG] [openclaw] wrote octo account+binding for bot_uid=%s into %s", req.BotUID, path)
+	return nil
+}

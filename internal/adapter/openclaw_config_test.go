@@ -1,6 +1,7 @@
 package adapter
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -212,5 +213,47 @@ func TestMergeAndWriteOctoConfigConcurrent(t *testing.T) {
 		if _, ok := accs[fmt.Sprintf("bot-%d", i)]; !ok {
 			t.Errorf("bot-%d lost under concurrency", i)
 		}
+	}
+}
+
+// configFileRunner returns a fixed path for `config file` and records calls.
+type configFileRunner struct {
+	calls    [][]string
+	pathLine string
+}
+
+func (r *configFileRunner) Run(_ context.Context, name string, args []string, _ []byte) ([]byte, error) {
+	r.calls = append(r.calls, append([]string{name}, args...))
+	if len(args) >= 2 && args[0] == "config" && args[1] == "file" {
+		return []byte(r.pathLine + "\n"), nil
+	}
+	return nil, nil
+}
+
+func TestWriteOctoConfigResolvesPathAndWrites(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "openclaw.json")
+	runner := &configFileRunner{pathLine: path}
+
+	err := writeOctoConfig(context.Background(), runner, ProvisionRequest{
+		WorkspaceID: "ws-1", BotUID: "bot-abc", BotToken: "bf_tok", APIURL: "https://api.x",
+	})
+	if err != nil {
+		t.Fatalf("writeOctoConfig: %v", err)
+	}
+	if len(runner.calls) == 0 || runner.calls[0][1] != "config" || runner.calls[0][2] != "file" {
+		t.Errorf("expected `config file` call, got %v", runner.calls)
+	}
+	out, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatal(err)
+	}
+	accs := got["channels"].(map[string]any)["octo"].(map[string]any)["accounts"].(map[string]any)
+	if _, ok := accs["bot-abc"]; !ok {
+		t.Error("bot not written")
 	}
 }
