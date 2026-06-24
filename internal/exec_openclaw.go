@@ -5,20 +5,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/Mininglamp-OSS/octo-daemon-cli/internal/adapter"
 )
 
-// handleBotProvision runs the openclaw side-effects for a "bot.provision"
-// command in one shot:
-//  1. openclaw agents add <workspace> --non-interactive --workspace ...
-//  2. openclaw config patch (channels.octo.accounts.<bot_uid>)
-//  3. openclaw agents bind --agent <workspace> --bind octo:<bot_uid>
+// handleBotProvision handles a "bot.provision" command by resolving the runtime
+// adapter for cmd.RuntimeKind and delegating to its Provision (for openclaw:
+// `agents add` + an atomic openclaw.json account/binding write).
 //
 // Then forces enrichDetectAndRegister BEFORE ack so server metadata
 // reflects the new openclaw state when the Web UI re-fetches.
@@ -105,98 +100,6 @@ func validateProvisionID(field, value string) error {
 	}
 	if value[0] == '-' {
 		return fmt.Errorf("%s must not start with '-'", field)
-	}
-	return nil
-}
-
-// Deprecated: superseded by adapter.OpenclawAdapter.Provision. Retained
-// temporarily during the runtime-adapter migration for reference/rollback; no
-// longer called. Remove once the adapter path is proven.
-//
-//nolint:unused
-func addOpenclawWorkspace(ctx context.Context, cmd *PendingAgentCommand) error {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return fmt.Errorf("resolve home: %w", err)
-	}
-	workspace := filepath.Join(home, ".openclaw", "workspaces", cmd.WorkspaceID)
-	cctx, cancel := context.WithTimeout(ctx, 60*time.Second)
-	defer cancel()
-	args := []string{"agents", "add", cmd.WorkspaceID,
-		"--non-interactive",
-		"--workspace", workspace,
-	}
-	log.Printf("[DEBUG] [bot.provision] exec: openclaw %s", strings.Join(args, " "))
-	c := exec.CommandContext(cctx, "openclaw", args...)
-	out, err := c.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("openclaw agents add: %w (output: %s)", err, truncateOutput(string(out), 800))
-	}
-	return nil
-}
-
-// Deprecated: superseded by adapter.OpenclawAdapter.Provision. Retained
-// temporarily during the runtime-adapter migration for reference/rollback; no
-// longer called. Remove once the adapter path is proven.
-//
-//nolint:unused
-func patchOctoAccount(ctx context.Context, cmd *PendingAgentCommand) error {
-	patch := map[string]any{
-		"channels": map[string]any{
-			"octo": map[string]any{
-				"accounts": map[string]any{
-					cmd.BotUID: map[string]any{
-						"botToken": cmd.BotToken,
-						"apiUrl":   cmd.APIURL,
-						// name 是 openclaw routing key, 必须等于 agent name
-						// (= workspace_id, 由 `agents add` 创建). 不能用
-						// DisplayName (那是用户给 bot 起的显示名, 跟 agent
-						// 路由无关) — 否则 octo channel 收到 IM 消息时
-						// 找不到对应 agent, fallback 到默认 main agent.
-						"name": cmd.WorkspaceID,
-					},
-				},
-			},
-		},
-	}
-	buf, err := json.Marshal(patch)
-	if err != nil {
-		return fmt.Errorf("marshal patch: %w", err)
-	}
-	cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	dump := string(buf)
-	if cmd.BotToken != "" {
-		dump = strings.ReplaceAll(dump, cmd.BotToken, "***redacted***")
-	}
-	log.Printf("[DEBUG] [bot.provision] exec: openclaw config patch --stdin payload=%s", dump)
-	c := exec.CommandContext(cctx, "openclaw", "config", "patch", "--stdin")
-	c.Stdin = strings.NewReader(string(buf))
-	out, err := c.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("openclaw config patch: %w (output: %s)", err, truncateOutput(string(out), 800))
-	}
-	return nil
-}
-
-// Deprecated: superseded by adapter.OpenclawAdapter.Provision. Retained
-// temporarily during the runtime-adapter migration for reference/rollback; no
-// longer called. Remove once the adapter path is proven.
-//
-//nolint:unused
-func bindBotToWorkspace(ctx context.Context, cmd *PendingAgentCommand) error {
-	cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	bind := fmt.Sprintf("octo:%s", cmd.BotUID)
-	args := []string{"agents", "bind",
-		"--agent", cmd.WorkspaceID,
-		"--bind", bind,
-	}
-	log.Printf("[DEBUG] [bot.provision] exec: openclaw %s", strings.Join(args, " "))
-	c := exec.CommandContext(cctx, "openclaw", args...)
-	out, err := c.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("openclaw agents bind: %w (output: %s)", err, truncateOutput(string(out), 800))
 	}
 	return nil
 }
