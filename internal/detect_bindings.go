@@ -10,7 +10,8 @@ import (
 
 // openclawBindingJSON mirrors one element of `openclaw agents bindings --json`.
 // Example:
-//   {"agentId":"main","match":{"channel":"dmwork","accountId":"27gshU6HOTb87d88a0f_bot"},"description":"..."}
+//
+//	{"agentId":"main","match":{"channel":"dmwork","accountId":"27gshU6HOTb87d88a0f_bot"},"description":"..."}
 type openclawBindingJSON struct {
 	AgentID string `json:"agentId"`
 	Match   struct {
