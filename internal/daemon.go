@@ -24,6 +24,9 @@ type Daemon struct {
 	sseClient *SSEClient
 	daemonID  string
 	deviceID  string
+	// gwLock serializes this daemon's cc-channel-octo lifecycle subprocess calls
+	// (upgrade/restart/start) against the machine-level auto-start watchdog.
+	gwLock *adapter.GatewayLock
 	// providers is this daemon's own runtime-provider snapshot. Per-daemon (not
 	// package-global) so multi-profile fan-out doesn't let one space's refresh
 	// clobber another's.
@@ -52,7 +55,7 @@ type Daemon struct {
 // and the machine-level deviceID (ensured once before the per-profile fan-out so
 // concurrent profiles can't mint divergent ids). Backend URLs come from the
 // profile config — there is no OCTO_FLEET_URL/OCTO_SERVER_URL env routing anymore.
-func newBackendRunner(cfg Config, registry *adapter.Registry, daemonID, deviceID string) *Daemon {
+func newBackendRunner(cfg Config, registry *adapter.Registry, daemonID, deviceID string, gwLock *adapter.GatewayLock) *Daemon {
 	cfg.withDefaults()
 
 	client := NewClient(cfg.FleetURL, cfg.APIKey, cfg.CLIVersion)
@@ -64,6 +67,7 @@ func newBackendRunner(cfg Config, registry *adapter.Registry, daemonID, deviceID
 		registry:  registry,
 		daemonID:  daemonID,
 		deviceID:  deviceID,
+		gwLock:    gwLock,
 		providers: newProviderStore(),
 	}
 }

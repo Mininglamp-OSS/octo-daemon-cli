@@ -33,23 +33,27 @@ const (
 type Supervisor struct {
 	profiles []Config
 	registry *adapter.Registry
+	// gwLock serializes cc-channel-octo lifecycle calls between the daemon's
+	// provision/upgrade paths and the machine-level auto-start watchdog.
+	gwLock *adapter.GatewayLock
 }
 
 // NewSupervisor builds the shared adapter registry once and binds the profiles.
 func NewSupervisor(profiles []Config) (*Supervisor, error) {
 	reg := adapter.NewRegistry()
+	gwLock := adapter.NewGatewayLock()
 	// Only openclaw + claude are supported runtimes (#52 dropped codex/hermes
 	// detection and adapters; provider availability is driven by the
 	// runtime-providers snapshot).
 	for _, a := range []adapter.RuntimeAdapter{
 		adapter.NewOpenclawAdapter(nil),
-		adapter.NewClaudeAdapter(nil),
+		adapter.NewClaudeAdapter(nil, gwLock),
 	} {
 		if err := reg.Register(a); err != nil {
 			return nil, fmt.Errorf("register runtime adapter: %w", err)
 		}
 	}
-	return &Supervisor{profiles: profiles, registry: reg}, nil
+	return &Supervisor{profiles: profiles, registry: reg, gwLock: gwLock}, nil
 }
 
 // Run acquires the global lock, fans out one runner per profile, and blocks
@@ -103,6 +107,18 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		log.Printf("[WARN] device.id unavailable: %v", err)
 	}
 
+	// Machine-level cc-channel-octo auto-start watchdog. Single goroutine (the
+	// global lock guarantees one per host), tied to ctx so it unwinds on
+	// shutdown. Tracked in its own WaitGroup — it only returns on ctx.Done(), so
+	// keeping it out of the per-profile wg lets wg.Wait() below still return when
+	// every profile self-terminates on a 403 (which does not cancel ctx).
+	var watchdogWg sync.WaitGroup
+	watchdogWg.Add(1)
+	go func() {
+		defer watchdogWg.Done()
+		s.runCcOctoWatchdog(ctx)
+	}()
+
 	started := 0
 	for _, cfg := range s.profiles {
 		cfg := cfg
@@ -128,6 +144,11 @@ func (s *Supervisor) Run(ctx context.Context) error {
 	}
 
 	wg.Wait()
+
+	// Every profile runner has returned. Unwind the watchdog (a 403-driven stop
+	// does not cancel ctx) and wait for it before computing the exit code.
+	cancel()
+	watchdogWg.Wait()
 
 	fatalMu.Lock()
 	defer fatalMu.Unlock()
@@ -197,6 +218,6 @@ func (s *Supervisor) runOnce(ctx context.Context, cfg Config, daemonID, deviceID
 			err = fmt.Errorf("panic in backend runner: %v", r)
 		}
 	}()
-	d := newBackendRunner(cfg, s.registry, daemonID, deviceID)
+	d := newBackendRunner(cfg, s.registry, daemonID, deviceID, s.gwLock)
 	return d.Run(ctx)
 }

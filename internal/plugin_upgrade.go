@@ -92,8 +92,15 @@ func (d *Daemon) handlePluginUpgrade(ctx context.Context, up *PendingUpgrade) er
 		}
 	}
 
-	cmd := exec.CommandContext(installCtx, bin, args...)
-	out, err := cmd.CombinedOutput()
+	// cc-octo 的 `upgrade` 子命令内部会 restart gateway,必须持锁防止 watchdog 撞车;
+	// openclaw 的 npx 安装不碰 cc gateway,直接跑。
+	var out []byte
+	var err error
+	if up.Component == ccOctoPluginName {
+		out, err = d.runGatewayLifecycle(installCtx, bin, args...)
+	} else {
+		out, err = exec.CommandContext(installCtx, bin, args...).CombinedOutput()
+	}
 	if err != nil {
 		if up.Component == ccOctoPluginName {
 			log.Printf("[WARN] cc-channel-octo upgrade subcommand failed (%v), falling back to npm install: %s",
@@ -265,7 +272,7 @@ func (d *Daemon) handleCcOctoInstall(ctx context.Context, up *PendingUpgrade, cf
 	// (idle, zero bots) instead of waiting for the first bot. A start failure is
 	// non-fatal: the first bot.provision runs `cc-channel-octo restart`, which
 	// starts it anyway — so we log and continue to enrich/register.
-	if sout, serr := exec.CommandContext(installCtx, "cc-channel-octo", ccOctoStartArgs()...).CombinedOutput(); serr != nil {
+	if sout, serr := d.runGatewayLifecycle(installCtx, "cc-channel-octo", ccOctoStartArgs()...); serr != nil {
 		log.Printf("[WARN] cc-octo post-install start failed (provision restart will retry): %v\noutput: %s", serr, truncateOutput(redactSecret(string(sout), cfg.APIKey, cfg.GatewayURL), 400))
 	} else {
 		log.Printf("[INFO] cc-octo gateway started idle (task=%s)", up.TaskID)
@@ -349,11 +356,22 @@ func (d *Daemon) ccOctoNpmFallback(ctx context.Context, targetVersion string) er
 	if err != nil {
 		return fmt.Errorf("npm install: %v (output: %s)", err, truncateOutput(string(out), 800))
 	}
-	rout, rerr := exec.CommandContext(ctx, "cc-channel-octo", "restart").CombinedOutput()
+	rout, rerr := d.runGatewayLifecycle(ctx, "cc-channel-octo", "restart")
 	if rerr != nil {
 		return fmt.Errorf("restart after npm install: %v (output: %s)", rerr, truncateOutput(string(rout), 800))
 	}
 	return nil
+}
+
+// runGatewayLifecycle runs a cc-channel-octo lifecycle subprocess (upgrade /
+// start / restart) while holding the shared gateway lock, so the machine-level
+// auto-start watchdog (which probes the same lock with TryLock) can never run a
+// concurrent `cc-channel-octo start`. Plain npm installs and `configure` are not
+// routed through here — they don't spawn/stop the gateway process.
+func (d *Daemon) runGatewayLifecycle(ctx context.Context, name string, args ...string) ([]byte, error) {
+	d.gwLock.Lock()
+	defer d.gwLock.Unlock()
+	return exec.CommandContext(ctx, name, args...).CombinedOutput()
 }
 
 // probePluginGateway verifies the relevant gateway came back up after an
