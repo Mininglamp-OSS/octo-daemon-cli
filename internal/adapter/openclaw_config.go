@@ -183,13 +183,13 @@ func mergeAndWriteOctoConfig(path, workspaceID, botUID, botToken, apiURL string)
 		return fmt.Errorf("create temp openclaw config: %w", err)
 	}
 	tmpName := tmp.Name()
-	defer os.Remove(tmpName) // no-op after a successful rename
+	defer func() { _ = os.Remove(tmpName) }() // no-op after a successful rename
 	if err := tmp.Chmod(0o600); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return fmt.Errorf("chmod temp openclaw config: %w", err)
 	}
 	if _, err := tmp.Write(out); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return fmt.Errorf("write temp openclaw config: %w", err)
 	}
 	if err := tmp.Close(); err != nil {
