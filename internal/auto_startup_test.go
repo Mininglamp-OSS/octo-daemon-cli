@@ -50,7 +50,8 @@ func TestGatewayLockTryLockExcludesWatchdog(t *testing.T) {
 // and lock-less adapters can pass nil.
 func TestGatewayLockNilSafe(t *testing.T) {
 	var g *adapter.GatewayLock
-	g.Lock()   // no panic
+	g.Lock() // no panic
+	t.Log("nil GatewayLock Lock/Unlock are no-ops")
 	g.Unlock() // no panic
 	if !g.TryLock() {
 		t.Fatal("nil GatewayLock.TryLock should report success")
