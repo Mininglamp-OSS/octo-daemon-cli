@@ -38,6 +38,11 @@ func TestParseConfigFilePath(t *testing.T) {
 	if _, err := parseConfigFilePath("no path here\n[plugins] noise\n"); err == nil {
 		t.Error("expected error when no openclaw.json line present")
 	}
+	// A prose/banner line that merely ends in the filename must not be taken as
+	// the path (it has interior whitespace).
+	if _, err := parseConfigFilePath("Loading openclaw.json\n"); err == nil {
+		t.Error("expected error: prose line ending in filename is not a path")
+	}
 }
 
 func TestMergeOctoBotFresh(t *testing.T) {

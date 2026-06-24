@@ -21,6 +21,8 @@ const openclawConfigTimeout = 30 * time.Second
 // parseConfigFilePath extracts the openclaw.json path from `openclaw config
 // file` output. openclaw may prepend a banner or plugin log lines to stdout,
 // so scan for the line ending in openclaw.json rather than trusting line count.
+// The line must look like a path (absolute, or ~ / relative) so a future banner
+// such as "Loading openclaw.json" is not mistaken for the config path.
 // The returned path is normalized (~ expanded; a non-absolute path resolved
 // against home) so os.ReadFile / os.Rename act on the same file the gateway
 // watches.
@@ -28,9 +30,15 @@ func parseConfigFilePath(out string) (string, error) {
 	lines := strings.Split(out, "\n")
 	for i := len(lines) - 1; i >= 0; i-- {
 		l := strings.TrimSpace(lines[i])
-		if strings.HasSuffix(l, "openclaw.json") {
-			return normalizeConfigPath(l), nil
+		if !strings.HasSuffix(l, "openclaw.json") {
+			continue
 		}
+		// Reject prose lines that merely end in the filename (e.g.
+		// "Loading openclaw.json"): a real path has no interior spaces.
+		if strings.ContainsAny(l, " \t") {
+			continue
+		}
+		return normalizeConfigPath(l), nil
 	}
 	return "", fmt.Errorf("openclaw config file: no openclaw.json path in output: %q", truncate(out, 200))
 }
@@ -70,6 +78,12 @@ func mergeOctoBot(cfg map[string]any, workspaceID, botUID, botToken, apiURL stri
 	channels := childMap(cfg, "channels")
 	octo := childMap(channels, "octo")
 	accounts := childMap(octo, "accounts")
+	// The account entry is wholesale-replaced (not field-merged like
+	// upsertBinding) on every provision/replay: the daemon owns the full account
+	// shape end-to-end (botToken/apiUrl/name/requireMention are all daemon-set),
+	// so there are no operator- or openclaw-added per-account fields to preserve.
+	// If openclaw ever introduces a field the daemon doesn't manage, switch this
+	// to a merge that keeps unknown keys.
 	accounts[botUID] = map[string]any{
 		"botToken": botToken,
 		"apiUrl":   apiURL,
