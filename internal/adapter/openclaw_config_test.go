@@ -1,8 +1,12 @@
 package adapter
 
 import (
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 )
 
@@ -103,5 +107,110 @@ func TestMergeOctoBotPreservesOthersAndUpserts(t *testing.T) {
 	}
 	if count != 1 || !updated {
 		t.Errorf("upsert wrong: count=%d updated=%v binds=%#v", count, updated, binds)
+	}
+}
+
+func TestMergeAndWriteOctoConfigAtomic(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "openclaw.json")
+
+	seed := map[string]any{
+		"channels": map[string]any{"octo": map[string]any{"accounts": map[string]any{
+			"old-bot": map[string]any{"botToken": "x", "name": "old"},
+		}}},
+		"topLevel": "keep",
+	}
+	raw, _ := json.MarshalIndent(seed, "", "  ")
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := mergeAndWriteOctoConfig(path, "ws-1", "bot-abc", "bf_tok", "https://api.x"); err != nil {
+		t.Fatalf("mergeAndWriteOctoConfig: %v", err)
+	}
+
+	out, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("result not valid json: %v", err)
+	}
+	accs := got["channels"].(map[string]any)["octo"].(map[string]any)["accounts"].(map[string]any)
+	if _, ok := accs["old-bot"]; !ok {
+		t.Error("old-bot dropped")
+	}
+	if _, ok := accs["bot-abc"]; !ok {
+		t.Error("bot-abc not written")
+	}
+	if got["topLevel"] != "keep" {
+		t.Error("topLevel dropped")
+	}
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".tmp") {
+			t.Errorf("temp file left behind: %s", e.Name())
+		}
+	}
+}
+
+func TestMergeAndWriteOctoConfigCreatesWhenMissing(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "openclaw.json")
+	if err := mergeAndWriteOctoConfig(path, "ws-1", "bot-abc", "bf_tok", "https://api.x"); err != nil {
+		t.Fatalf("mergeAndWriteOctoConfig: %v", err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("config not created: %v", err)
+	}
+}
+
+func TestMergeAndWriteOctoConfigPreservesLargeNumbers(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "openclaw.json")
+	if err := os.WriteFile(path, []byte(`{"bigCounter": 1234567890123456789}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := mergeAndWriteOctoConfig(path, "ws-1", "bot-abc", "bf_tok", "https://api.x"); err != nil {
+		t.Fatalf("mergeAndWriteOctoConfig: %v", err)
+	}
+	out, _ := os.ReadFile(path)
+	if !strings.Contains(string(out), "1234567890123456789") {
+		t.Errorf("large integer not preserved verbatim; got: %s", out)
+	}
+}
+
+func TestMergeAndWriteOctoConfigConcurrent(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "openclaw.json")
+
+	const n = 5
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			id := fmt.Sprintf("bot-%d", i)
+			if err := mergeAndWriteOctoConfig(path, "ws-"+id, id, "bf_"+id, "https://api.x"); err != nil {
+				t.Errorf("merge %s: %v", id, err)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	out, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("result not valid json: %v", err)
+	}
+	accs := got["channels"].(map[string]any)["octo"].(map[string]any)["accounts"].(map[string]any)
+	for i := 0; i < n; i++ {
+		if _, ok := accs[fmt.Sprintf("bot-%d", i)]; !ok {
+			t.Errorf("bot-%d lost under concurrency", i)
+		}
 	}
 }

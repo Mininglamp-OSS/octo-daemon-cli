@@ -1,10 +1,13 @@
 package adapter
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 // parseConfigFilePath extracts the openclaw.json path from `openclaw config
@@ -106,4 +109,77 @@ func upsertBinding(raw any, workspaceID, botUID string) []any {
 		"match":   map[string]any{"channel": "octo", "accountId": botUID},
 	})
 }
+
+// openclawConfigMu serializes the read-merge-write cycle against openclaw.json.
+// The daemon provisions up to openclawMaxConcurrency (5) bots in parallel; two
+// concurrent read-modify-write cycles on the same file would otherwise drop
+// whichever account/binding the slower writer never saw. One process-wide mutex
+// is correct because a single daemon process owns its openclaw.json.
+var openclawConfigMu sync.Mutex
+
+// mergeAndWriteOctoConfig reads openclaw.json at path (absent → empty config),
+// upserts the bot via mergeOctoBot, and writes the result back atomically
+// (unique temp file + rename) so the gateway's file watcher never observes a
+// half-written file. A missing file is created. The whole cycle holds
+// openclawConfigMu so concurrent provisions don't clobber each other.
+//
+// Known boundary (openclaw noop-reload): this writes account + binding together,
+// so it never produces a "account present, binding missing" half-state itself.
+// If such a half-state exists from outside (legacy daemon / hand-edited config)
+// and the account bytes happen to be unchanged, the resulting write touches only
+// bindings — which is a noop reload in openclaw and won't take routing effect
+// without a manual `openclaw gateway restart`. We do not paper over this with a
+// forced dummy change; see the design doc.
+func mergeAndWriteOctoConfig(path, workspaceID, botUID, botToken, apiURL string) error {
+	openclawConfigMu.Lock()
+	defer openclawConfigMu.Unlock()
+
+	cfg := map[string]any{}
+	data, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("read openclaw config %s: %w", path, err)
+	}
+	if err == nil && len(data) > 0 {
+		// UseNumber keeps large integers / exact numeric forms in the user's
+		// other config intact through the round-trip (plain Unmarshal would
+		// coerce every number to float64 and rewrite e.g. big ints as 1e+18).
+		dec := json.NewDecoder(bytes.NewReader(data))
+		dec.UseNumber()
+		if err := dec.Decode(&cfg); err != nil {
+			return fmt.Errorf("parse openclaw config %s: %w", path, err)
+		}
+	}
+
+	cfg = mergeOctoBot(cfg, workspaceID, botUID, botToken, apiURL)
+
+	out, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal openclaw config: %w", err)
+	}
+	// Unique temp file in the same dir so parallel writers never share a tmp
+	// path; rename within the dir is atomic.
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".openclaw-*.json.tmp")
+	if err != nil {
+		return fmt.Errorf("create temp openclaw config: %w", err)
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName) // no-op after a successful rename
+	if err := tmp.Chmod(0o600); err != nil {
+		tmp.Close()
+		return fmt.Errorf("chmod temp openclaw config: %w", err)
+	}
+	if _, err := tmp.Write(out); err != nil {
+		tmp.Close()
+		return fmt.Errorf("write temp openclaw config: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close temp openclaw config: %w", err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return fmt.Errorf("rename openclaw config: %w", err)
+	}
+	return nil
+}
+
 
