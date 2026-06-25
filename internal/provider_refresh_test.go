@@ -16,7 +16,7 @@ func testRegistry(t *testing.T) *adapter.Registry {
 	reg := adapter.NewRegistry()
 	for _, a := range []adapter.RuntimeAdapter{
 		adapter.NewOpenclawAdapter(nil),
-		adapter.NewClaudeAdapter(nil, nil),
+		adapter.NewClaudeAdapter(nil),
 	} {
 		if err := reg.Register(a); err != nil {
 			t.Fatalf("register adapter: %v", err)

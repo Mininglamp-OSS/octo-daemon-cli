@@ -47,7 +47,7 @@ func NewSupervisor(profiles []Config) (*Supervisor, error) {
 	// runtime-providers snapshot).
 	for _, a := range []adapter.RuntimeAdapter{
 		adapter.NewOpenclawAdapter(nil),
-		adapter.NewClaudeAdapter(nil, gwLock),
+		adapter.NewClaudeAdapter(nil),
 	} {
 		if err := reg.Register(a); err != nil {
 			return nil, fmt.Errorf("register runtime adapter: %w", err)
