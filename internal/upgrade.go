@@ -49,6 +49,20 @@ func installedDaemonVersion() string {
 	return ""
 }
 
+// shouldSkipDaemonUpgrade reports whether a daemon upgrade task is a no-op and
+// must not trigger an install/restart:
+//   - installed == target: already there.
+//   - target == "" (server's "latest" semantics) with something already
+//     installed: an empty target can't be verified post-install, so acting on it
+//     would npm-install + self-restart on every (re-)dispatch and crash-loop the
+//     daemon if the server doesn't close the task promptly. Ignore it.
+//
+// installed == "" (daemon not npm-managed) falls through so the npm path runs and
+// reports a clear "failed" for k8s/image deployments.
+func shouldSkipDaemonUpgrade(installed, target string) bool {
+	return installed != "" && (target == "" || installed == target)
+}
+
 func (d *Daemon) handleUpgrade(ctx context.Context, up *PendingUpgrade) error {
 	switch up.Component {
 	case "octo", ccOctoPluginName:
@@ -80,14 +94,18 @@ func (d *Daemon) handleUpgrade(ctx context.Context, up *PendingUpgrade) error {
 // the target).
 //
 // Two guards keep it safe:
-//   - already at the target version → skip the reinstall/restart entirely, so a
-//     task the server keeps re-dispatching can't crash-loop the daemon.
+//   - already-installed loop guard → skip the reinstall/restart when we're
+//     already at the target, OR when the task carries no concrete target
+//     (empty = "latest") and some version is already installed. Without the
+//     empty-target arm, an unverifiable "latest" task would npm-install +
+//     self-restart on every (re-)dispatch and crash-loop the daemon if the
+//     server doesn't close the task promptly after re-registration.
 //   - npm unavailable → report "failed" (k8s/image deployments manage the binary
 //     via the orchestration layer, not npm).
 func (d *Daemon) handleDaemonUpgrade(ctx context.Context, up *PendingUpgrade) error {
 	installed := installedDaemonVersion()
-	if up.TargetVersion != "" && installed == up.TargetVersion {
-		log.Printf("[INFO] daemon already at target version %s (task=%s) — skipping", up.TargetVersion, up.TaskID)
+	if shouldSkipDaemonUpgrade(installed, up.TargetVersion) {
+		log.Printf("[INFO] daemon upgrade skipped (task=%s): installed=%q target=%q", up.TaskID, installed, up.TargetVersion)
 		return nil
 	}
 
