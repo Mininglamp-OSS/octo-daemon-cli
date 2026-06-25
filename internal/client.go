@@ -156,12 +156,12 @@ func (c *Client) FetchCcOctoConfig(ctx context.Context, runtimeID int64, taskID 
 }
 
 type RegisterRequest struct {
-	DaemonID            string            `json:"daemon_id"`
-	DeviceName          string            `json:"device_name"`
-	DeviceInfo          string            `json:"device_info"` // JSON: {os, arch, os_version, device_id}
-	CLIVersion          string            `json:"cli_version"`
-	HeartbeatIntervalMs int64             `json:"heartbeat_interval_ms,omitempty"` // fleet uses for per-runtime stale = 3× this
-	Runtimes            []RuntimeInfo     `json:"runtimes"`
+	DaemonID            string        `json:"daemon_id"`
+	DeviceName          string        `json:"device_name"`
+	DeviceInfo          string        `json:"device_info"` // JSON: {os, arch, os_version, device_id}
+	CLIVersion          string        `json:"cli_version"`
+	HeartbeatIntervalMs int64         `json:"heartbeat_interval_ms,omitempty"` // fleet uses for per-runtime stale = 3× this
+	Runtimes            []RuntimeInfo `json:"runtimes"`
 	// No omitempty: an empty slice is a meaningful "full inventory is empty"
 	// signal (server replaces the reported set), distinct from "no update".
 	// parseDeviceComponents returns a non-nil empty slice, so this serializes as

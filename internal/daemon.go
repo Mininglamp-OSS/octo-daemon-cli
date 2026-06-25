@@ -647,6 +647,10 @@ func (d *Daemon) checkForbidden(err error) bool {
 // ls` failure isn't reported to the server as an authoritative "everything was
 // uninstalled" (which would flap component records). A genuine empty inventory
 // (probe succeeded with nothing installed) is returned as-is.
+//
+// Always returns a non-nil slice: before any successful probe lastComponents is
+// nil, and a nil slice would marshal as JSON null rather than the [] the
+// device_components contract expects, so the nil case is normalized to [].
 func (d *Daemon) probeComponents() []DeviceComponent {
 	comps, err := DetectDeviceComponents()
 	if err != nil {
@@ -655,10 +659,14 @@ func (d *Daemon) probeComponents() []DeviceComponent {
 		d.mu.Unlock()
 		log.Printf("[WARN] device component probe failed, reusing last known inventory: %v", err)
 	}
+	if comps == nil {
+		comps = []DeviceComponent{}
+	}
 	return comps
 }
 
-func (d *Daemon) buildRegisterRequest(runtimes []RuntimeInfo, components []DeviceComponent) RegisterRequest {	return RegisterRequest{
+func (d *Daemon) buildRegisterRequest(runtimes []RuntimeInfo, components []DeviceComponent) RegisterRequest {
+	return RegisterRequest{
 		DaemonID:            d.daemonID,
 		DeviceName:          d.cfg.DeviceName,
 		DeviceInfo:          GetDeviceInfo(d.deviceID),
