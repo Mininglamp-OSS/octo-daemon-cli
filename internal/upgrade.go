@@ -150,6 +150,11 @@ func (d *Daemon) handleDaemonUpgrade(ctx context.Context, up *PendingUpgrade) er
 // the same path as `octo-daemon stop` and an external SIGTERM. The supervisor
 // then restarts it. Kept supervisor-agnostic: we exit cleanly rather than using
 // a special respawn exit code.
+//
+// The exit-0 outcome is NOT guaranteed by sending SIGTERM alone — it depends on
+// the daemon's signal handler (cmd/start.go: signal.Notify on SIGINT/SIGTERM →
+// cancel → graceful return). Without that handler Go's default SIGTERM behavior
+// is exit 143, which only `Restart=always`-style supervisors would respawn.
 func stopForRestart() error {
 	proc, err := os.FindProcess(os.Getpid())
 	if err != nil {

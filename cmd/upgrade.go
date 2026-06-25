@@ -25,15 +25,15 @@ func runUpgrade(cmd *cobra.Command, args []string) error {
 	}
 
 	// The new binary is on disk, but the running daemon is still the old one.
-	// Stop it (same logic as `octo-daemon stop`: read the pidfile, signal the
-	// process) and let the supervisor re-exec the new binary. We deliberately
-	// don't restart it ourselves — that keeps upgrade supervisor-agnostic
-	// instead of hard-wiring pm2.
+	// Stop it (shared `stopRunningDaemon`: read the pidfile, signal the process)
+	// and let the supervisor re-exec the new binary. We deliberately don't
+	// restart it ourselves — that keeps upgrade supervisor-agnostic instead of
+	// hard-wiring pm2.
 	if !internal.IsLocked() {
 		fmt.Println("Upgrade complete. Daemon is not running — start it to use the new version.")
 		return nil
 	}
-	if err := runStop(cmd, args); err != nil {
+	if err := stopRunningDaemon(); err != nil {
 		return &internal.ExitError{Code: 1, Message: fmt.Sprintf("upgrade installed but stopping the daemon failed: %v — restart it manually", err)}
 	}
 	fmt.Println("Upgrade complete — daemon stopped; your process supervisor will restart it on the new binary.")
