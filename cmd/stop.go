@@ -15,6 +15,14 @@ var stopCmd = &cobra.Command{
 }
 
 func runStop(cmd *cobra.Command, args []string) error {
+	return stopRunningDaemon()
+}
+
+// stopRunningDaemon signals the running daemon (pid read from the lock file) to
+// shut down gracefully. Shared by the `stop` and `upgrade` commands so the
+// latter doesn't have to call the former's RunE handler inline. Returns an error
+// if no daemon is running or the signal can't be delivered.
+func stopRunningDaemon() error {
 	if !internal.IsLocked() {
 		return fmt.Errorf("daemon is not running")
 	}

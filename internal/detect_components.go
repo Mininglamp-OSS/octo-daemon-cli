@@ -3,6 +3,7 @@ package internal
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os/exec"
 	"time"
 )
@@ -30,35 +31,56 @@ type npmLsOutput struct {
 // DetectDeviceComponents reports installed versions of the whitelisted npm
 // global packages via a single `npm ls -g --depth=0 --json`. npm exits non-zero
 // when the global tree has extraneous/missing deps, but stdout JSON is still
-// valid — so we parse stdout and ignore the exit code. Packages absent from the
-// output (including unscoped local `npm link` entries, which key on a different
-// unscoped name) are reported with Version "" so the server treats them as
-// not-installed.
-func DetectDeviceComponents() []DeviceComponent {
+// valid — so we don't treat the exit code as failure; we validate by parsing.
+// Packages absent from the output (including unscoped local `npm link` entries,
+// which key on a different unscoped name) are omitted entirely — the server
+// treats the reported list as the full inventory, so a not-installed package
+// must not appear as a phantom empty-version record.
+//
+// Returns an error when the probe itself failed (no output at all, or
+// unparseable stdout) so the caller can distinguish a genuine empty inventory
+// (success → empty slice) from a transient/structural failure. The caller must
+// NOT report an empty slice as an authoritative inventory on error, or a flaky
+// `npm ls` would tell the server every component was uninstalled.
+func DetectDeviceComponents() ([]DeviceComponent, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "npm", "ls", "-g", "--depth=0", "--json")
 	cmd.Stderr = nil
-	out, _ := cmd.Output() // exit code ignored; stdout JSON valid even on non-zero
+	out, err := cmd.Output() // exit code ignored (non-zero with valid JSON is normal); validated by parse
+	if len(out) == 0 {
+		if err == nil {
+			err = fmt.Errorf("no output")
+		}
+		return nil, fmt.Errorf("npm ls -g failed: %w", err)
+	}
 
 	return parseDeviceComponents(out)
 }
 
 // parseDeviceComponents maps `npm ls -g --json` stdout onto the fixed target
-// whitelist. Invalid/empty input yields all targets with Version "".
-func parseDeviceComponents(out []byte) []DeviceComponent {
+// whitelist, omitting targets that aren't installed (absent from the npm tree →
+// empty version). Returns an error on unparseable input so the caller can tell a
+// real empty inventory from a malformed/failed probe.
+func parseDeviceComponents(out []byte) ([]DeviceComponent, error) {
 	var parsed npmLsOutput
-	_ = json.Unmarshal(out, &parsed) // parse failure → all versions ""
+	if err := json.Unmarshal(out, &parsed); err != nil {
+		return nil, fmt.Errorf("parse npm ls output: %w", err)
+	}
 
 	components := make([]DeviceComponent, 0, len(deviceComponentTargets))
 	for _, t := range deviceComponentTargets {
+		version := parsed.Dependencies[t.key].Version
+		if version == "" {
+			continue // not installed — don't report a phantom record
+		}
 		components = append(components, DeviceComponent{
 			Type:         "nodejs",
 			Name:         t.name,
 			ComponentKey: t.key,
-			Version:      parsed.Dependencies[t.key].Version,
+			Version:      version,
 		})
 	}
-	return components
+	return components, nil
 }

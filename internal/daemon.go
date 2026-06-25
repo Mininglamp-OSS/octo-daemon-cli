@@ -35,6 +35,7 @@ type Daemon struct {
 	mu                 sync.Mutex
 	registeredRuntimes []RegisteredRuntime
 	lastRuntimes       []RuntimeInfo
+	lastComponents     []DeviceComponent
 	generation         uint64
 	// managedBots is refreshed by the heartbeat handler and the SSE
 	// managed_bots_changed delta. TODO: re-add a consumer when matter-driven
@@ -394,8 +395,9 @@ func (d *Daemon) fastDetectAndRegister(ctx context.Context) (uint64, error) {
 	}
 	runtimes := DetectRuntimesFast(d.providers.current())
 	d.addDeviceName(runtimes)
+	comps := d.probeComponents()
 
-	resp, err := d.client.Register(ctx, d.buildRegisterRequest(runtimes))
+	resp, err := d.client.Register(ctx, d.buildRegisterRequest(runtimes, comps))
 	if err != nil {
 		d.checkForbidden(err)
 		return 0, err
@@ -404,6 +406,7 @@ func (d *Daemon) fastDetectAndRegister(ctx context.Context) (uint64, error) {
 	d.mu.Lock()
 	d.generation++
 	d.lastRuntimes = runtimes
+	d.lastComponents = comps
 	d.registeredRuntimes = resp.Runtimes
 	gen := d.generation
 	d.mu.Unlock()
@@ -423,8 +426,9 @@ func (d *Daemon) enrichDetectAndRegister(ctx context.Context) (uint64, error) {
 	d.addDeviceName(runtimes)
 	runtimes = EnrichOpenclawRuntime(runtimes)
 	runtimes = EnrichClaudeRuntime(runtimes)
+	comps := d.probeComponents()
 
-	resp, err := d.client.Register(ctx, d.buildRegisterRequest(runtimes))
+	resp, err := d.client.Register(ctx, d.buildRegisterRequest(runtimes, comps))
 	if err != nil {
 		d.checkForbidden(err)
 		return 0, err
@@ -433,6 +437,7 @@ func (d *Daemon) enrichDetectAndRegister(ctx context.Context) (uint64, error) {
 	d.mu.Lock()
 	d.generation++
 	d.lastRuntimes = runtimes
+	d.lastComponents = comps
 	d.registeredRuntimes = resp.Runtimes
 	gen := d.generation
 	d.mu.Unlock()
@@ -484,7 +489,9 @@ func (d *Daemon) register(ctx context.Context) error {
 		}
 	}
 
-	resp, err := d.client.Register(ctx, d.buildRegisterRequest(runtimes))
+	comps := d.probeComponents()
+
+	resp, err := d.client.Register(ctx, d.buildRegisterRequest(runtimes, comps))
 	if err != nil {
 		d.checkForbidden(err)
 		return err
@@ -493,6 +500,7 @@ func (d *Daemon) register(ctx context.Context) error {
 	d.mu.Lock()
 	d.generation++
 	d.lastRuntimes = runtimes
+	d.lastComponents = comps
 	d.registeredRuntimes = resp.Runtimes
 	gen := d.generation
 	d.mu.Unlock()
@@ -569,6 +577,7 @@ func (d *Daemon) runSlowDetect(ctx context.Context) {
 	d.addDeviceName(current)
 	current = EnrichOpenclawRuntime(current)
 	current = EnrichClaudeRuntime(current)
+	comps := d.probeComponents()
 
 	// Early exit if generation advanced during detection
 	d.mu.Lock()
@@ -577,18 +586,26 @@ func (d *Daemon) runSlowDetect(ctx context.Context) {
 		log.Printf("[DEBUG] slow detect discarded (gen %d → %d)", baseGen, d.generation)
 		return
 	}
-	changed := runtimesChanged(d.lastRuntimes, current)
+	rtChanged := runtimesChanged(d.lastRuntimes, current)
+	compChanged := componentsChanged(d.lastComponents, comps)
 	d.mu.Unlock()
 
-	if changed {
-		log.Printf("[INFO] runtime changes detected, re-registering...")
-		d.doRegister(ctx, current, baseGen)
+	if rtChanged || compChanged {
+		var reasons []string
+		if rtChanged {
+			reasons = append(reasons, "runtime")
+		}
+		if compChanged {
+			reasons = append(reasons, "device components")
+		}
+		log.Printf("[INFO] changes detected, re-registering (reason: %s)", joinStrings(reasons, ", "))
+		d.doRegister(ctx, current, comps, baseGen)
 	}
 }
 
 // doRegister sends runtimes to server. Only commits if generation still matches.
-func (d *Daemon) doRegister(ctx context.Context, runtimes []RuntimeInfo, expectedGen uint64) {
-	resp, err := d.client.Register(ctx, d.buildRegisterRequest(runtimes))
+func (d *Daemon) doRegister(ctx context.Context, runtimes []RuntimeInfo, components []DeviceComponent, expectedGen uint64) {
+	resp, err := d.client.Register(ctx, d.buildRegisterRequest(runtimes, components))
 	if err != nil {
 		if d.checkForbidden(err) {
 			return
@@ -605,6 +622,7 @@ func (d *Daemon) doRegister(ctx context.Context, runtimes []RuntimeInfo, expecte
 	}
 	d.generation++
 	d.lastRuntimes = runtimes
+	d.lastComponents = components
 	d.registeredRuntimes = resp.Runtimes
 	d.mu.Unlock()
 	log.Printf("[INFO] registered %d runtime(s) (gen=%d)", len(resp.Runtimes), expectedGen+1)
@@ -623,7 +641,31 @@ func (d *Daemon) checkForbidden(err error) bool {
 	return false
 }
 
-func (d *Daemon) buildRegisterRequest(runtimes []RuntimeInfo) RegisterRequest {
+// probeComponents detects installed device components for a register payload.
+// On probe failure (npm missing/timeout/garbage output) it reuses the last
+// successfully-probed inventory instead of an empty slice, so a transient `npm
+// ls` failure isn't reported to the server as an authoritative "everything was
+// uninstalled" (which would flap component records). A genuine empty inventory
+// (probe succeeded with nothing installed) is returned as-is.
+//
+// Always returns a non-nil slice: before any successful probe lastComponents is
+// nil, and a nil slice would marshal as JSON null rather than the [] the
+// device_components contract expects, so the nil case is normalized to [].
+func (d *Daemon) probeComponents() []DeviceComponent {
+	comps, err := DetectDeviceComponents()
+	if err != nil {
+		d.mu.Lock()
+		comps = d.lastComponents
+		d.mu.Unlock()
+		log.Printf("[WARN] device component probe failed, reusing last known inventory: %v", err)
+	}
+	if comps == nil {
+		comps = []DeviceComponent{}
+	}
+	return comps
+}
+
+func (d *Daemon) buildRegisterRequest(runtimes []RuntimeInfo, components []DeviceComponent) RegisterRequest {
 	return RegisterRequest{
 		DaemonID:            d.daemonID,
 		DeviceName:          d.cfg.DeviceName,
@@ -631,10 +673,11 @@ func (d *Daemon) buildRegisterRequest(runtimes []RuntimeInfo) RegisterRequest {
 		CLIVersion:          d.cfg.CLIVersion,
 		HeartbeatIntervalMs: d.cfg.HeartbeatInterval.Milliseconds(),
 		Runtimes:            runtimes,
-		// Probed fresh on every register (a low-frequency path, minutes apart at
-		// most) so post-upgrade re-registers report the new versions rather than a
-		// stale snapshot. Deliberately not on the per-runtime heartbeat hot path.
-		DeviceComponents: DetectDeviceComponents(),
+		// Machine-level npm components, probed by the caller (DetectDeviceComponents)
+		// so the same snapshot drives both the payload and lastComponents change
+		// tracking. Probed on register paths (minutes apart at most), never on the
+		// per-runtime heartbeat hot path.
+		DeviceComponents: components,
 	}
 }
 
@@ -771,6 +814,28 @@ func runtimesChanged(old, current []RuntimeInfo) bool {
 			return true
 		}
 		if pluginsChanged(prev.Plugins, r.Plugins) {
+			return true
+		}
+	}
+	return false
+}
+
+// componentsChanged reports whether the installed device-component set differs
+// from the last registered one — by count or by per-package version. Keyed on
+// ComponentKey (the full npm package name). Absent (not-installed) packages are
+// already filtered out by DetectDeviceComponents, so a changed count covers
+// installs and uninstalls.
+func componentsChanged(old, current []DeviceComponent) bool {
+	if len(old) != len(current) {
+		return true
+	}
+	oldMap := make(map[string]string, len(old))
+	for _, c := range old {
+		oldMap[c.ComponentKey] = c.Version
+	}
+	for _, c := range current {
+		prev, ok := oldMap[c.ComponentKey]
+		if !ok || prev != c.Version {
 			return true
 		}
 	}

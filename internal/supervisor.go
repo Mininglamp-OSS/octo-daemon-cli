@@ -23,8 +23,10 @@ const (
 //
 // Fault isolation: a runner panic/error is contained and restarted with
 // backoff; a per-space fatal (403 → 78) stops only that runner; a process-wide
-// fatal (upgrade → 75) tears down the whole process so the service manager / k8s
-// respawns it on the new binary.
+// fatal (exit 75) tears down the whole process so the service manager / k8s
+// respawns it. Daemon upgrade no longer drives 75 — it stops gracefully
+// (exit 0) and lets the supervisor restart on the new binary; 75 remains a
+// reserved respawn-request escape code with no current producer.
 //
 // NOTE: adapters are shared across all spaces and still write to per-machine
 // host paths (~/.cc-channel-octo). When multiple spaces share one runtime these
@@ -153,7 +155,7 @@ func (s *Supervisor) Run(ctx context.Context) error {
 	fatalMu.Lock()
 	defer fatalMu.Unlock()
 	if fatalExit != nil {
-		return fatalExit // process-wide fatal (e.g. upgrade → 75)
+		return fatalExit // process-wide fatal (exit 75 respawn request)
 	}
 	// All runners have stopped without a process-wide fatal. If this was not a
 	// graceful signal shutdown, every profile self-terminated on a permanent
@@ -166,8 +168,9 @@ func (s *Supervisor) Run(ctx context.Context) error {
 }
 
 // runProfile runs one backendRunner with panic recovery and backoff restart,
-// returning when ctx is cancelled. A per-space 403 (78) stops this runner; an
-// upgrade (75) is escalated to a process-wide fatal via setFatal.
+// returning when ctx is cancelled. A per-space 403 (78) stops this runner; a
+// reserved respawn-request exit code (75) is escalated to a process-wide fatal
+// via setFatal. Daemon upgrade itself uses graceful stop (exit 0), not 75.
 func (s *Supervisor) runProfile(ctx context.Context, cfg Config, daemonID, deviceID string, setFatal func(*ExitError)) {
 	delay := runnerRestartBaseDelay
 	for {
@@ -183,7 +186,7 @@ func (s *Supervisor) runProfile(ctx context.Context, cfg Config, daemonID, devic
 		if errors.As(err, &ee) {
 			switch ee.Code {
 			case 75:
-				log.Printf("[INFO] [%s] upgrade requested — escalating to process exit", cfg.SpaceID)
+				log.Printf("[INFO] [%s] respawn requested (exit 75) — escalating to process exit", cfg.SpaceID)
 				setFatal(ee)
 				return
 			case 78:

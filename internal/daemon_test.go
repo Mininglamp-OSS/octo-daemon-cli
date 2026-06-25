@@ -73,3 +73,47 @@ func TestRuntimesChanged_ProviderAdded(t *testing.T) {
 		t.Fatal("expected change on provider count")
 	}
 }
+
+func TestComponentsChanged_NoChange(t *testing.T) {
+	a := []DeviceComponent{
+		{ComponentKey: "@mininglamp-oss/octo-cli", Version: "1.0.10"},
+		{ComponentKey: "@mininglamp-oss/octo-daemon", Version: "0.0.4"},
+	}
+	b := []DeviceComponent{
+		{ComponentKey: "@mininglamp-oss/octo-cli", Version: "1.0.10"},
+		{ComponentKey: "@mininglamp-oss/octo-daemon", Version: "0.0.4"},
+	}
+	if componentsChanged(a, b) {
+		t.Fatal("expected no change")
+	}
+}
+
+func TestComponentsChanged_VersionChange(t *testing.T) {
+	a := []DeviceComponent{{ComponentKey: "@mininglamp-oss/octo-daemon", Version: "0.0.4"}}
+	b := []DeviceComponent{{ComponentKey: "@mininglamp-oss/octo-daemon", Version: "0.0.5"}}
+	if !componentsChanged(a, b) {
+		t.Fatal("expected change on version")
+	}
+}
+
+func TestComponentsChanged_Installed(t *testing.T) {
+	a := []DeviceComponent{{ComponentKey: "@mininglamp-oss/octo-daemon", Version: "0.0.5"}}
+	b := []DeviceComponent{
+		{ComponentKey: "@mininglamp-oss/octo-daemon", Version: "0.0.5"},
+		{ComponentKey: "@mininglamp-oss/octo-cli", Version: "1.0.10"},
+	}
+	if !componentsChanged(a, b) {
+		t.Fatal("expected change on install (count up)")
+	}
+}
+
+func TestComponentsChanged_Uninstalled(t *testing.T) {
+	a := []DeviceComponent{
+		{ComponentKey: "@mininglamp-oss/octo-daemon", Version: "0.0.5"},
+		{ComponentKey: "@mininglamp-oss/octo-cli", Version: "1.0.10"},
+	}
+	b := []DeviceComponent{{ComponentKey: "@mininglamp-oss/octo-daemon", Version: "0.0.5"}}
+	if !componentsChanged(a, b) {
+		t.Fatal("expected change on uninstall (count down)")
+	}
+}
