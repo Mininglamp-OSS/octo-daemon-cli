@@ -32,8 +32,9 @@ type npmLsOutput struct {
 // when the global tree has extraneous/missing deps, but stdout JSON is still
 // valid — so we parse stdout and ignore the exit code. Packages absent from the
 // output (including unscoped local `npm link` entries, which key on a different
-// unscoped name) are reported with Version "" so the server treats them as
-// not-installed.
+// unscoped name) are omitted entirely — the server treats the reported list as
+// the full inventory, so a not-installed package must not appear as a phantom
+// empty-version record.
 func DetectDeviceComponents() []DeviceComponent {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -46,18 +47,23 @@ func DetectDeviceComponents() []DeviceComponent {
 }
 
 // parseDeviceComponents maps `npm ls -g --json` stdout onto the fixed target
-// whitelist. Invalid/empty input yields all targets with Version "".
+// whitelist, omitting targets that aren't installed (absent from the npm tree
+// → empty version). Invalid/empty input yields an empty slice.
 func parseDeviceComponents(out []byte) []DeviceComponent {
 	var parsed npmLsOutput
-	_ = json.Unmarshal(out, &parsed) // parse failure → all versions ""
+	_ = json.Unmarshal(out, &parsed) // parse failure → no components reported
 
 	components := make([]DeviceComponent, 0, len(deviceComponentTargets))
 	for _, t := range deviceComponentTargets {
+		version := parsed.Dependencies[t.key].Version
+		if version == "" {
+			continue // not installed — don't report a phantom record
+		}
 		components = append(components, DeviceComponent{
 			Type:         "nodejs",
 			Name:         t.name,
 			ComponentKey: t.key,
-			Version:      parsed.Dependencies[t.key].Version,
+			Version:      version,
 		})
 	}
 	return components
