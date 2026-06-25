@@ -51,16 +51,20 @@ func installedDaemonVersion() string {
 
 // shouldSkipDaemonUpgrade reports whether a daemon upgrade task is a no-op and
 // must not trigger an install/restart:
-//   - installed == target: already there.
+//   - installed is not older than target (already at or beyond it): nothing to do.
 //   - target == "" (server's "latest" semantics) with something already
 //     installed: an empty target can't be verified post-install, so acting on it
 //     would npm-install + self-restart on every (re-)dispatch and crash-loop the
 //     daemon if the server doesn't close the task promptly. Ignore it.
 //
+// Version comparison uses isVersionOlder (same normalization as the server's
+// close-out: strips "v"/pre-release/build metadata) so a "v0.0.5" target matches
+// an installed "0.0.5" instead of looping on a string mismatch.
+//
 // installed == "" (daemon not npm-managed) falls through so the npm path runs and
 // reports a clear "failed" for k8s/image deployments.
 func shouldSkipDaemonUpgrade(installed, target string) bool {
-	return installed != "" && (target == "" || installed == target)
+	return installed != "" && (target == "" || !isVersionOlder(installed, target))
 }
 
 func (d *Daemon) handleUpgrade(ctx context.Context, up *PendingUpgrade) error {
@@ -126,11 +130,13 @@ func (d *Daemon) handleDaemonUpgrade(ctx context.Context, up *PendingUpgrade) er
 		return d.reportUpgrade(ctx, up.TaskID, "failed", fmt.Sprintf("npm install failed: %v", err))
 	}
 
-	// Verify the install actually produced the target on disk before restarting;
-	// npm exiting 0 without the expected version would otherwise burn a pointless
-	// stop/respawn cycle and leave the task stuck.
-	if post := installedDaemonVersion(); up.TargetVersion != "" && post != up.TargetVersion {
-		msg := fmt.Sprintf("npm install exited 0 but installed version is %q, want %q", post, up.TargetVersion)
+	// Verify the install actually reached the target on disk before restarting;
+	// npm exiting 0 without reaching the target version would otherwise burn a
+	// pointless stop/respawn cycle and leave the task stuck. Uses isVersionOlder
+	// (same normalization the server close-out uses) so a "v0.0.5" target isn't
+	// falsely rejected against an installed "0.0.5".
+	if post := installedDaemonVersion(); up.TargetVersion != "" && isVersionOlder(post, up.TargetVersion) {
+		msg := fmt.Sprintf("npm install exited 0 but installed version %q did not reach target %q", post, up.TargetVersion)
 		log.Printf("[WARN] daemon upgrade task %s: %s", up.TaskID, msg)
 		return d.reportUpgrade(ctx, up.TaskID, "failed", msg)
 	}

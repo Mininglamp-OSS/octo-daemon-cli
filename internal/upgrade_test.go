@@ -14,6 +14,8 @@ func TestShouldSkipDaemonUpgrade(t *testing.T) {
 		{"target newer than installed", "0.0.4", "0.0.5", false},
 		{"nothing installed, empty target", "", "", false},
 		{"nothing installed, target set", "", "0.0.5", false},
+		{"v-prefixed target matches installed", "0.0.5", "v0.0.5", true},
+		{"installed newer than target (no downgrade)", "0.0.6", "0.0.5", true},
 	}
 
 	for _, tt := range tests {
