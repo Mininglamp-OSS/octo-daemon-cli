@@ -275,9 +275,14 @@ func TestAtomicWriteFileWritesCompleteContent(t *testing.T) {
 func TestAtomicWriteFileOverwritesAndPreservesMode(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
-	// Seed an existing file with a non-default mode.
+	// Seed an existing file with a non-default mode. os.WriteFile's mode is
+	// masked by the process umask, so Chmod explicitly afterwards to pin the
+	// real on-disk mode regardless of the umask the test runs under.
 	if err := os.WriteFile(path, []byte("old"), 0o640); err != nil {
 		t.Fatalf("seed: %v", err)
+	}
+	if err := os.Chmod(path, 0o640); err != nil {
+		t.Fatalf("chmod seed: %v", err)
 	}
 	if err := atomicWriteFile(path, []byte("new")); err != nil {
 		t.Fatalf("atomicWriteFile: %v", err)
