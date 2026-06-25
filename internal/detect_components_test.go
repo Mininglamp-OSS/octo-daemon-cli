@@ -4,9 +4,10 @@ import "testing"
 
 func TestParseDeviceComponents(t *testing.T) {
 	tests := []struct {
-		name string
-		in   string
-		want map[string]string // component_key → version, for components expected present
+		name    string
+		in      string
+		want    map[string]string // component_key → version, for components expected present
+		wantErr bool
 	}{
 		{
 			name: "all present",
@@ -36,15 +37,29 @@ func TestParseDeviceComponents(t *testing.T) {
 			want: map[string]string{},
 		},
 		{
-			name: "invalid json yields no components",
-			in:   `npm error stuff not json`,
+			name: "valid json, nothing installed → empty inventory, no error",
+			in:   `{"dependencies":{}}`,
 			want: map[string]string{},
+		},
+		{
+			name:    "invalid json → error, not an authoritative empty inventory",
+			in:      `npm error stuff not json`,
+			wantErr: true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := parseDeviceComponents([]byte(tt.in))
+			got, err := parseDeviceComponents([]byte(tt.in))
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected error for malformed input, got nil (and %v)", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
 			gotMap := make(map[string]string, len(got))
 			for _, c := range got {
 				gotMap[c.ComponentKey] = c.Version

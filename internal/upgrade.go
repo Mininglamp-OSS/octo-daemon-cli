@@ -36,17 +36,24 @@ func InstallDaemonNpm(ctx context.Context, version string) error {
 }
 
 // installedDaemonVersion returns the npm-installed version of the daemon package
-// from DetectDeviceComponents (the npm `npm ls -g` source of truth), or "" if it
-// isn't installed via npm. Used as the upgrade loop guard: comparing the on-disk
-// installed version (not the running process's ldflags CLIVersion) against the
-// task's target keeps the daemon's judgement aligned with what npm actually has.
-func installedDaemonVersion() string {
-	for _, c := range DetectDeviceComponents() {
+// from DetectDeviceComponents (the npm `npm ls -g` source of truth). It returns
+// ("", nil) when the package simply isn't installed via npm, and ("", err) when
+// the probe itself failed — the caller must distinguish these: a failed probe is
+// "unknown", not "not installed", so it must not drive an upgrade decision.
+// Comparing the on-disk installed version (not the running process's ldflags
+// CLIVersion) against the task's target keeps the daemon's judgement aligned with
+// what npm actually has.
+func installedDaemonVersion() (string, error) {
+	comps, err := DetectDeviceComponents()
+	if err != nil {
+		return "", err
+	}
+	for _, c := range comps {
 		if c.ComponentKey == DaemonNpmPackage {
-			return c.Version
+			return c.Version, nil
 		}
 	}
-	return ""
+	return "", nil
 }
 
 // shouldSkipDaemonUpgrade reports whether a daemon upgrade task is a no-op and
@@ -107,7 +114,14 @@ func (d *Daemon) handleUpgrade(ctx context.Context, up *PendingUpgrade) error {
 //   - npm unavailable → report "failed" (k8s/image deployments manage the binary
 //     via the orchestration layer, not npm).
 func (d *Daemon) handleDaemonUpgrade(ctx context.Context, up *PendingUpgrade) error {
-	installed := installedDaemonVersion()
+	installed, err := installedDaemonVersion()
+	if err != nil {
+		// Probe failed — installed version is unknown, not "". Don't reinstall on
+		// a guess; skip this attempt and let a later dispatch (with a working
+		// probe) decide.
+		log.Printf("[WARN] daemon upgrade skipped (task=%s): cannot determine installed version: %v", up.TaskID, err)
+		return nil
+	}
 	if shouldSkipDaemonUpgrade(installed, up.TargetVersion) {
 		log.Printf("[INFO] daemon upgrade skipped (task=%s): installed=%q target=%q", up.TaskID, installed, up.TargetVersion)
 		return nil
@@ -134,8 +148,12 @@ func (d *Daemon) handleDaemonUpgrade(ctx context.Context, up *PendingUpgrade) er
 	// npm exiting 0 without reaching the target version would otherwise burn a
 	// pointless stop/respawn cycle and leave the task stuck. Uses isVersionOlder
 	// (same normalization the server close-out uses) so a "v0.0.5" target isn't
-	// falsely rejected against an installed "0.0.5".
-	if post := installedDaemonVersion(); up.TargetVersion != "" && isVersionOlder(post, up.TargetVersion) {
+	// falsely rejected against an installed "0.0.5". A probe failure here is not
+	// fatal — npm install already exited 0, so we proceed to restart rather than
+	// report a false failure.
+	if post, perr := installedDaemonVersion(); perr != nil {
+		log.Printf("[WARN] daemon upgrade task %s: cannot verify installed version post-install (%v) — proceeding to restart", up.TaskID, perr)
+	} else if up.TargetVersion != "" && isVersionOlder(post, up.TargetVersion) {
 		msg := fmt.Sprintf("npm install exited 0 but installed version %q did not reach target %q", post, up.TargetVersion)
 		log.Printf("[WARN] daemon upgrade task %s: %s", up.TaskID, msg)
 		return d.reportUpgrade(ctx, up.TaskID, "failed", msg)

@@ -395,7 +395,7 @@ func (d *Daemon) fastDetectAndRegister(ctx context.Context) (uint64, error) {
 	}
 	runtimes := DetectRuntimesFast(d.providers.current())
 	d.addDeviceName(runtimes)
-	comps := DetectDeviceComponents()
+	comps := d.probeComponents()
 
 	resp, err := d.client.Register(ctx, d.buildRegisterRequest(runtimes, comps))
 	if err != nil {
@@ -426,7 +426,7 @@ func (d *Daemon) enrichDetectAndRegister(ctx context.Context) (uint64, error) {
 	d.addDeviceName(runtimes)
 	runtimes = EnrichOpenclawRuntime(runtimes)
 	runtimes = EnrichClaudeRuntime(runtimes)
-	comps := DetectDeviceComponents()
+	comps := d.probeComponents()
 
 	resp, err := d.client.Register(ctx, d.buildRegisterRequest(runtimes, comps))
 	if err != nil {
@@ -489,7 +489,7 @@ func (d *Daemon) register(ctx context.Context) error {
 		}
 	}
 
-	comps := DetectDeviceComponents()
+	comps := d.probeComponents()
 
 	resp, err := d.client.Register(ctx, d.buildRegisterRequest(runtimes, comps))
 	if err != nil {
@@ -577,7 +577,7 @@ func (d *Daemon) runSlowDetect(ctx context.Context) {
 	d.addDeviceName(current)
 	current = EnrichOpenclawRuntime(current)
 	current = EnrichClaudeRuntime(current)
-	comps := DetectDeviceComponents()
+	comps := d.probeComponents()
 
 	// Early exit if generation advanced during detection
 	d.mu.Lock()
@@ -641,8 +641,24 @@ func (d *Daemon) checkForbidden(err error) bool {
 	return false
 }
 
-func (d *Daemon) buildRegisterRequest(runtimes []RuntimeInfo, components []DeviceComponent) RegisterRequest {
-	return RegisterRequest{
+// probeComponents detects installed device components for a register payload.
+// On probe failure (npm missing/timeout/garbage output) it reuses the last
+// successfully-probed inventory instead of an empty slice, so a transient `npm
+// ls` failure isn't reported to the server as an authoritative "everything was
+// uninstalled" (which would flap component records). A genuine empty inventory
+// (probe succeeded with nothing installed) is returned as-is.
+func (d *Daemon) probeComponents() []DeviceComponent {
+	comps, err := DetectDeviceComponents()
+	if err != nil {
+		d.mu.Lock()
+		comps = d.lastComponents
+		d.mu.Unlock()
+		log.Printf("[WARN] device component probe failed, reusing last known inventory: %v", err)
+	}
+	return comps
+}
+
+func (d *Daemon) buildRegisterRequest(runtimes []RuntimeInfo, components []DeviceComponent) RegisterRequest {	return RegisterRequest{
 		DaemonID:            d.daemonID,
 		DeviceName:          d.cfg.DeviceName,
 		DeviceInfo:          GetDeviceInfo(d.deviceID),
