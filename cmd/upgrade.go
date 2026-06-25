@@ -1,34 +1,26 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
-	"os"
-	"os/exec"
 
 	"github.com/Mininglamp-OSS/octo-daemon-cli/internal"
 	"github.com/spf13/cobra"
 )
 
-const npmPackage = "@mininglamp-oss/octo-daemon"
-
 var upgradeCmd = &cobra.Command{
 	Use:   "upgrade",
 	Short: "Upgrade the daemon to the latest npm release and stop it for the supervisor to restart",
-	Long:  "Runs `npm install -g " + npmPackage + "@latest` to replace the on-disk binary,\nthen stops the running daemon (`octo-daemon stop`) so your process supervisor\n(pm2 / systemd / supervisord / k8s) re-execs the new version.",
+	Long:  "Runs `npm install -g " + internal.DaemonNpmPackage + "@latest` to replace the on-disk\nbinary, then stops the running daemon (`octo-daemon stop`) so your process\nsupervisor (pm2 / systemd / supervisord / k8s) re-execs the new version.",
 	RunE:  runUpgrade,
 }
 
 func runUpgrade(cmd *cobra.Command, args []string) error {
-	npm, err := exec.LookPath("npm")
-	if err != nil {
-		return &internal.ExitError{Code: 2, Message: "npm not found — install Node.js (which provides npm) to upgrade"}
-	}
-
-	fmt.Printf("Upgrading %s...\n", npmPackage)
-	install := exec.Command(npm, "install", "-g", npmPackage+"@latest")
-	install.Stdout = os.Stdout
-	install.Stderr = os.Stderr
-	if err := install.Run(); err != nil {
+	fmt.Printf("Upgrading %s...\n", internal.DaemonNpmPackage)
+	if err := internal.InstallDaemonNpm(cmd.Context(), "latest"); err != nil {
+		if errors.Is(err, internal.ErrNpmNotFound) {
+			return &internal.ExitError{Code: 2, Message: "npm not found — install Node.js (which provides npm) to upgrade"}
+		}
 		return &internal.ExitError{Code: 1, Message: fmt.Sprintf("npm install failed: %v", err)}
 	}
 
