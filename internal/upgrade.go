@@ -116,11 +116,13 @@ func (d *Daemon) handleUpgrade(ctx context.Context, up *PendingUpgrade) error {
 func (d *Daemon) handleDaemonUpgrade(ctx context.Context, up *PendingUpgrade) error {
 	installed, err := installedDaemonVersion()
 	if err != nil {
-		// Probe failed — installed version is unknown, not "". Don't reinstall on
-		// a guess; skip this attempt and let a later dispatch (with a working
-		// probe) decide.
-		log.Printf("[WARN] daemon upgrade skipped (task=%s): cannot determine installed version: %v", up.TaskID, err)
-		return nil
+		// Can't determine the installed version: npm missing (k8s/image
+		// deployment), or `npm ls` errored/timed out. Report a terminal failure
+		// so the task closes instead of lingering until sweeper timeout — never
+		// silently skip, or the fleet never learns the upgrade didn't happen.
+		msg := fmt.Sprintf("npm probe failed, cannot determine installed daemon version: %v", err)
+		log.Printf("[WARN] daemon upgrade task %s: %s", up.TaskID, msg)
+		return d.reportUpgrade(ctx, up.TaskID, "failed", msg)
 	}
 	if shouldSkipDaemonUpgrade(installed, up.TargetVersion) {
 		log.Printf("[INFO] daemon upgrade skipped (task=%s): installed=%q target=%q", up.TaskID, installed, up.TargetVersion)
