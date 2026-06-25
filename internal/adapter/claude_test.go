@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 )
 
@@ -110,6 +112,46 @@ func TestClaudeProvisionRegistersBotsIdempotently(t *testing.T) {
 	ids := readBotIDs(t, home)
 	if len(ids) != 2 || ids[0] != "bot-a" || ids[1] != "bot-b" {
 		t.Errorf("bots = %v, want [bot-a bot-b]", ids)
+	}
+}
+
+// #157: concurrent Provisions of different bots must all survive in the shared
+// bots[] — the global config mutex prevents a lost update where each goroutine
+// reads the same base and the last rename drops the others' entries.
+func TestClaudeProvisionConcurrentNoLostUpdate(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	a := NewClaudeAdapter(&recordingRunner{}, nil)
+
+	const n = 20
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func(i int) {
+			defer wg.Done()
+			uid := fmt.Sprintf("bot-%02d", i)
+			if _, err := a.Provision(context.Background(), ProvisionRequest{
+				BotUID: uid, BotToken: "bf_x",
+			}); err != nil {
+				t.Errorf("Provision %s: %v", uid, err)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	ids := readBotIDs(t, home)
+	got := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		got[id] = true
+	}
+	if len(ids) != n || len(got) != n {
+		t.Fatalf("expected %d distinct bots, got %d (ids=%v)", n, len(ids), ids)
+	}
+	for i := 0; i < n; i++ {
+		uid := fmt.Sprintf("bot-%02d", i)
+		if !got[uid] {
+			t.Errorf("bot %s lost from shared config (lost update)", uid)
+		}
 	}
 }
 

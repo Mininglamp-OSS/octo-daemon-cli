@@ -7,7 +7,16 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sync"
 )
+
+// claudeGlobalConfigMu serializes read-modify-write of the shared
+// ~/.cc-channel-octo/config.json. atomicWriteFile (temp+rename) prevents a
+// reader from seeing a half-written file, but two concurrent Provisions
+// registering different bots would still lost-update each other (both read the
+// same base, each appends only its own bot, the later rename wins). This mutex
+// makes the read→append→write sequence atomic across goroutines in this process.
+var claudeGlobalConfigMu sync.Mutex
 
 // KindClaude is the runtime_kind discriminator for the Claude Code runtime.
 const KindClaude = "claude"
@@ -68,10 +77,11 @@ func (a *ClaudeAdapter) Health(ctx context.Context) error {
 
 // Provision lays down one bot's on-disk config: ~/.cc-channel-octo/<bot_uid>/
 // config.json carrying the bot's real token (and its server url), then registers
-// the bot in the shared ~/.cc-channel-octo/config.json bots list and restarts
-// the channel host so the new bot takes effect. The model is NOT written here —
-// it is gateway-level global config. Spawning the per-bot sidecar service is
-// still TODO.
+// the bot in the shared ~/.cc-channel-octo/config.json bots list. Both writes
+// are atomic (temp+rename); the cc-channel-octo gateway watches config.json and
+// hot-loads the newly-registered bot itself, so Provision does NOT restart the
+// gateway (#157). The model is NOT written here — it is gateway-level global
+// config. Spawning the per-bot sidecar service is still TODO.
 func (a *ClaudeAdapter) Provision(ctx context.Context, req ProvisionRequest) (ProvisionResult, error) {
 	if req.BotUID == "" {
 		return ProvisionResult{}, fmt.Errorf("%w: missing bot_uid", ErrInvalidConfig)
@@ -133,6 +143,10 @@ func (a *ClaudeAdapter) Provision(ctx context.Context, req ProvisionRequest) (Pr
 // ~/.cc-channel-octo/config.json, preserving any other fields. A missing file
 // is created. Re-provisioning the same bot is a no-op (idempotent).
 func registerClaudeBot(home, botUID string) error {
+	// Serialize the whole read-modify-write against concurrent Provisions so two
+	// bots registering at once don't lost-update the shared bots[] array.
+	claudeGlobalConfigMu.Lock()
+	defer claudeGlobalConfigMu.Unlock()
 	cfgPath := filepath.Join(home, claudeChannelDir, "config.json")
 	root := map[string]any{}
 	buf, err := os.ReadFile(cfgPath)
