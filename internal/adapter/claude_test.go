@@ -86,8 +86,11 @@ func TestClaudeProvisionWritesConfig(t *testing.T) {
 		t.Errorf("bots = %v, want [bot-123]", ids)
 	}
 
-	if len(runner.calls) != 1 || runner.calls[0][0] != claudeChannelBin || runner.calls[0][1] != "restart" {
-		t.Errorf("restart not invoked, calls = %v", runner.calls)
+	// #157: provision no longer restarts the gateway — it only writes config and
+	// the gateway hot-loads the bot via its config watcher. No CLI subcommand
+	// should be invoked.
+	if len(runner.calls) != 0 {
+		t.Errorf("provision must not invoke any CLI command (#157 hot-reload), got %v", runner.calls)
 	}
 }
 
@@ -110,18 +113,25 @@ func TestClaudeProvisionRegistersBotsIdempotently(t *testing.T) {
 	}
 }
 
-func TestClaudeProvisionSwallowsRestartFailure(t *testing.T) {
+// #157: provision succeeds purely by writing config (no gateway subprocess), so
+// a CLIRunner that would fail on any exec must not affect the result — provision
+// never calls it.
+func TestClaudeProvisionDoesNotInvokeGateway(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	a := NewClaudeAdapter(&recordingRunner{err: errors.New("boom")}, nil)
+	runner := &recordingRunner{err: errors.New("boom")}
+	a := NewClaudeAdapter(runner, nil)
 
 	if _, err := a.Provision(context.Background(), ProvisionRequest{
 		BotUID: "bot-1", BotToken: "bf_x",
 	}); err != nil {
-		t.Fatalf("Provision should swallow restart failure, got %v", err)
+		t.Fatalf("Provision must not depend on any subprocess, got %v", err)
 	}
 	if ids := readBotIDs(t, home); len(ids) != 1 || ids[0] != "bot-1" {
 		t.Errorf("bots = %v, want [bot-1]", ids)
+	}
+	if len(runner.calls) != 0 {
+		t.Errorf("provision must not invoke any CLI command, got %v", runner.calls)
 	}
 }
 
@@ -191,5 +201,57 @@ func TestClaudeProvisionOmitsEmptyApiUrl(t *testing.T) {
 	cfg := readBotConfig(t, home, "bot-y")
 	if _, present := cfg["apiUrl"]; present {
 		t.Errorf("apiUrl should be omitted when empty, got %v", cfg["apiUrl"])
+	}
+}
+
+// #157: the config watcher reads config.json concurrently with the daemon's
+// writes, so writes must be atomic (temp+rename) — a reader never sees a
+// partial file, and the final content is exactly what was written.
+func TestAtomicWriteFileWritesCompleteContent(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	payload := []byte(`{"bots":[{"id":"a"},{"id":"b"}]}` + "\n")
+	if err := atomicWriteFile(path, payload); err != nil {
+		t.Fatalf("atomicWriteFile: %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if string(got) != string(payload) {
+		t.Errorf("content = %q, want %q", got, payload)
+	}
+	// No leftover temp files in the directory (rename consumed it).
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		if e.Name() != "config.json" {
+			t.Errorf("unexpected leftover file: %s", e.Name())
+		}
+	}
+}
+
+func TestAtomicWriteFileOverwritesAndPreservesMode(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	// Seed an existing file with a non-default mode.
+	if err := os.WriteFile(path, []byte("old"), 0o640); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := atomicWriteFile(path, []byte("new")); err != nil {
+		t.Fatalf("atomicWriteFile: %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if string(got) != "new" {
+		t.Errorf("content = %q, want new", got)
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if fi.Mode().Perm() != 0o640 {
+		t.Errorf("mode = %v, want 0640 (preserved)", fi.Mode().Perm())
 	}
 }
