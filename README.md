@@ -134,9 +134,11 @@ pm2 delete octo-daemon        # remove it from pm2 entirely
 pm2 logs octo-daemon          # tail its logs
 ```
 
-> `octo-daemon stop` only stops a **foreground** daemon (it signals the locked
-> pid). For a pm2-managed daemon use `pm2 stop octo-daemon` — otherwise pm2 will
-> just restart it.
+> `octo-daemon stop` signals the locked daemon pid (works whether the daemon
+> runs in the foreground or under a supervisor). Under a process supervisor
+> (pm2 / systemd / ...) it gets restarted — which is exactly how `upgrade`
+> applies a new binary. To stop a pm2-managed daemon for good, use
+> `pm2 stop octo-daemon`.
 
 ### 5. Check status
 
@@ -148,8 +150,13 @@ pm2 list                      # pm2-managed daemon status (when run via --daemon
 ### 6. Upgrade
 
 ```bash
-octo-daemon upgrade           # npm install -g @latest, then pm2 restart
+octo-daemon upgrade           # npm install -g @latest, then `octo-daemon stop` (supervisor restarts it)
 ```
+
+> `upgrade` only installs the new binary and stops the daemon — restarting it is
+> the supervisor's job, so the supervisor must be set to respawn on exit (pm2
+> default; systemd `Restart=always`; supervisord `autorestart=true`). A clean
+> exit won't respawn under systemd `Restart=on-failure`.
 
 ## ⚙️ Configuration & environment
 
