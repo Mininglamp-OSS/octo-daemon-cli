@@ -147,10 +147,12 @@ function parseConfigArg(args) {
     const arg = args[i];
     if (arg === "--config") {
       if (i + 1 >= args.length) usageError("--config requires a path");
+      if (args[i + 1].startsWith("--")) usageError("--config requires a path");
       cfgPath = args[i + 1];
       i += 1;
     } else if (arg.startsWith("--config=")) {
       cfgPath = arg.slice("--config=".length);
+      if (!cfgPath) usageError("--config requires a path");
     } else {
       rest.push(arg);
     }
@@ -177,10 +179,9 @@ function ensurePM2() {
   run("npm", ["install", "-g", "pm2"]);
 }
 
-function run(command, args, options = {}) {
+function run(command, args) {
   const res = spawnSync(command, args, {
-    stdio: options.capture ? ["ignore", "pipe", "pipe"] : "inherit",
-    encoding: options.capture ? "utf8" : undefined,
+    stdio: "inherit",
   });
   if (res.error) {
     console.error(`[octo-daemon] ${res.error.message}`);
@@ -190,7 +191,6 @@ function run(command, args, options = {}) {
     exitFromSignal(res.signal);
   }
   if (res.status !== 0) {
-    if (options.capture && res.stderr) process.stderr.write(res.stderr);
     process.exit(res.status === null ? 1 : res.status);
   }
   return res;
@@ -321,7 +321,7 @@ function pm2AppCanOwnLock(app, pid) {
   if (!app || !app.ok || !app.found || !pid) return false;
   if (app.pid === pid) return true;
   if (app.online) return false;
-  return app.status !== "stopped";
+  return app.status === "launching" || app.status === "stopping";
 }
 
 function foregroundDaemon(app) {
@@ -384,13 +384,13 @@ module.exports = {
 }
 
 function serviceStart(args) {
+  const cfgPath = parseConfigArg(args);
   const app = pm2AppStatus();
   assertNoForegroundDaemon(app);
   const goBin = resolveBinary();
-  const cfgPath = parseConfigArg(args);
+  ensurePM2();
   const ecoPath = writeEcosystem(goBin, cfgPath);
   console.log(`[octo-daemon] wrote pm2 ecosystem: ${ecoPath}`);
-  ensurePM2();
   run("pm2", ["startOrRestart", ecoPath]);
   run("pm2", ["save"]);
   console.log(`[octo-daemon] service started via pm2 (app ${JSON.stringify(PM2_APP_NAME)}).`);
@@ -443,6 +443,8 @@ function serviceRestart() {
     }
     if (!app.ok) {
       warnUnknownProbe("[octo-daemon] warning: continuing restart without confirmed pm2 service status", app);
+      console.error("[octo-daemon] restart aborted because pm2 service status could not be confirmed.");
+      process.exit(1);
     }
   }
   run("pm2", ["restart", PM2_APP_NAME]);
@@ -499,6 +501,9 @@ function exitFromSignal(signal) {
 }
 
 function runGo(args) {
+  // pm2 services bypass this shim via `interpreter: "none"` and execute the
+  // Go binary directly, so supervised daemon signal delivery does not depend
+  // on this synchronous native-command forwarder.
   const res = spawnSync(resolveBinary(), args, { stdio: "inherit" });
 
   if (res.error) {
@@ -565,7 +570,7 @@ function handleNodeCommand(args) {
     return true;
   }
   if (cmd === "logs") {
-    if (isHelpArg(subcmd)) {
+    if (args.slice(1).some(isHelpArg)) {
       printServiceHelp();
       return true;
     }
@@ -576,6 +581,7 @@ function handleNodeCommand(args) {
     if (subcmd === "install") {
       if (rest.some(isHelpArg)) {
         printServiceHelp();
+        return true;
       } else {
         serviceStart(rest);
       }

@@ -239,6 +239,12 @@ cd octo-daemon-cli
 make build
 ```
 
+Run the locally built foreground daemon with:
+
+```bash
+make run
+```
+
 Cross-compile:
 
 ```bash

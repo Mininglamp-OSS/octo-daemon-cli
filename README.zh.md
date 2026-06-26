@@ -216,6 +216,12 @@ cd octo-daemon-cli
 make build
 ```
 
+运行本地构建的前台 daemon：
+
+```bash
+make run
+```
+
 交叉编译：
 
 ```bash
