@@ -417,15 +417,15 @@ function serviceStop() {
   ensurePM2();
   if (app.ok && app.status === "stopped") {
     console.log("[octo-daemon] service is already stopped.");
-  } else {
-    run("pm2", ["stop", PM2_APP_NAME]);
+    return;
   }
+  run("pm2", ["stop", PM2_APP_NAME]);
   run("pm2", ["save"]);
   console.log(`[octo-daemon] service stopped (app ${JSON.stringify(PM2_APP_NAME)}).`);
 }
 
 function serviceRestart() {
-  const app = pm2AppStatus();
+  let app = pm2AppStatus();
   assertNoForegroundDaemon(app);
   if (app.ok && !app.found) {
     console.error("[octo-daemon] service is not installed. Run `octo-daemon start` first.");
@@ -435,6 +435,16 @@ function serviceRestart() {
     warnUnknownProbe("[octo-daemon] warning: continuing restart without pm2 service status", app);
   }
   ensurePM2();
+  if (!app.ok) {
+    app = pm2AppStatus();
+    if (app.ok && !app.found) {
+      console.error("[octo-daemon] service is not installed. Run `octo-daemon start` first.");
+      process.exit(2);
+    }
+    if (!app.ok) {
+      warnUnknownProbe("[octo-daemon] warning: continuing restart without confirmed pm2 service status", app);
+    }
+  }
   run("pm2", ["restart", PM2_APP_NAME]);
   run("pm2", ["save"]);
 }

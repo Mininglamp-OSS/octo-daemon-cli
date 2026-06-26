@@ -517,6 +517,105 @@ exit 0
   ]);
 });
 
+test("shim service stop returns cleanly when already stopped", (t) => {
+  if (process.platform === "win32") {
+    t.skip("fake pm2 shell script is POSIX-only");
+    return;
+  }
+
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "shim-stop-already-stopped-"));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const mainPackageDir = path.join(tmp, "octo-daemon");
+  const mainDir = path.join(mainPackageDir, "bin");
+  fs.mkdirSync(mainDir, { recursive: true });
+  fs.copyFileSync(SHIM, path.join(mainDir, "octo-daemon.js"));
+  installFakePlatformBinary(
+    t,
+    mainPackageDir,
+    fakeStatusBinary({ status: "stopped", locked: false, pid: 0, pid_file_stale: false }),
+  );
+
+  const binDir = path.join(tmp, "bin");
+  fs.mkdirSync(binDir);
+  const pm2Log = path.join(tmp, "pm2.log");
+  fs.writeFileSync(
+    path.join(binDir, "pm2"),
+    `#!/bin/sh
+if [ "$1" = "jlist" ]; then
+  printf '%s' '[{"name":"octo-daemon","pid":0,"pm2_env":{"status":"stopped"}}]'
+  exit 0
+fi
+printf '%s\\n' "$*" >> ${shellQuote(pm2Log)}
+exit 0
+`,
+    { mode: 0o755 },
+  );
+
+  const res = spawnSync(process.execPath, [path.join(mainDir, "octo-daemon.js"), "stop"], {
+    encoding: "utf8",
+    env: { ...process.env, HOME: path.join(tmp, "home"), PATH: `${binDir}${path.delimiter}${process.env.PATH}` },
+  });
+  assert.strictEqual(res.status, 0, res.stderr);
+  assert.match(res.stdout, /service is already stopped/);
+  assert.doesNotMatch(res.stdout, /service stopped/);
+  assert.ok(!fs.existsSync(pm2Log), "pm2 save/stop should not run when the service is already stopped");
+});
+
+test("shim service restart rechecks app existence after pm2 probe failure", (t) => {
+  if (process.platform === "win32") {
+    t.skip("fake pm2 shell script is POSIX-only");
+    return;
+  }
+
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "shim-restart-probe-fail-"));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const mainPackageDir = path.join(tmp, "octo-daemon");
+  const mainDir = path.join(mainPackageDir, "bin");
+  fs.mkdirSync(mainDir, { recursive: true });
+  fs.copyFileSync(SHIM, path.join(mainDir, "octo-daemon.js"));
+  installFakePlatformBinary(
+    t,
+    mainPackageDir,
+    fakeStatusBinary({ status: "stopped", locked: false, pid: 0, pid_file_stale: false }),
+  );
+
+  const binDir = path.join(tmp, "bin");
+  fs.mkdirSync(binDir);
+  const stateFile = path.join(tmp, "jlist-count");
+  const pm2Log = path.join(tmp, "pm2.log");
+  fs.writeFileSync(
+    path.join(binDir, "pm2"),
+    `#!/bin/sh
+if [ "$1" = "jlist" ]; then
+  count=0
+  if [ -f ${shellQuote(stateFile)} ]; then
+    count=$(cat ${shellQuote(stateFile)})
+  fi
+  count=$((count + 1))
+  printf '%s' "$count" > ${shellQuote(stateFile)}
+  if [ "$count" = "1" ]; then
+    printf '%s\\n' 'pm2 jlist failed' >&2
+    exit 7
+  fi
+  printf '%s' '[]'
+  exit 0
+fi
+printf '%s\\n' "$*" >> ${shellQuote(pm2Log)}
+exit 0
+`,
+    { mode: 0o755 },
+  );
+
+  const res = spawnSync(process.execPath, [path.join(mainDir, "octo-daemon.js"), "restart"], {
+    encoding: "utf8",
+    env: { ...process.env, HOME: path.join(tmp, "home"), PATH: `${binDir}${path.delimiter}${process.env.PATH}` },
+  });
+  assert.strictEqual(res.status, 2, res.stderr);
+  assert.match(res.stderr, /continuing restart without pm2 service status/);
+  assert.match(res.stderr, /service is not installed/);
+  assert.ok(!fs.existsSync(pm2Log), "pm2 restart should not run when the service is confirmed absent");
+});
+
 test("shim ignores stale pid files when the Go lock is free", (t) => {
   if (process.platform === "win32") {
     t.skip("fake pm2 shell script is POSIX-only");
