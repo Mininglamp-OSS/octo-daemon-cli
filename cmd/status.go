@@ -60,34 +60,48 @@ func writeStatus(w io.Writer, asJSON bool) error {
 	}
 
 	if !report.Locked {
-		fmt.Fprintln(w, "Status: stopped")
-		return nil
+		_, err := fmt.Fprintln(w, "Status: stopped")
+		return err
 	}
 
 	if report.PID == 0 {
-		fmt.Fprintln(w, "Status: running (pid unknown)")
+		if _, err := fmt.Fprintln(w, "Status: running (pid unknown)"); err != nil {
+			return err
+		}
 	} else {
-		fmt.Fprintf(w, "Status: running (pid %d)\n", report.PID)
+		if _, err := fmt.Fprintf(w, "Status: running (pid %d)\n", report.PID); err != nil {
+			return err
+		}
 	}
 
 	if profiles, err := internal.LoadProfiles(internal.ConfigFilePath()); err == nil && len(profiles) > 0 {
-		fmt.Fprintln(w, "Profiles:")
+		if _, err := fmt.Fprintln(w, "Profiles:"); err != nil {
+			return err
+		}
 		for _, p := range profiles {
 			id, err := internal.LoadDaemonID(p.SpaceID)
 			if err != nil {
 				id = "(no daemon.id)"
 			}
-			fmt.Fprintf(w, "  - space=%s daemon_id=%s\n", p.SpaceID, id)
+			if _, err := fmt.Fprintf(w, "  - space=%s daemon_id=%s\n", p.SpaceID, id); err != nil {
+				return err
+			}
 		}
 	}
 
 	runtimes := internal.DetectRuntimes()
 	if len(runtimes) == 0 {
-		fmt.Fprintln(w, "Runtimes: none detected")
+		if _, err := fmt.Fprintln(w, "Runtimes: none detected"); err != nil {
+			return err
+		}
 	} else {
-		fmt.Fprintln(w, "Runtimes:")
+		if _, err := fmt.Fprintln(w, "Runtimes:"); err != nil {
+			return err
+		}
 		for _, r := range runtimes {
-			fmt.Fprintf(w, "  - %s %s (%s)\n", r.Provider, r.Version, r.Path)
+			if _, err := fmt.Fprintf(w, "  - %s %s (%s)\n", r.Provider, r.Version, r.Path); err != nil {
+				return err
+			}
 		}
 	}
 
