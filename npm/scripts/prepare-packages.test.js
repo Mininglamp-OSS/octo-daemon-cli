@@ -206,6 +206,13 @@ test("shim resolves the platform package and propagates args + exit code", (t) =
   assert.match(rootHelpAlias.stdout, /octo-daemon - Octo Agent Runtime Daemon/);
   assert.doesNotMatch(rootHelpAlias.stdout, /fake (darwin|linux)\/(amd64|arm64)/);
 
+  const rootHelpBare = spawnSync(process.execPath, [path.join(mainDir, "bin", "octo-daemon.js")], {
+    encoding: "utf8",
+  });
+  assert.strictEqual(rootHelpBare.status, 0, rootHelpBare.stderr);
+  assert.match(rootHelpBare.stdout, /Service control commands \(npm shim \/ pm2\)/);
+  assert.doesNotMatch(rootHelpBare.stdout, /fake (darwin|linux)\/(amd64|arm64)/);
+
   const nativeHelp = spawnSync(process.execPath, [
     path.join(mainDir, "bin", "octo-daemon.js"),
     "help",
@@ -488,6 +495,49 @@ exit 0
   assert.match(res.stderr, /foreground mode \(pid unknown\)/);
 });
 
+test("shim restart refuses to run while a foreground daemon is active", (t) => {
+  if (process.platform === "win32") {
+    t.skip("fake pm2 shell script is POSIX-only");
+    return;
+  }
+
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "shim-restart-foreground-"));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const mainPackageDir = path.join(tmp, "octo-daemon");
+  const mainDir = path.join(mainPackageDir, "bin");
+  fs.mkdirSync(mainDir, { recursive: true });
+  fs.copyFileSync(SHIM, path.join(mainDir, "octo-daemon.js"));
+  installFakePlatformBinary(
+    t,
+    mainPackageDir,
+    fakeStatusBinary({ status: "running", locked: true, pid: process.pid, pid_file_stale: false }),
+  );
+
+  const binDir = path.join(tmp, "bin");
+  fs.mkdirSync(binDir);
+  const pm2Log = path.join(tmp, "pm2.log");
+  fs.writeFileSync(
+    path.join(binDir, "pm2"),
+    `#!/bin/sh
+if [ "$1" = "jlist" ]; then
+  printf '%s' '[{"name":"octo-daemon","pid":4242,"pm2_env":{"status":"online"}}]'
+  exit 0
+fi
+printf '%s\\n' "$*" >> ${shellQuote(pm2Log)}
+exit 0
+`,
+    { mode: 0o755 },
+  );
+
+  const res = spawnSync(process.execPath, [path.join(mainDir, "octo-daemon.js"), "restart"], {
+    encoding: "utf8",
+    env: { ...process.env, HOME: path.join(tmp, "home"), PATH: `${binDir}${path.delimiter}${process.env.PATH}` },
+  });
+  assert.strictEqual(res.status, 2, res.stderr);
+  assert.match(res.stderr, /foreground mode/);
+  assert.ok(!fs.existsSync(pm2Log), "pm2 restart should not run while a foreground daemon is active");
+});
+
 test("shim service subprocesses preserve signal exit semantics", (t) => {
   if (process.platform === "win32") {
     t.skip("fake pm2 shell script is POSIX-only");
@@ -532,7 +582,7 @@ test("shim fails with a build-from-source pointer when the platform package is a
   fs.mkdirSync(mainDir, { recursive: true });
   fs.copyFileSync(SHIM, path.join(mainDir, "octo-daemon.js"));
 
-  const res = spawnSync(process.execPath, [path.join(mainDir, "octo-daemon.js")], {
+  const res = spawnSync(process.execPath, [path.join(mainDir, "octo-daemon.js"), "version"], {
     encoding: "utf8",
   });
   assert.strictEqual(res.status, 1);

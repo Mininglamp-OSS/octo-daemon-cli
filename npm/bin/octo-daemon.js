@@ -315,6 +315,7 @@ function serviceStop() {
 }
 
 function serviceRestart() {
+  assertNoForegroundDaemon();
   const app = pm2AppStatus();
   if (!app.found) {
     console.error("[octo-daemon] service is not installed. Run `octo-daemon start` first.");
@@ -364,7 +365,7 @@ function exitFromSignal(signal) {
   process.exit(128 + signum);
 }
 
-function runGo(args, options = {}) {
+function runGo(args) {
   const res = spawnSync(resolveBinary(), args, { stdio: "inherit" });
 
   if (res.error) {
@@ -376,15 +377,15 @@ function runGo(args, options = {}) {
     exitFromSignal(res.signal);
   }
 
-  const status = res.status === null ? 1 : res.status;
-  if (!options.returnStatus) {
-    process.exit(status);
-  }
-  return status;
+  process.exit(res.status === null ? 1 : res.status);
 }
 
 function handleNodeCommand(args) {
   const [cmd, subcmd, ...rest] = args;
+  if (!cmd) {
+    printRootHelp();
+    return true;
+  }
   if (isHelpArg(cmd)) {
     printRootHelp();
     return true;
