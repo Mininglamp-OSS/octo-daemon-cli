@@ -37,7 +37,7 @@
 
 ## 🌟 为什么用 Octo Daemon
 
-- **快速清单。** 用 `octo-daemon config` 把二进制对准一个 space，执行 `octo-daemon start`，本机上所有 Claude / OpenClaw 都会在数秒内出现在 OCTO Runtimes 页面。一个 daemon 可同时服务**多个 space**。
+- **快速清单。** 用 `octo-daemon config` 把二进制对准一个 space，执行 `octo-daemon start` 启动后台服务（或用 `octo-daemon run` 前台运行），本机上所有 Claude / OpenClaw 都会在数秒内出现在 OCTO Runtimes 页面。一个 daemon 可同时服务**多个 space**。
 - **远程升级，无需 SSH。** OpenClaw / cc-octo 插件以及 provider CLI（Claude / OpenClaw）都可以从 OCTO Web 一键升级 —— 服务端 atomic claim、版本 pin、register 时自动关单。daemon 二进制本身走 npm / k8s 编排升级，不在进程内自升级。
 - **天然自愈。** 两阶段探测（快注册 + 异步深探）、60s 周期重扫、服务端 30s sweeper。每个 space 各跑一条受监管的循环：出问题的 space 会被隔离重试、不影响其他 space；API key 被踢则该 space 干净退出。
 
@@ -95,48 +95,59 @@ http://localhost:8092` → 校验打到 `http://localhost:8092/v1/runtimes/verif
 
 > `--matter-url` 可传，会被存下供将来使用，目前可选。
 
-### 4. 启动
+### 4. 命令归属
+
+通过 npm 安装后的 `octo-daemon` 分两层：
+
+| 层级 | 命令 | 职责 |
+|------|------|------|
+| Go daemon 二进制 | `config`、`run`、`status`、`upgrade`、`version` | 配置 profile、运行 daemon 进程、查看 daemon 状态、升级已安装二进制 |
+| npm Node.js shim | `start`、`stop`、`restart`、`logs`、`service install/status/remove` | 管理执行 Go 二进制的 pm2 后台服务 |
+
+也就是说，`config` 和其它 daemon 能力不依赖 pm2；pm2 只负责后台服务生命周期。
+
+### 5. 前台运行或启动服务
 
 ```bash
-octo-daemon start            # 前台运行（占住终端）
-octo-daemon start --daemon   # 引导 pm2 托管 daemon，完成后自身退出
-octo-daemon stop             # 停止前台运行的 daemon
+octo-daemon run              # 前台运行（占住终端）
+octo-daemon start            # 启动/安装 pm2 托管的后台服务
+octo-daemon stop             # 停止后台服务
+octo-daemon restart          # 重启后台服务
+octo-daemon logs             # 查看后台服务日志
 ```
 
-`start` 读取 `config.json` 里**所有** profile，在单进程内为每个 space 各维持
+`run` 读取 `config.json` 里**所有** profile，在单进程内为每个 space 各维持
 一条后端连接。单个 space 出问题（URL 错、key 被踢）会被隔离重试，不影响其他
 space。
 
-`start --daemon` **不会**自己跑 daemon——它把 daemon 注册成 pm2 托管的服务：
-缺 pm2 就装、写 `~/.octo-daemon/ecosystem.config.js`（让 pm2 以前台模式拉起
-Go 二进制）、执行 `pm2 startOrRestart` + `pm2 save`，然后自身退出。pm2 负责保活，
-升级后会重新 exec 新二进制。可选地跑 `pm2 startup`（会打印一条 sudo 命令）让
-pm2——以及 daemon——开机自启。
+`start`、`stop`、`restart`、`logs` 和 `service ...` 由 npm shim 处理，因为
+pm2 属于 Node.js 服务管理层。shim 会写 `~/.octo-daemon/ecosystem.config.js`，
+让 pm2 直接托管解析后的 Go 二进制，并执行 `run --config <path>`（daemon 进程树里
+不会多一层 Node）。pm2 负责保活，升级后会重新 exec 新二进制。可选地跑
+`pm2 startup`（会打印一条 sudo 命令）让 pm2——以及 daemon——开机自启。
 
-注册之后,直接用 pm2 管理它:
+服务托管关系:
 
 ```bash
-pm2 stop octo-daemon          # 停止 pm2 托管的 daemon
-pm2 restart octo-daemon       # 重启（升级后也用它重新 exec 新二进制）
-pm2 delete octo-daemon        # 从 pm2 中彻底移除
-pm2 logs octo-daemon          # 查看日志
+octo-daemon service install   # 和 start 使用同一套服务安装路径
+octo-daemon service status    # 查看 pm2 服务状态
+octo-daemon service remove    # 从 pm2 移除 app；保留 ~/.octo-daemon 配置
 ```
 
-> `octo-daemon stop` 给持锁的 daemon pid 发信号（前台运行或受 supervisor 托管都适用）。
-> 在 supervisor（pm2 / systemd / ...）下它会被重新拉起——`upgrade` 正是借此应用新二进制。
-> 想彻底停掉 pm2 托管的 daemon，请用 `pm2 stop octo-daemon`。
+> `octo-daemon stop` 只管理后台服务。如果另一个终端里跑着 `octo-daemon run`，
+> 请在那个终端用 Ctrl+C / SIGTERM 停止。
 
-### 5. 查看状态
+### 6. 查看状态
 
 ```bash
 octo-daemon status            # 进程 / 版本 / 各 space profile
-pm2 list                      # pm2 托管的 daemon 状态（经 --daemon 注册后）
+octo-daemon service status    # pm2 托管服务状态
 ```
 
-### 6. 升级
+### 7. 升级
 
 ```bash
-octo-daemon upgrade           # npm install -g @latest，然后 `octo-daemon stop`（由 supervisor 拉起）
+octo-daemon upgrade           # npm install -g @latest，然后 signal 当前进程（由 supervisor 拉起）
 ```
 
 > `upgrade` 只装新二进制并停掉 daemon——拉起交给 supervisor，所以 supervisor 必须配置为
@@ -189,12 +200,12 @@ octo-daemon upgrade           # npm install -g @latest，然后 `octo-daemon sto
 
 | 路径 | 用途 |
 |------|------|
-| `config.json` | profile 列表（每 space 一条）；`octo-daemon config` 写、`start` 读 |
+| `config.json` | profile 列表（每 space 一条）；`octo-daemon config` 写、`run` 读 |
 | `<space_id>/daemon.id` | 该 space 的 daemon 身份（v7 UUID，首次生成永久保留） |
 | `<space_id>/events.state` | 该 space 的 SSE 去重游标 |
 | `daemon.lock` | 文件锁，单实例保护（一个进程服务所有 space） |
 | `daemon.pid` | 当前进程 PID |
-| `ecosystem.config.js` | pm2 服务定义（`start --daemon` 写入）；日志由 pm2 管理 |
+| `ecosystem.config.js` | pm2 服务定义（npm shim 写入）；日志由 pm2 管理 |
 
 ## 🛠 从源码构建
 

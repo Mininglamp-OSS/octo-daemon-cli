@@ -29,7 +29,7 @@ func TryLock() (*os.File, error) {
 
 	if err := lockFile(f); err != nil {
 		_ = f.Close()
-		return nil, fmt.Errorf("another daemon is already running. Use 'octo-daemon stop' first")
+		return nil, fmt.Errorf("another daemon is already running. Stop the existing 'octo-daemon run' process or the pm2 service first")
 	}
 
 	// Write PID to a separate file (readable even while lock is held)

@@ -633,8 +633,8 @@ func (d *Daemon) checkForbidden(err error) bool {
 	if errors.As(err, &forbiddenErr) {
 		log.Printf("[ERROR] API key rejected (403): user is no longer a member of this space. Stopping daemon.")
 		// Record exit 78 (config-level fatal) for a permanently bad api key.
-		// Under pm2 the process may be restarted (bounded by max_restarts in
-		// ecosystem.config.js) rather than stopped on this code.
+		// The npm-generated pm2 ecosystem treats this as a stop code, avoiding
+		// a restart loop for credentials that require operator action.
 		d.requestExit(&ExitError{Code: 78, Message: "API key rejected: user is no longer a member of this space"})
 		return true
 	}

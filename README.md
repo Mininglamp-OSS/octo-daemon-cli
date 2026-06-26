@@ -39,7 +39,7 @@ upgrades.
 
 ## 🌟 Why Octo Daemon
 
-- **Fast inventory.** Point the binary at a space with `octo-daemon config`, run `octo-daemon start`, and every Claude / OpenClaw install on that machine appears on the OCTO Runtimes page within seconds. One daemon can serve **multiple spaces** at once.
+- **Fast inventory.** Point the binary at a space with `octo-daemon config`, run `octo-daemon start` for the background service (or `octo-daemon run` in the foreground), and every Claude / OpenClaw install on that machine appears on the OCTO Runtimes page within seconds. One daemon can serve **multiple spaces** at once.
 - **Remote upgrades, no SSH.** OpenClaw / cc-octo plugins and provider CLIs (Claude, OpenClaw) can be upgraded from the OCTO web UI — atomic claim on the server, version-pinned downloads, register-time close-out. The daemon binary itself rolls via npm / k8s, not in-process.
 - **Self-healing by design.** Two-stage detection (fast register + async deep probe), 60s rescan, 30s server-side sweeper. Each space runs in its own supervised loop: a failing space is isolated and retried without affecting the others, and an evicted API key shuts that space down cleanly.
 
@@ -106,51 +106,62 @@ api-key — each gets its own profile and its own backend connection.
 
 > `--matter-url` is accepted and stored for future use but is optional.
 
-### 4. Start
+### 4. Command ownership
+
+`octo-daemon` has two layers when installed from npm:
+
+| Layer | Commands | Responsibility |
+|-------|----------|----------------|
+| Go daemon binary | `config`, `run`, `status`, `upgrade`, `version` | Configure profiles, run the daemon process, inspect daemon state, upgrade the installed binary |
+| npm Node.js shim | `start`, `stop`, `restart`, `logs`, `service install/status/remove` | Manage the pm2 background service that executes the Go binary |
+
+This keeps `config` and other daemon features independent from pm2. pm2 only
+owns service lifecycle.
+
+### 5. Run or start the service
 
 ```bash
-octo-daemon start            # foreground (blocks the terminal)
-octo-daemon start --daemon   # bootstrap pm2 to supervise the daemon, then exit
-octo-daemon stop             # stop a foreground daemon
+octo-daemon run              # foreground (blocks the terminal)
+octo-daemon start            # start/install the pm2-managed background service
+octo-daemon stop             # stop the background service
+octo-daemon restart          # restart the background service
+octo-daemon logs             # tail background service logs
 ```
 
-`start` reads **every** configured profile from `config.json` and supervises one
+`run` reads **every** configured profile from `config.json` and supervises one
 backend connection per space inside a single process. A single space's failure
 (bad URL, evicted key) is isolated and retried without affecting the others.
 
-`start --daemon` does **not** run the daemon itself — it registers it as a
-pm2-managed service: it installs pm2 if missing, writes
-`~/.octo-daemon/ecosystem.config.js` (pointing pm2 at the Go binary in
-foreground mode), runs `pm2 startOrRestart` + `pm2 save`, then exits. pm2 keeps
-the daemon alive and re-execs it after an upgrade. Optionally run `pm2 startup`
-(prints a sudo command) to start pm2 — and the daemon — on boot.
+`start`, `stop`, `restart`, `logs`, and `service ...` are handled by the npm
+shim because pm2 is a Node.js service-management concern. The shim writes
+`~/.octo-daemon/ecosystem.config.js` and asks pm2 to supervise the resolved Go
+binary directly with `run --config <path>` (no extra Node process in the daemon
+tree). pm2 keeps the daemon alive and re-execs it after an upgrade. Optionally
+run `pm2 startup` (prints a sudo command) to start pm2 — and the daemon — on
+boot.
 
-Once registered, manage it directly through pm2:
+Service registration helpers:
 
 ```bash
-pm2 stop octo-daemon          # stop the pm2-managed daemon
-pm2 restart octo-daemon       # restart it (also re-execs after an upgrade)
-pm2 delete octo-daemon        # remove it from pm2 entirely
-pm2 logs octo-daemon          # tail its logs
+octo-daemon service install   # same service setup path used by start
+octo-daemon service status    # pm2 service status
+octo-daemon service remove    # remove the pm2 app; keeps ~/.octo-daemon config
 ```
 
-> `octo-daemon stop` signals the locked daemon pid (works whether the daemon
-> runs in the foreground or under a supervisor). Under a process supervisor
-> (pm2 / systemd / ...) it gets restarted — which is exactly how `upgrade`
-> applies a new binary. To stop a pm2-managed daemon for good, use
-> `pm2 stop octo-daemon`.
+> `octo-daemon stop` is intentionally service-only. If `octo-daemon run` is
+> running in another terminal, stop it there with Ctrl+C / SIGTERM.
 
-### 5. Check status
+### 6. Check status
 
 ```bash
 octo-daemon status            # process / version / per-space profiles
-pm2 list                      # pm2-managed daemon status (when run via --daemon)
+octo-daemon service status    # pm2-managed service status
 ```
 
-### 6. Upgrade
+### 7. Upgrade
 
 ```bash
-octo-daemon upgrade           # npm install -g @latest, then `octo-daemon stop` (supervisor restarts it)
+octo-daemon upgrade           # npm install -g @latest, then signal the process (supervisor restarts it)
 ```
 
 > `upgrade` only installs the new binary and stops the daemon — restarting it is
@@ -212,12 +223,12 @@ Everything lives under `~/.octo-daemon/`:
 
 | Path | Purpose |
 |------|---------|
-| `config.json` | Profiles (one per space); written by `octo-daemon config`, read by `start` |
+| `config.json` | Profiles (one per space); written by `octo-daemon config`, read by `run` |
 | `<space_id>/daemon.id` | Per-space daemon identity (UUID v7, generated once, kept forever) |
 | `<space_id>/events.state` | Per-space SSE dedup cursor |
 | `daemon.lock` | File lock — single-instance guard (one process serves all spaces) |
 | `daemon.pid` | Current process PID |
-| `ecosystem.config.js` | pm2 service definition (written by `start --daemon`); pm2 owns the logs |
+| `ecosystem.config.js` | pm2 service definition (written by the npm shim); pm2 owns the logs |
 
 ## 🛠 Build from source
 

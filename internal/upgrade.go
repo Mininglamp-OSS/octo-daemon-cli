@@ -173,9 +173,9 @@ func (d *Daemon) handleDaemonUpgrade(ctx context.Context, up *PendingUpgrade) er
 }
 
 // stopForRestart signals the current process to shut down gracefully (exit 0),
-// the same path as `octo-daemon stop` and an external SIGTERM. The supervisor
-// then restarts it. Kept supervisor-agnostic: we exit cleanly rather than using
-// a special respawn exit code.
+// the same path as an external SIGTERM. The supervisor then restarts it. Kept
+// supervisor-agnostic: we exit cleanly rather than using a special respawn exit
+// code.
 //
 // The exit-0 outcome is NOT guaranteed by sending SIGTERM alone — it depends on
 // the daemon's signal handler (cmd/start.go: signal.Notify on SIGINT/SIGTERM →
