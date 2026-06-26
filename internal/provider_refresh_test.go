@@ -39,7 +39,7 @@ func newTestDaemon(t *testing.T, srv *httptest.Server) *Daemon {
 
 func TestRefreshProviders_200ReplacesSnapshot(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"providers":[{"name":"claude","binary_name":"claude"}]}`))
+		_, _ = w.Write([]byte(`{"data":{"providers":[{"name":"claude","binary_name":"claude"}]}}`))
 	}))
 	defer srv.Close()
 	d := newTestDaemon(t, srv)
@@ -55,7 +55,7 @@ func TestRefreshProviders_200ReplacesSnapshot(t *testing.T) {
 
 func TestRefreshProviders_200EmptyClearsSnapshot(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"providers":[]}`))
+		_, _ = w.Write([]byte(`{"data":{"providers":[]}}`))
 	}))
 	defer srv.Close()
 	d := newTestDaemon(t, srv) // 起点是 fallback {claude, openclaw}
@@ -111,9 +111,9 @@ func TestRegister_403DoesNotCallRegisterEndpoint(t *testing.T) {
 	var registerHits atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/v1/daemon/runtime-providers":
+		case "/v1/providers":
 			w.WriteHeader(http.StatusForbidden) // key 撤销
-		case "/v1/daemon/register":
+		case "/v1/runtimes":
 			registerHits.Add(1)
 			_, _ = w.Write([]byte(`{}`))
 		default:

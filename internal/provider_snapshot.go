@@ -6,7 +6,7 @@ import (
 	"sync/atomic"
 )
 
-// fleetProvider 是 GET /v1/daemon/runtime-providers 响应里的一行。
+// fleetProvider 是 GET /v1/providers 响应里的一行。
 // 字段对齐 fleet providerInfo(api.go):name/display_name/binary_name/upgrade_timeout_sec。
 type fleetProvider struct {
 	Name              string `json:"name"`
