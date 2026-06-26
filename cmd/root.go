@@ -7,7 +7,7 @@ import (
 var rootCmd = &cobra.Command{
 	Use:   "octo-daemon",
 	Short: "Octo Agent Runtime Daemon",
-	Long:  "Detects local AI agent runtimes (Claude Code, OpenClaw) and reports status to Octo server.",
+	Long:  "Native daemon binary commands: configure spaces, run the foreground daemon, inspect status, and upgrade the installed binary.\n\nWhen installed from npm, the Node.js shim adds pm2 service lifecycle commands (`start`, `stop`, `restart`, `logs`, `service ...`) around this binary.",
 }
 
 func Execute() error {
@@ -17,8 +17,7 @@ func Execute() error {
 func init() {
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(configCmd)
-	rootCmd.AddCommand(startCmd)
-	rootCmd.AddCommand(stopCmd)
+	rootCmd.AddCommand(runCmd)
 	rootCmd.AddCommand(statusCmd)
 	rootCmd.AddCommand(upgradeCmd)
 }

@@ -8,7 +8,7 @@ import "fmt"
 //	0   SIGINT/SIGTERM 正常退出
 //	1   运行期意外错误 / 未识别错误
 //	2   启动期 fatal（config / 锁）
-//	75  升级完成请求 service manager respawn
+//	75  预留的 service manager respawn 请求（当前无 producer）
 //	78  API key 永久失效（403）
 type ExitError struct {
 	Code    int

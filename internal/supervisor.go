@@ -68,8 +68,8 @@ func (s *Supervisor) Run(ctx context.Context) error {
 
 	lockFile, err := TryLock()
 	if err != nil {
-		// Lock conflict is a startup-level fatal (code 2). Under service
-		// manager the wrapper/Go main maps 2 → 0 to avoid restart loops.
+		// Lock conflict is a startup-level fatal (code 2). The npm-generated
+		// pm2 ecosystem lists code 2 in stop_exit_codes to avoid restart loops.
 		return &ExitError{Code: 2, Message: fmt.Sprintf("acquire daemon lock: %v", err)}
 	}
 	defer func() {

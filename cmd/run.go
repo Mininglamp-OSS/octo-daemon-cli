@@ -11,34 +11,22 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var startCmd = &cobra.Command{
-	Use:   "start",
-	Short: "Start the daemon",
-	Long:  "Start detecting local agent runtimes and reporting to Octo server.\n\nReads profiles from the config file (default ~/.octo-daemon/config.json) and\nsupervises one backend connection per space. Configure profiles first with\n`octo-daemon config`.\n\nRuns in the foreground (pm2 / a service manager keeps it alive). Use\n`octo-daemon start --daemon` to register it as a pm2-managed service.",
-	RunE:  runStart,
+var runCmd = &cobra.Command{
+	Use:   "run",
+	Short: "Run the daemon in the foreground",
+	Long:  "Run the daemon in the foreground, detecting local agent runtimes and reporting to Octo server.\n\nReads profiles from the config file (default ~/.octo-daemon/config.json) and\nsupervises one backend connection per space. Configure profiles first with\n`octo-daemon config`.\n\nFor background service management, use the npm shim commands `octo-daemon start|stop|restart|logs` and `octo-daemon service ...`.",
+	RunE:  runDaemon,
 }
 
 var (
 	flagConfigFile string
-	flagDaemon     bool
 )
 
 func init() {
-	// --config is optional; the pm2 bootstrapper bakes an absolute path into
-	// ecosystem.config.js. Interactive/k8s runs use the default
-	// ~/.octo-daemon/config.json.
-	startCmd.Flags().StringVar(&flagConfigFile, "config", "", "Config file path (default ~/.octo-daemon/config.json)")
-	startCmd.Flags().BoolVar(&flagDaemon, "daemon", false, "Bootstrap pm2 to supervise the daemon (installs pm2, writes ecosystem.config.js, then exits)")
+	runCmd.Flags().StringVar(&flagConfigFile, "config", "", "Config file path (default ~/.octo-daemon/config.json)")
 }
 
-func runStart(cmd *cobra.Command, args []string) error {
-	// Bootstrapper role: --daemon installs/registers the daemon under pm2 and
-	// exits. The long-running server is the foreground path below, which pm2
-	// (re-)execs from the generated ecosystem.config.js.
-	if flagDaemon {
-		return bootstrapPM2()
-	}
-
+func runDaemon(cmd *cobra.Command, args []string) error {
 	cfgPath := flagConfigFile
 	if cfgPath == "" {
 		cfgPath = internal.ConfigFilePath()

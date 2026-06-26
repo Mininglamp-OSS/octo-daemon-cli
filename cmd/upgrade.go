@@ -11,7 +11,7 @@ import (
 var upgradeCmd = &cobra.Command{
 	Use:   "upgrade",
 	Short: "Upgrade the daemon to the latest npm release and stop it for the supervisor to restart",
-	Long:  "Runs `npm install -g " + internal.DaemonNpmPackage + "@latest` to replace the on-disk\nbinary, then stops the running daemon (`octo-daemon stop`) so your process\nsupervisor (pm2 / systemd / supervisord / k8s) re-execs the new version.",
+	Long:  "Runs `npm install -g " + internal.DaemonNpmPackage + "@latest` to replace the on-disk\nbinary, then signals the running daemon process so your process supervisor\n(pm2 / systemd / supervisord / k8s) re-execs the new version.",
 	RunE:  runUpgrade,
 }
 
@@ -25,15 +25,14 @@ func runUpgrade(cmd *cobra.Command, args []string) error {
 	}
 
 	// The new binary is on disk, but the running daemon is still the old one.
-	// Stop it (shared `stopRunningDaemon`: read the pidfile, signal the process)
-	// and let the supervisor re-exec the new binary. We deliberately don't
-	// restart it ourselves — that keeps upgrade supervisor-agnostic instead of
-	// hard-wiring pm2.
+	// Signal the pidfile owner directly and let the supervisor re-exec the new
+	// binary. Do not call the user-facing `stop` path here: that command stops
+	// pm2-managed services permanently, while upgrade needs a supervisor restart.
 	if !internal.IsLocked() {
 		fmt.Println("Upgrade complete. Daemon is not running — start it to use the new version.")
 		return nil
 	}
-	if err := stopRunningDaemon(); err != nil {
+	if err := stopDaemonProcess(); err != nil {
 		return &internal.ExitError{Code: 1, Message: fmt.Sprintf("upgrade installed but stopping the daemon failed: %v — restart it manually", err)}
 	}
 	fmt.Println("Upgrade complete — daemon stopped; your process supervisor will restart it on the new binary.")

@@ -11,7 +11,7 @@ import (
 var configCmd = &cobra.Command{
 	Use:   "config",
 	Short: "Configure a space profile",
-	Long:  "Verify an api_key against fleet and persist the resulting space profile.\n\nThe space_id is resolved from fleet's verify endpoint, not supplied by the\noperator: config POSTs to <fleet-url>/v1/runtimes/verify with the api_key and\nonly persists a profile when verification succeeds. fleet-url defaults to\n<server-url>/fleet/api; pass --fleet-url to override.\n\nIdempotent by the resolved space_id: creates ~/.octo-daemon/<space_id>/,\ngenerates the space's daemon.id, and upserts the profile into\n~/.octo-daemon/config.json. Then run `octo-daemon start`.",
+	Long:  "Verify an api_key against fleet and persist the resulting space profile.\n\nThe space_id is resolved from fleet's verify endpoint, not supplied by the\noperator: config POSTs to <fleet-url>/v1/runtimes/verify with the api_key and\nonly persists a profile when verification succeeds. fleet-url defaults to\n<server-url>/fleet/api; pass --fleet-url to override.\n\nIdempotent by the resolved space_id: creates ~/.octo-daemon/<space_id>/,\ngenerates the space's daemon.id, and upserts the profile into\n~/.octo-daemon/config.json. Then run `octo-daemon run` in the foreground, or\n`octo-daemon start` from the npm package to manage the pm2 service.",
 	RunE:  runConfig,
 }
 

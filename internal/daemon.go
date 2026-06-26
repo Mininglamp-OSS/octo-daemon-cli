@@ -43,7 +43,8 @@ type Daemon struct {
 	managedBots []ManagedBot
 	// exitErr is set-once by requestExit; readExitErr consumes under d.mu.
 	// Populated when the daemon wants Run() to return a specific ExitError
-	// (403 → 78, upgrade → 75). Nil means "plain graceful shutdown, exit 0".
+	// (403 → 78; 75 remains reserved for respawn requests). Nil means "plain
+	// graceful shutdown, exit 0".
 	exitErr *ExitError
 
 	slowDetectRunning atomic.Bool
@@ -319,8 +320,9 @@ func (d *Daemon) runHeartbeatBotProvision(ctx context.Context, cmd *PendingAgent
 }
 
 // Run drives one space's register + heartbeat/SSE loops until ctx is cancelled
-// or a fatal ExitError (403 → 78, upgrade → 75) is recorded. The single-instance
-// lock is held by the Supervisor, not acquired here.
+// or a fatal ExitError (403 → 78; 75 remains reserved for respawn requests) is
+// recorded. The single-instance lock is held by the Supervisor, not acquired
+// here.
 func (d *Daemon) Run(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	d.cancel = cancel
@@ -348,9 +350,9 @@ func (d *Daemon) Run(ctx context.Context) error {
 	}
 	hbErr := d.heartbeatLoop(ctx)
 
-	// Prefer the set-once ExitError (403 → 78, upgrade → 75) over the
-	// heartbeat loop's return. heartbeatLoop only returns on ctx.Done()
-	// today which yields nil, but keep this explicit for safety.
+	// Prefer the set-once ExitError (403 → 78; 75 remains reserved for respawn
+	// requests) over the heartbeat loop's return. heartbeatLoop only returns on
+	// ctx.Done() today which yields nil, but keep this explicit for safety.
 	if ee := d.readExitErr(); ee != nil {
 		return ee
 	}
@@ -633,8 +635,8 @@ func (d *Daemon) checkForbidden(err error) bool {
 	if errors.As(err, &forbiddenErr) {
 		log.Printf("[ERROR] API key rejected (403): user is no longer a member of this space. Stopping daemon.")
 		// Record exit 78 (config-level fatal) for a permanently bad api key.
-		// Under pm2 the process may be restarted (bounded by max_restarts in
-		// ecosystem.config.js) rather than stopped on this code.
+		// The npm-generated pm2 ecosystem treats this as a stop code, avoiding
+		// a restart loop for credentials that require operator action.
 		d.requestExit(&ExitError{Code: 78, Message: "API key rejected: user is no longer a member of this space"})
 		return true
 	}
