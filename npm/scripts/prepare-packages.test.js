@@ -297,6 +297,141 @@ exit 0
   ]);
 });
 
+test("shim treats EPERM pid probes as alive", (t) => {
+  if (process.platform === "win32") {
+    t.skip("fake pm2 shell script is POSIX-only");
+    return;
+  }
+
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "shim-eperm-"));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const mainDir = path.join(tmp, "octo-daemon", "bin");
+  fs.mkdirSync(mainDir, { recursive: true });
+  fs.copyFileSync(SHIM, path.join(mainDir, "octo-daemon.js"));
+
+  const home = path.join(tmp, "home");
+  const dataDir = path.join(home, ".octo-daemon");
+  fs.mkdirSync(dataDir, { recursive: true });
+  fs.writeFileSync(path.join(dataDir, "daemon.pid"), "12345\n");
+
+  const binDir = path.join(tmp, "bin");
+  fs.mkdirSync(binDir);
+  fs.writeFileSync(
+    path.join(binDir, "pm2"),
+    `#!/bin/sh
+if [ "$1" = "jlist" ]; then
+  printf '%s' '[]'
+  exit 0
+fi
+exit 0
+`,
+    { mode: 0o755 },
+  );
+
+  const preload = path.join(tmp, "eperm-preload.js");
+  fs.writeFileSync(preload, `
+const originalKill = process.kill;
+process.kill = (pid, signal) => {
+  if (signal === 0) {
+    const err = new Error("operation not permitted");
+    err.code = "EPERM";
+    throw err;
+  }
+  return originalKill(pid, signal);
+};
+`);
+
+  const res = spawnSync(process.execPath, [path.join(mainDir, "octo-daemon.js"), "stop"], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      HOME: home,
+      NODE_OPTIONS: `--require=${preload}`,
+      PATH: `${binDir}${path.delimiter}${process.env.PATH}`,
+    },
+  });
+  assert.strictEqual(res.status, 2, res.stderr);
+  assert.match(res.stderr, /foreground mode/);
+});
+
+test("shim stop reports a foreground daemon even when a pm2 entry exists", (t) => {
+  if (process.platform === "win32") {
+    t.skip("fake pm2 shell script is POSIX-only");
+    return;
+  }
+
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "shim-stop-foreground-"));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const mainDir = path.join(tmp, "octo-daemon", "bin");
+  fs.mkdirSync(mainDir, { recursive: true });
+  fs.copyFileSync(SHIM, path.join(mainDir, "octo-daemon.js"));
+
+  const home = path.join(tmp, "home");
+  const dataDir = path.join(home, ".octo-daemon");
+  fs.mkdirSync(dataDir, { recursive: true });
+  fs.writeFileSync(path.join(dataDir, "daemon.pid"), `${process.pid}\n`);
+
+  const binDir = path.join(tmp, "bin");
+  fs.mkdirSync(binDir);
+  const pm2Log = path.join(tmp, "pm2.log");
+  fs.writeFileSync(
+    path.join(binDir, "pm2"),
+    `#!/bin/sh
+if [ "$1" = "jlist" ]; then
+  printf '%s' '[{"name":"octo-daemon","pid":4242,"pm2_env":{"status":"stopped"}}]'
+  exit 0
+fi
+printf '%s\\n' "$*" >> ${shellQuote(pm2Log)}
+exit 0
+`,
+    { mode: 0o755 },
+  );
+
+  const res = spawnSync(process.execPath, [path.join(mainDir, "octo-daemon.js"), "stop"], {
+    encoding: "utf8",
+    env: { ...process.env, HOME: home, PATH: `${binDir}${path.delimiter}${process.env.PATH}` },
+  });
+  assert.strictEqual(res.status, 2, res.stderr);
+  assert.match(res.stderr, /foreground mode/);
+  assert.ok(!fs.existsSync(pm2Log), "pm2 stop should not run while a foreground daemon is active");
+});
+
+test("shim service subprocesses preserve signal exit semantics", (t) => {
+  if (process.platform === "win32") {
+    t.skip("fake pm2 shell script is POSIX-only");
+    return;
+  }
+
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "shim-signal-"));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const mainDir = path.join(tmp, "octo-daemon", "bin");
+  fs.mkdirSync(mainDir, { recursive: true });
+  fs.copyFileSync(SHIM, path.join(mainDir, "octo-daemon.js"));
+
+  const binDir = path.join(tmp, "bin");
+  fs.mkdirSync(binDir);
+  fs.writeFileSync(
+    path.join(binDir, "pm2"),
+    `#!/bin/sh
+if [ "$1" = "jlist" ]; then
+  printf '%s' '[{"name":"octo-daemon","pid":4242,"pm2_env":{"status":"online"}}]'
+  exit 0
+fi
+if [ "$1" = "logs" ]; then
+  kill -TERM $$
+fi
+exit 0
+`,
+    { mode: 0o755 },
+  );
+
+  const res = spawnSync(process.execPath, [path.join(mainDir, "octo-daemon.js"), "logs"], {
+    encoding: "utf8",
+    env: { ...process.env, HOME: path.join(tmp, "home"), PATH: `${binDir}${path.delimiter}${process.env.PATH}` },
+  });
+  assert.ok(res.signal === "SIGTERM" || res.status === 143, `status=${res.status} signal=${res.signal}`);
+});
+
 test("shim fails with a build-from-source pointer when the platform package is absent", (t) => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "shim-miss-"));
   t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));

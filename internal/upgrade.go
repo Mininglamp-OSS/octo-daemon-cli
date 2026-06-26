@@ -178,7 +178,7 @@ func (d *Daemon) handleDaemonUpgrade(ctx context.Context, up *PendingUpgrade) er
 // code.
 //
 // The exit-0 outcome is NOT guaranteed by sending SIGTERM alone — it depends on
-// the daemon's signal handler (cmd/start.go: signal.Notify on SIGINT/SIGTERM →
+// the daemon's signal handler (cmd/run.go: signal.Notify on SIGINT/SIGTERM →
 // cancel → graceful return). Without that handler Go's default SIGTERM behavior
 // is exit 143, which only `Restart=always`-style supervisors would respawn.
 func stopForRestart() error {

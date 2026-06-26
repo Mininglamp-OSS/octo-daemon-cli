@@ -9,7 +9,7 @@ build:
 	go build $(LDFLAGS) -o bin/octo-daemon ./main.go
 
 run: build
-	./bin/octo-daemon start --api-key "$(API_KEY)" --api-url "$(API_URL)"
+	./bin/octo-daemon run
 
 test:
 	go test ./...

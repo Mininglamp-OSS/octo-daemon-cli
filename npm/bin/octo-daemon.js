@@ -183,6 +183,9 @@ function run(command, args, options = {}) {
     console.error(`[octo-daemon] ${res.error.message}`);
     process.exit(1);
   }
+  if (res.signal) {
+    exitFromSignal(res.signal);
+  }
   if (res.status !== 0) {
     if (options.capture && res.stderr) process.stderr.write(res.stderr);
     process.exit(res.status === null ? 1 : res.status);
@@ -229,16 +232,22 @@ function pidIsAlive(pid) {
   try {
     process.kill(pid, 0);
     return true;
-  } catch (_err) {
-    return false;
+  } catch (err) {
+    return err && err.code === "EPERM";
   }
 }
 
-function assertNoForegroundDaemon() {
+function foregroundDaemonPid(app) {
   const pid = readDaemonPid();
-  if (!pid || !pidIsAlive(pid)) return;
+  if (!pid || !pidIsAlive(pid)) return 0;
+  if (app && app.online && app.pid === pid) return 0;
+  return pid;
+}
+
+function assertNoForegroundDaemon() {
   const app = pm2AppStatus();
-  if (app.online && app.pid === pid) return;
+  const pid = foregroundDaemonPid(app);
+  if (!pid) return;
   console.error(`[octo-daemon] daemon is already running in foreground mode (pid ${pid}).`);
   console.error("[octo-daemon] Stop that `octo-daemon run` process before starting the background service.");
   process.exit(2);
@@ -279,12 +288,12 @@ function serviceStart(args) {
 
 function serviceStop() {
   const app = pm2AppStatus();
+  const foregroundPid = foregroundDaemonPid(app);
+  if (foregroundPid) {
+    console.error(`[octo-daemon] daemon is running in foreground mode (pid ${foregroundPid}); stop the terminal running \`octo-daemon run\`.`);
+    process.exit(2);
+  }
   if (!app.found) {
-    const pid = readDaemonPid();
-    if (pid && pidIsAlive(pid)) {
-      console.error(`[octo-daemon] daemon is running in foreground mode (pid ${pid}); stop the terminal running \`octo-daemon run\`.`);
-      process.exit(2);
-    }
     console.log("[octo-daemon] service is not installed.");
     return;
   }
@@ -342,6 +351,12 @@ function serviceRemove() {
   console.log(`[octo-daemon] service removed from pm2 (app ${JSON.stringify(PM2_APP_NAME)}).`);
 }
 
+function exitFromSignal(signal) {
+  process.kill(process.pid, signal);
+  const signum = (os.constants && os.constants.signals && os.constants.signals[signal]) || 0;
+  process.exit(128 + signum);
+}
+
 function runGo(args, options = {}) {
   const res = spawnSync(resolveBinary(), args, { stdio: "inherit" });
 
@@ -351,9 +366,7 @@ function runGo(args, options = {}) {
   }
 
   if (res.signal) {
-    process.kill(process.pid, res.signal);
-    const signum = (os.constants && os.constants.signals && os.constants.signals[res.signal]) || 0;
-    process.exit(128 + signum);
+    exitFromSignal(res.signal);
   }
 
   const status = res.status === null ? 1 : res.status;

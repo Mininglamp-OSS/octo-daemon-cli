@@ -43,7 +43,8 @@ type Daemon struct {
 	managedBots []ManagedBot
 	// exitErr is set-once by requestExit; readExitErr consumes under d.mu.
 	// Populated when the daemon wants Run() to return a specific ExitError
-	// (403 → 78, upgrade → 75). Nil means "plain graceful shutdown, exit 0".
+	// (403 → 78; 75 remains reserved for respawn requests). Nil means "plain
+	// graceful shutdown, exit 0".
 	exitErr *ExitError
 
 	slowDetectRunning atomic.Bool
@@ -319,8 +320,9 @@ func (d *Daemon) runHeartbeatBotProvision(ctx context.Context, cmd *PendingAgent
 }
 
 // Run drives one space's register + heartbeat/SSE loops until ctx is cancelled
-// or a fatal ExitError (403 → 78, upgrade → 75) is recorded. The single-instance
-// lock is held by the Supervisor, not acquired here.
+// or a fatal ExitError (403 → 78; 75 remains reserved for respawn requests) is
+// recorded. The single-instance lock is held by the Supervisor, not acquired
+// here.
 func (d *Daemon) Run(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	d.cancel = cancel
@@ -348,9 +350,9 @@ func (d *Daemon) Run(ctx context.Context) error {
 	}
 	hbErr := d.heartbeatLoop(ctx)
 
-	// Prefer the set-once ExitError (403 → 78, upgrade → 75) over the
-	// heartbeat loop's return. heartbeatLoop only returns on ctx.Done()
-	// today which yields nil, but keep this explicit for safety.
+	// Prefer the set-once ExitError (403 → 78; 75 remains reserved for respawn
+	// requests) over the heartbeat loop's return. heartbeatLoop only returns on
+	// ctx.Done() today which yields nil, but keep this explicit for safety.
 	if ee := d.readExitErr(); ee != nil {
 		return ee
 	}
