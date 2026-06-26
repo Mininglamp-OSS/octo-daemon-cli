@@ -22,9 +22,19 @@ function makeDist(distDir) {
   fs.mkdirSync(distDir, { recursive: true });
   for (const { goOs, goArch } of PLATFORMS) {
     const stage = fs.mkdtempSync(path.join(os.tmpdir(), "stage-"));
-    fs.writeFileSync(path.join(stage, "octo-daemon"), `#!/bin/sh\necho fake ${goOs}/${goArch} "$@"\n`, {
-      mode: 0o755,
-    });
+    fs.writeFileSync(
+      path.join(stage, "octo-daemon"),
+      `#!/bin/sh
+if [ "$1" = "status" ] && [ "$2" = "--json" ]; then
+  printf '%s\\n' '{"status":"stopped","locked":false,"pid":0,"pid_file_stale":false}'
+  exit 0
+fi
+echo fake ${goOs}/${goArch} "$@"
+`,
+      {
+        mode: 0o755,
+      },
+    );
     const archive = path.join(distDir, `octo-daemon_${VERSION}_${goOs}_${goArch}.tar.gz`);
     execFileSync("tar", ["-czf", archive, "-C", stage, "octo-daemon"]);
     fs.rmSync(stage, { recursive: true, force: true });
@@ -37,6 +47,42 @@ function run(args) {
 
 function shellQuote(s) {
   return `'${String(s).replaceAll("'", "'\\''")}'`;
+}
+
+function hostPlatformKey(t) {
+  const key = `${process.platform}-${process.arch}`;
+  const supported = new Set(PLATFORMS.map((p) => `${p.npmOs}-${p.npmCpu}`));
+  if (!supported.has(key)) {
+    t.skip(`host ${key} not in the platform matrix`);
+    return "";
+  }
+  return key;
+}
+
+function installFakePlatformBinary(t, mainPackageDir, script) {
+  const key = hostPlatformKey(t);
+  if (!key) return "";
+  const binDir = path.join(
+    mainPackageDir,
+    "node_modules",
+    "@mininglamp-oss",
+    `octo-daemon-${key}`,
+    "bin",
+  );
+  fs.mkdirSync(binDir, { recursive: true });
+  const binPath = path.join(binDir, "octo-daemon");
+  fs.writeFileSync(binPath, script, { mode: 0o755 });
+  return binPath;
+}
+
+function fakeStatusBinary(status) {
+  return `#!/bin/sh
+if [ "$1" = "status" ] && [ "$2" = "--json" ]; then
+  printf '%s\\n' ${shellQuote(JSON.stringify(status))}
+  exit 0
+fi
+echo fake "$@"
+`;
 }
 
 test("npm matrix matches .goreleaser.yaml goos × goarch", () => {
@@ -266,9 +312,15 @@ test("shim service stop is a pm2 operation", (t) => {
 
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "shim-stop-"));
   t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
-  const mainDir = path.join(tmp, "octo-daemon", "bin");
+  const mainPackageDir = path.join(tmp, "octo-daemon");
+  const mainDir = path.join(mainPackageDir, "bin");
   fs.mkdirSync(mainDir, { recursive: true });
   fs.copyFileSync(SHIM, path.join(mainDir, "octo-daemon.js"));
+  installFakePlatformBinary(
+    t,
+    mainPackageDir,
+    fakeStatusBinary({ status: "running", locked: true, pid: 4242, pid_file_stale: false }),
+  );
 
   const binDir = path.join(tmp, "bin");
   fs.mkdirSync(binDir);
@@ -297,25 +349,32 @@ exit 0
   ]);
 });
 
-test("shim treats EPERM pid probes as alive", (t) => {
+test("shim ignores stale pid files when the Go lock is free", (t) => {
   if (process.platform === "win32") {
     t.skip("fake pm2 shell script is POSIX-only");
     return;
   }
 
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "shim-eperm-"));
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "shim-stale-pid-"));
   t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
-  const mainDir = path.join(tmp, "octo-daemon", "bin");
+  const mainPackageDir = path.join(tmp, "octo-daemon");
+  const mainDir = path.join(mainPackageDir, "bin");
   fs.mkdirSync(mainDir, { recursive: true });
   fs.copyFileSync(SHIM, path.join(mainDir, "octo-daemon.js"));
+  installFakePlatformBinary(
+    t,
+    mainPackageDir,
+    fakeStatusBinary({ status: "stopped", locked: false, pid: process.pid, pid_file_stale: true }),
+  );
 
   const home = path.join(tmp, "home");
   const dataDir = path.join(home, ".octo-daemon");
   fs.mkdirSync(dataDir, { recursive: true });
-  fs.writeFileSync(path.join(dataDir, "daemon.pid"), "12345\n");
+  fs.writeFileSync(path.join(dataDir, "daemon.pid"), `${process.pid}\n`);
 
   const binDir = path.join(tmp, "bin");
   fs.mkdirSync(binDir);
+  const pm2Log = path.join(tmp, "pm2.log");
   fs.writeFileSync(
     path.join(binDir, "pm2"),
     `#!/bin/sh
@@ -323,35 +382,25 @@ if [ "$1" = "jlist" ]; then
   printf '%s' '[]'
   exit 0
 fi
+printf '%s\\n' "$*" >> ${shellQuote(pm2Log)}
 exit 0
 `,
     { mode: 0o755 },
   );
 
-  const preload = path.join(tmp, "eperm-preload.js");
-  fs.writeFileSync(preload, `
-const originalKill = process.kill;
-process.kill = (pid, signal) => {
-  if (signal === 0) {
-    const err = new Error("operation not permitted");
-    err.code = "EPERM";
-    throw err;
-  }
-  return originalKill(pid, signal);
-};
-`);
-
-  const res = spawnSync(process.execPath, [path.join(mainDir, "octo-daemon.js"), "stop"], {
+  const res = spawnSync(process.execPath, [path.join(mainDir, "octo-daemon.js"), "start"], {
     encoding: "utf8",
     env: {
       ...process.env,
       HOME: home,
-      NODE_OPTIONS: `--require=${preload}`,
       PATH: `${binDir}${path.delimiter}${process.env.PATH}`,
     },
   });
-  assert.strictEqual(res.status, 2, res.stderr);
-  assert.match(res.stderr, /foreground mode/);
+  assert.strictEqual(res.status, 0, res.stderr);
+  assert.deepStrictEqual(fs.readFileSync(pm2Log, "utf8").trim().split("\n"), [
+    `startOrRestart ${path.join(home, ".octo-daemon", "ecosystem.config.js")}`,
+    "save",
+  ]);
 });
 
 test("shim stop reports a foreground daemon even when a pm2 entry exists", (t) => {
@@ -362,14 +411,17 @@ test("shim stop reports a foreground daemon even when a pm2 entry exists", (t) =
 
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "shim-stop-foreground-"));
   t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
-  const mainDir = path.join(tmp, "octo-daemon", "bin");
+  const mainPackageDir = path.join(tmp, "octo-daemon");
+  const mainDir = path.join(mainPackageDir, "bin");
   fs.mkdirSync(mainDir, { recursive: true });
   fs.copyFileSync(SHIM, path.join(mainDir, "octo-daemon.js"));
+  installFakePlatformBinary(
+    t,
+    mainPackageDir,
+    fakeStatusBinary({ status: "running", locked: true, pid: process.pid, pid_file_stale: false }),
+  );
 
   const home = path.join(tmp, "home");
-  const dataDir = path.join(home, ".octo-daemon");
-  fs.mkdirSync(dataDir, { recursive: true });
-  fs.writeFileSync(path.join(dataDir, "daemon.pid"), `${process.pid}\n`);
 
   const binDir = path.join(tmp, "bin");
   fs.mkdirSync(binDir);
@@ -394,6 +446,46 @@ exit 0
   assert.strictEqual(res.status, 2, res.stderr);
   assert.match(res.stderr, /foreground mode/);
   assert.ok(!fs.existsSync(pm2Log), "pm2 stop should not run while a foreground daemon is active");
+});
+
+test("shim treats a held Go lock with unknown pid as foreground", (t) => {
+  if (process.platform === "win32") {
+    t.skip("fake pm2 shell script is POSIX-only");
+    return;
+  }
+
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "shim-lock-unknown-pid-"));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const mainPackageDir = path.join(tmp, "octo-daemon");
+  const mainDir = path.join(mainPackageDir, "bin");
+  fs.mkdirSync(mainDir, { recursive: true });
+  fs.copyFileSync(SHIM, path.join(mainDir, "octo-daemon.js"));
+  installFakePlatformBinary(
+    t,
+    mainPackageDir,
+    fakeStatusBinary({ status: "running", locked: true, pid: 0, pid_file_stale: false }),
+  );
+
+  const binDir = path.join(tmp, "bin");
+  fs.mkdirSync(binDir);
+  fs.writeFileSync(
+    path.join(binDir, "pm2"),
+    `#!/bin/sh
+if [ "$1" = "jlist" ]; then
+  printf '%s' '[]'
+  exit 0
+fi
+exit 0
+`,
+    { mode: 0o755 },
+  );
+
+  const res = spawnSync(process.execPath, [path.join(mainDir, "octo-daemon.js"), "start"], {
+    encoding: "utf8",
+    env: { ...process.env, HOME: path.join(tmp, "home"), PATH: `${binDir}${path.delimiter}${process.env.PATH}` },
+  });
+  assert.strictEqual(res.status, 2, res.stderr);
+  assert.match(res.stderr, /foreground mode \(pid unknown\)/);
 });
 
 test("shim service subprocesses preserve signal exit semantics", (t) => {

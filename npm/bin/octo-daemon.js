@@ -69,10 +69,6 @@ function ecosystemPath() {
   return path.join(dataDir(), "ecosystem.config.js");
 }
 
-function pidFilePath() {
-  return path.join(dataDir(), "daemon.pid");
-}
-
 function usageError(message) {
   console.error(`[octo-daemon] ${message}`);
   process.exit(2);
@@ -95,7 +91,7 @@ Usage:
 Native daemon commands (Go binary):
   config                         Configure one space profile
   run [--config <path>]          Run the daemon in the foreground
-  status                         Show process/version/profile status
+  status [--json]                Show process/version/profile status
   upgrade                        Upgrade the installed binary
   version                        Show binary version
 
@@ -217,38 +213,48 @@ function pm2AppStatus() {
   }
 }
 
-function readDaemonPid() {
+function daemonStatus() {
+  const res = spawnSync(resolveBinary(), ["status", "--json"], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  if (res.error) {
+    console.error(`[octo-daemon] ${res.error.message}`);
+    process.exit(1);
+  }
+  if (res.signal) {
+    exitFromSignal(res.signal);
+  }
+  if (res.status !== 0) {
+    if (res.stderr) process.stderr.write(res.stderr);
+    process.exit(res.status === null ? 1 : res.status);
+  }
   try {
-    const raw = fs.readFileSync(pidFilePath(), "utf8").trim();
-    const pid = Number.parseInt(raw, 10);
-    return Number.isFinite(pid) && pid > 0 ? pid : 0;
+    const status = JSON.parse(res.stdout);
+    return {
+      locked: status && status.locked === true,
+      pid: Number(status && status.pid ? status.pid : 0),
+    };
   } catch (_err) {
-    return 0;
+    console.error("[octo-daemon] failed to parse `octo-daemon status --json` output.");
+    process.exit(1);
   }
 }
 
-function pidIsAlive(pid) {
-  if (!pid) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (err) {
-    return err && err.code === "EPERM";
-  }
-}
-
-function foregroundDaemonPid(app) {
-  const pid = readDaemonPid();
-  if (!pid || !pidIsAlive(pid)) return 0;
-  if (app && app.online && app.pid === pid) return 0;
-  return pid;
+function foregroundDaemon(app) {
+  const status = daemonStatus();
+  if (!status.locked) return { active: false, pid: 0 };
+  const pid = status.pid;
+  if (pid && app && app.online && app.pid === pid) return { active: false, pid: 0 };
+  return { active: true, pid };
 }
 
 function assertNoForegroundDaemon() {
   const app = pm2AppStatus();
-  const pid = foregroundDaemonPid(app);
-  if (!pid) return;
-  console.error(`[octo-daemon] daemon is already running in foreground mode (pid ${pid}).`);
+  const foreground = foregroundDaemon(app);
+  if (!foreground.active) return;
+  const pid = foreground.pid ? `pid ${foreground.pid}` : "pid unknown";
+  console.error(`[octo-daemon] daemon is already running in foreground mode (${pid}).`);
   console.error("[octo-daemon] Stop that `octo-daemon run` process before starting the background service.");
   process.exit(2);
 }
@@ -288,9 +294,10 @@ function serviceStart(args) {
 
 function serviceStop() {
   const app = pm2AppStatus();
-  const foregroundPid = foregroundDaemonPid(app);
-  if (foregroundPid) {
-    console.error(`[octo-daemon] daemon is running in foreground mode (pid ${foregroundPid}); stop the terminal running \`octo-daemon run\`.`);
+  const foreground = foregroundDaemon(app);
+  if (foreground.active) {
+    const pid = foreground.pid ? `pid ${foreground.pid}` : "pid unknown";
+    console.error(`[octo-daemon] daemon is running in foreground mode (${pid}); stop the terminal running \`octo-daemon run\`.`);
     process.exit(2);
   }
   if (!app.found) {

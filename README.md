@@ -155,6 +155,7 @@ octo-daemon service remove    # remove the pm2 app; keeps ~/.octo-daemon config
 
 ```bash
 octo-daemon status            # process / version / per-space profiles
+octo-daemon status --json     # machine-readable daemon lock / pid status
 octo-daemon service status    # pm2-managed service status
 ```
 

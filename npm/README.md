@@ -39,6 +39,7 @@ octo-daemon stop
 octo-daemon restart
 octo-daemon logs
 octo-daemon status
+octo-daemon status --json
 octo-daemon service status
 ```
 

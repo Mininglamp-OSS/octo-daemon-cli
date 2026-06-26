@@ -1,11 +1,15 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
 
 	"github.com/Mininglamp-OSS/octo-daemon-cli/internal"
 	"github.com/spf13/cobra"
 )
+
+var statusJSON bool
 
 var statusCmd = &cobra.Command{
 	Use:   "status",
@@ -13,37 +17,77 @@ var statusCmd = &cobra.Command{
 	RunE:  runStatus,
 }
 
+type statusReport struct {
+	Status       string `json:"status"`
+	Locked       bool   `json:"locked"`
+	PID          int    `json:"pid"`
+	PIDFileStale bool   `json:"pid_file_stale"`
+}
+
+func init() {
+	statusCmd.Flags().BoolVar(&statusJSON, "json", false, "Print machine-readable daemon lock status")
+}
+
 func runStatus(cmd *cobra.Command, args []string) error {
-	if !internal.IsLocked() {
-		fmt.Println("Status: stopped")
+	return writeStatus(cmd.OutOrStdout(), statusJSON)
+}
+
+func currentStatusReport() statusReport {
+	locked := internal.IsLocked()
+	pid := 0
+	pidFileStale := false
+	if p, err := internal.ReadLockPID(); err == nil && p > 0 {
+		pid = p
+		pidFileStale = !locked
+	}
+	status := "stopped"
+	if locked {
+		status = "running"
+		pidFileStale = false
+	}
+	return statusReport{
+		Status:       status,
+		Locked:       locked,
+		PID:          pid,
+		PIDFileStale: pidFileStale,
+	}
+}
+
+func writeStatus(w io.Writer, asJSON bool) error {
+	report := currentStatusReport()
+	if asJSON {
+		return json.NewEncoder(w).Encode(report)
+	}
+
+	if !report.Locked {
+		fmt.Fprintln(w, "Status: stopped")
 		return nil
 	}
 
-	pid, err := internal.ReadLockPID()
-	if err != nil {
-		fmt.Println("Status: running (pid unknown)")
+	if report.PID == 0 {
+		fmt.Fprintln(w, "Status: running (pid unknown)")
 	} else {
-		fmt.Printf("Status: running (pid %d)\n", pid)
+		fmt.Fprintf(w, "Status: running (pid %d)\n", report.PID)
 	}
 
 	if profiles, err := internal.LoadProfiles(internal.ConfigFilePath()); err == nil && len(profiles) > 0 {
-		fmt.Println("Profiles:")
+		fmt.Fprintln(w, "Profiles:")
 		for _, p := range profiles {
 			id, err := internal.LoadDaemonID(p.SpaceID)
 			if err != nil {
 				id = "(no daemon.id)"
 			}
-			fmt.Printf("  - space=%s daemon_id=%s\n", p.SpaceID, id)
+			fmt.Fprintf(w, "  - space=%s daemon_id=%s\n", p.SpaceID, id)
 		}
 	}
 
 	runtimes := internal.DetectRuntimes()
 	if len(runtimes) == 0 {
-		fmt.Println("Runtimes: none detected")
+		fmt.Fprintln(w, "Runtimes: none detected")
 	} else {
-		fmt.Println("Runtimes:")
+		fmt.Fprintln(w, "Runtimes:")
 		for _, r := range runtimes {
-			fmt.Printf("  - %s %s (%s)\n", r.Provider, r.Version, r.Path)
+			fmt.Fprintf(w, "  - %s %s (%s)\n", r.Provider, r.Version, r.Path)
 		}
 	}
 

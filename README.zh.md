@@ -141,6 +141,7 @@ octo-daemon service remove    # 从 pm2 移除 app；保留 ~/.octo-daemon 配�
 
 ```bash
 octo-daemon status            # 进程 / 版本 / 各 space profile
+octo-daemon status --json     # 机器可读的 daemon lock / pid 状态
 octo-daemon service status    # pm2 托管服务状态
 ```
 
