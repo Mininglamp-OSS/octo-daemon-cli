@@ -85,6 +85,16 @@ echo fake "$@"
 `;
 }
 
+function fakeFailingStatusBinary() {
+  return `#!/bin/sh
+if [ "$1" = "status" ] && [ "$2" = "--json" ]; then
+  printf '%s\\n' 'status unavailable' >&2
+  exit 9
+fi
+echo fake "$@"
+`;
+}
+
 test("npm matrix matches .goreleaser.yaml goos × goarch", () => {
   // Cheap structural parse: goos/goarch list items inside builds. Keeps the
   // two matrices in lockstep without a YAML dependency — adding windows (or
@@ -243,6 +253,20 @@ test("shim resolves the platform package and propagates args + exit code", (t) =
   });
   assert.strictEqual(serviceSubHelp.status, 0, serviceSubHelp.stderr);
   assert.match(serviceSubHelp.stdout, /octo-daemon service control \(npm shim \/ pm2\)/);
+
+  const serviceInstallHelp = spawnSync(process.execPath, [
+    path.join(mainDir, "bin", "octo-daemon.js"),
+    "service",
+    "install",
+    "--config",
+    path.join(os.tmpdir(), "config.json"),
+    "--help",
+  ], {
+    encoding: "utf8",
+  });
+  assert.strictEqual(serviceInstallHelp.status, 0, serviceInstallHelp.stderr);
+  assert.match(serviceInstallHelp.stdout, /octo-daemon service control \(npm shim \/ pm2\)/);
+  assert.doesNotMatch(serviceInstallHelp.stdout, /fake (darwin|linux)\/(amd64|arm64)/);
 });
 
 test("shim owns pm2 service start and writes ecosystem for Go run", (t) => {
@@ -350,6 +374,143 @@ exit 0
     env: { ...process.env, HOME: path.join(tmp, "home"), PATH: `${binDir}${path.delimiter}${process.env.PATH}` },
   });
   assert.strictEqual(res.status, 0, res.stderr);
+  assert.deepStrictEqual(fs.readFileSync(pm2Log, "utf8").trim().split("\n"), [
+    "stop octo-daemon",
+    "save",
+  ]);
+});
+
+test("shim service stop continues when daemon status probe fails", (t) => {
+  if (process.platform === "win32") {
+    t.skip("fake pm2 shell script is POSIX-only");
+    return;
+  }
+
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "shim-stop-status-fail-"));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const mainPackageDir = path.join(tmp, "octo-daemon");
+  const mainDir = path.join(mainPackageDir, "bin");
+  fs.mkdirSync(mainDir, { recursive: true });
+  fs.copyFileSync(SHIM, path.join(mainDir, "octo-daemon.js"));
+  installFakePlatformBinary(t, mainPackageDir, fakeFailingStatusBinary());
+
+  const binDir = path.join(tmp, "bin");
+  fs.mkdirSync(binDir);
+  const pm2Log = path.join(tmp, "pm2.log");
+  fs.writeFileSync(
+    path.join(binDir, "pm2"),
+    `#!/bin/sh
+if [ "$1" = "jlist" ]; then
+  printf '%s' '[{"name":"octo-daemon","pid":4242,"pm2_env":{"status":"online"}}]'
+  exit 0
+fi
+printf '%s\\n' "$*" >> ${shellQuote(pm2Log)}
+exit 0
+`,
+    { mode: 0o755 },
+  );
+
+  const res = spawnSync(process.execPath, [path.join(mainDir, "octo-daemon.js"), "stop"], {
+    encoding: "utf8",
+    env: { ...process.env, HOME: path.join(tmp, "home"), PATH: `${binDir}${path.delimiter}${process.env.PATH}` },
+  });
+  assert.strictEqual(res.status, 0, res.stderr);
+  assert.match(res.stderr, /continuing stop without daemon lock status/);
+  assert.match(res.stderr, /status unavailable/);
+  assert.deepStrictEqual(fs.readFileSync(pm2Log, "utf8").trim().split("\n"), [
+    "stop octo-daemon",
+    "save",
+  ]);
+});
+
+test("shim service stop treats pm2 transition states as managed", (t) => {
+  if (process.platform === "win32") {
+    t.skip("fake pm2 shell script is POSIX-only");
+    return;
+  }
+
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "shim-stop-launching-"));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const mainPackageDir = path.join(tmp, "octo-daemon");
+  const mainDir = path.join(mainPackageDir, "bin");
+  fs.mkdirSync(mainDir, { recursive: true });
+  fs.copyFileSync(SHIM, path.join(mainDir, "octo-daemon.js"));
+  installFakePlatformBinary(
+    t,
+    mainPackageDir,
+    fakeStatusBinary({ status: "running", locked: true, pid: 4242, pid_file_stale: false }),
+  );
+
+  const binDir = path.join(tmp, "bin");
+  fs.mkdirSync(binDir);
+  const pm2Log = path.join(tmp, "pm2.log");
+  fs.writeFileSync(
+    path.join(binDir, "pm2"),
+    `#!/bin/sh
+if [ "$1" = "jlist" ]; then
+  printf '%s' '[{"name":"octo-daemon","pid":0,"pm2_env":{"status":"launching"}}]'
+  exit 0
+fi
+printf '%s\\n' "$*" >> ${shellQuote(pm2Log)}
+exit 0
+`,
+    { mode: 0o755 },
+  );
+
+  const res = spawnSync(process.execPath, [path.join(mainDir, "octo-daemon.js"), "stop"], {
+    encoding: "utf8",
+    env: { ...process.env, HOME: path.join(tmp, "home"), PATH: `${binDir}${path.delimiter}${process.env.PATH}` },
+  });
+  assert.strictEqual(res.status, 0, res.stderr);
+  assert.doesNotMatch(res.stderr, /foreground mode/);
+  assert.deepStrictEqual(fs.readFileSync(pm2Log, "utf8").trim().split("\n"), [
+    "stop octo-daemon",
+    "save",
+  ]);
+});
+
+test("shim service stop continues when pm2 status probe fails", (t) => {
+  if (process.platform === "win32") {
+    t.skip("fake pm2 shell script is POSIX-only");
+    return;
+  }
+
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "shim-stop-pm2-fail-"));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const mainPackageDir = path.join(tmp, "octo-daemon");
+  const mainDir = path.join(mainPackageDir, "bin");
+  fs.mkdirSync(mainDir, { recursive: true });
+  fs.copyFileSync(SHIM, path.join(mainDir, "octo-daemon.js"));
+  installFakePlatformBinary(
+    t,
+    mainPackageDir,
+    fakeStatusBinary({ status: "stopped", locked: false, pid: 0, pid_file_stale: false }),
+  );
+
+  const binDir = path.join(tmp, "bin");
+  fs.mkdirSync(binDir);
+  const pm2Log = path.join(tmp, "pm2.log");
+  fs.writeFileSync(
+    path.join(binDir, "pm2"),
+    `#!/bin/sh
+if [ "$1" = "jlist" ]; then
+  printf '%s\\n' 'pm2 jlist failed' >&2
+  exit 7
+fi
+printf '%s\\n' "$*" >> ${shellQuote(pm2Log)}
+exit 0
+`,
+    { mode: 0o755 },
+  );
+
+  const res = spawnSync(process.execPath, [path.join(mainDir, "octo-daemon.js"), "stop"], {
+    encoding: "utf8",
+    env: { ...process.env, HOME: path.join(tmp, "home"), PATH: `${binDir}${path.delimiter}${process.env.PATH}` },
+  });
+  assert.strictEqual(res.status, 0, res.stderr);
+  assert.match(res.stderr, /continuing stop without pm2 service status/);
+  assert.match(res.stderr, /pm2 jlist failed/);
+  assert.doesNotMatch(res.stdout, /service is not installed/);
   assert.deepStrictEqual(fs.readFileSync(pm2Log, "utf8").trim().split("\n"), [
     "stop octo-daemon",
     "save",

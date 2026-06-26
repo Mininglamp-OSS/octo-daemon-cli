@@ -24,6 +24,7 @@ const fs = require("fs");
 const { spawnSync } = require("child_process");
 
 const PM2_APP_NAME = "octo-daemon";
+const PM2_JLIST_MAX_BUFFER = 10 * 1024 * 1024;
 
 const PLATFORM_PACKAGES = {
   "darwin-arm64": "@mininglamp-oss/octo-daemon-darwin-arm64",
@@ -32,28 +33,34 @@ const PLATFORM_PACKAGES = {
   "linux-x64": "@mininglamp-oss/octo-daemon-linux-x64",
 };
 
-function resolveBinary() {
+function resolveBinary(options = {}) {
+  const optional = options.optional === true;
+  const fail = (lines) => {
+    if (optional) return { ok: false, error: lines.join("\n") };
+    for (const line of lines) console.error(line);
+    process.exit(1);
+  };
+
   const key = `${process.platform}-${process.arch}`;
   const pkg = PLATFORM_PACKAGES[key];
   if (!pkg) {
-    console.error(`[octo-daemon] no prebuilt binary for ${key}.`);
-    console.error(
+    return fail([
+      `[octo-daemon] no prebuilt binary for ${key}.`,
       "[octo-daemon] Prebuilt binaries cover darwin/linux on x64/arm64. " +
         "Build from source instead: https://github.com/Mininglamp-OSS/octo-daemon-cli",
-    );
-    process.exit(1);
+    ]);
   }
   try {
-    return require.resolve(`${pkg}/bin/octo-daemon`);
+    const bin = require.resolve(`${pkg}/bin/octo-daemon`);
+    return optional ? { ok: true, path: bin } : bin;
   } catch (_err) {
-    console.error(`[octo-daemon] platform package ${pkg} is not installed.`);
-    console.error(
+    return fail([
+      `[octo-daemon] platform package ${pkg} is not installed.`,
       "[octo-daemon] npm skips optionalDependencies when installed with " +
         "--no-optional / --omit=optional, and some package managers need a " +
         "lockfile refresh after a platform change.\n" +
         "[octo-daemon] Try reinstalling: npm install -g @mininglamp-oss/octo-daemon",
-    );
-    process.exit(1);
+    ]);
   }
 }
 
@@ -191,72 +198,168 @@ function run(command, args, options = {}) {
 
 function pm2AppStatus() {
   if (!commandExists("pm2")) {
-    return { found: false, online: false, pid: 0, status: "missing-pm2" };
+    return { ok: true, found: false, online: false, pid: 0, status: "missing-pm2" };
   }
-  const res = spawnSync("pm2", ["jlist"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+  const res = spawnSync("pm2", ["jlist"], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    maxBuffer: PM2_JLIST_MAX_BUFFER,
+  });
+  if (res.error) {
+    return {
+      ok: false,
+      found: false,
+      online: false,
+      pid: 0,
+      status: "unknown",
+      error: `[octo-daemon] failed to query pm2: ${res.error.message}`,
+    };
+  }
+  if (res.signal) {
+    return {
+      ok: false,
+      found: false,
+      online: false,
+      pid: 0,
+      status: "unknown",
+      error: `[octo-daemon] pm2 jlist terminated by ${res.signal}`,
+    };
+  }
   if (res.status !== 0 || !res.stdout) {
-    return { found: false, online: false, pid: 0, status: "unknown" };
+    const detail = res.stderr ? `: ${res.stderr.trim()}` : "";
+    return {
+      ok: false,
+      found: false,
+      online: false,
+      pid: 0,
+      status: "unknown",
+      error: `[octo-daemon] failed to query pm2 service list${detail}`,
+    };
   }
   try {
     const apps = JSON.parse(res.stdout);
+    if (!Array.isArray(apps)) {
+      return {
+        ok: false,
+        found: false,
+        online: false,
+        pid: 0,
+        status: "unknown",
+        error: "[octo-daemon] failed to parse pm2 service list.",
+      };
+    }
     const app = apps.find((x) => x && x.name === PM2_APP_NAME);
-    if (!app) return { found: false, online: false, pid: 0, status: "not-installed" };
+    if (!app) return { ok: true, found: false, online: false, pid: 0, status: "not-installed" };
     const status = app.pm2_env && app.pm2_env.status ? String(app.pm2_env.status) : "unknown";
     return {
+      ok: true,
       found: true,
       online: status === "online",
       pid: Number(app.pid || 0),
       status,
     };
   } catch (_err) {
-    return { found: false, online: false, pid: 0, status: "unknown" };
+    return {
+      ok: false,
+      found: false,
+      online: false,
+      pid: 0,
+      status: "unknown",
+      error: "[octo-daemon] failed to parse pm2 service list.",
+    };
   }
 }
 
 function daemonStatus() {
-  const res = spawnSync(resolveBinary(), ["status", "--json"], {
+  const bin = resolveBinary({ optional: true });
+  if (!bin.ok) {
+    return { ok: false, locked: false, pid: 0, error: bin.error };
+  }
+
+  const res = spawnSync(bin.path, ["status", "--json"], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
   });
   if (res.error) {
-    console.error(`[octo-daemon] ${res.error.message}`);
-    process.exit(1);
+    return { ok: false, locked: false, pid: 0, error: `[octo-daemon] ${res.error.message}` };
   }
   if (res.signal) {
-    exitFromSignal(res.signal);
+    return {
+      ok: false,
+      locked: false,
+      pid: 0,
+      error: `[octo-daemon] status probe terminated by ${res.signal}`,
+    };
   }
   if (res.status !== 0) {
-    if (res.stderr) process.stderr.write(res.stderr);
-    process.exit(res.status === null ? 1 : res.status);
+    const detail = res.stderr ? `: ${res.stderr.trim()}` : "";
+    return {
+      ok: false,
+      locked: false,
+      pid: 0,
+      error: `[octo-daemon] status probe failed with exit ${res.status === null ? 1 : res.status}${detail}`,
+    };
   }
   try {
     const status = JSON.parse(res.stdout);
     return {
+      ok: true,
       locked: status && status.locked === true,
       pid: Number(status && status.pid ? status.pid : 0),
     };
   } catch (_err) {
-    console.error("[octo-daemon] failed to parse `octo-daemon status --json` output.");
-    process.exit(1);
+    return {
+      ok: false,
+      locked: false,
+      pid: 0,
+      error: "[octo-daemon] failed to parse `octo-daemon status --json` output.",
+    };
   }
+}
+
+function pm2AppCanOwnLock(app, pid) {
+  if (!app || !app.ok || !app.found || !pid) return false;
+  if (app.pid === pid) return true;
+  if (app.online) return false;
+  return app.status !== "stopped";
 }
 
 function foregroundDaemon(app) {
   const status = daemonStatus();
+  if (!status.ok) {
+    return {
+      active: false,
+      pid: 0,
+      unknown: true,
+      error: status.error,
+    };
+  }
   if (!status.locked) return { active: false, pid: 0 };
   const pid = status.pid;
-  if (pid && app && app.online && app.pid === pid) return { active: false, pid: 0 };
+  if (pm2AppCanOwnLock(app, pid)) return { active: false, pid: 0 };
   return { active: true, pid };
 }
 
-function assertNoForegroundDaemon() {
-  const app = pm2AppStatus();
+function assertNoForegroundDaemon(app) {
   const foreground = foregroundDaemon(app);
+  if (foreground.unknown) {
+    console.error(foreground.error);
+    console.error("[octo-daemon] unable to verify whether a foreground daemon is already running.");
+    process.exit(1);
+  }
   if (!foreground.active) return;
   const pid = foreground.pid ? `pid ${foreground.pid}` : "pid unknown";
   console.error(`[octo-daemon] daemon is already running in foreground mode (${pid}).`);
   console.error("[octo-daemon] Stop that `octo-daemon run` process before starting the background service.");
   process.exit(2);
+}
+
+function warnUnknownProbe(prefix, probe) {
+  if (probe && probe.error) {
+    console.error(`${prefix}: ${probe.error}`);
+  } else {
+    console.error(`${prefix}: unknown probe failure.`);
+  }
 }
 
 function writeEcosystem(goBin, cfgPath) {
@@ -281,7 +384,8 @@ module.exports = {
 }
 
 function serviceStart(args) {
-  assertNoForegroundDaemon();
+  const app = pm2AppStatus();
+  assertNoForegroundDaemon(app);
   const goBin = resolveBinary();
   const cfgPath = parseConfigArg(args);
   const ecoPath = writeEcosystem(goBin, cfgPath);
@@ -295,17 +399,23 @@ function serviceStart(args) {
 function serviceStop() {
   const app = pm2AppStatus();
   const foreground = foregroundDaemon(app);
+  if (foreground.unknown) {
+    warnUnknownProbe("[octo-daemon] warning: continuing stop without daemon lock status", foreground);
+  }
   if (foreground.active) {
     const pid = foreground.pid ? `pid ${foreground.pid}` : "pid unknown";
     console.error(`[octo-daemon] daemon is running in foreground mode (${pid}); stop the terminal running \`octo-daemon run\`.`);
     process.exit(2);
   }
-  if (!app.found) {
+  if (app.ok && !app.found) {
     console.log("[octo-daemon] service is not installed.");
     return;
   }
+  if (!app.ok) {
+    warnUnknownProbe("[octo-daemon] warning: continuing stop without pm2 service status", app);
+  }
   ensurePM2();
-  if (app.status === "stopped") {
+  if (app.ok && app.status === "stopped") {
     console.log("[octo-daemon] service is already stopped.");
   } else {
     run("pm2", ["stop", PM2_APP_NAME]);
@@ -315,11 +425,14 @@ function serviceStop() {
 }
 
 function serviceRestart() {
-  assertNoForegroundDaemon();
   const app = pm2AppStatus();
-  if (!app.found) {
+  assertNoForegroundDaemon(app);
+  if (app.ok && !app.found) {
     console.error("[octo-daemon] service is not installed. Run `octo-daemon start` first.");
     process.exit(2);
+  }
+  if (!app.ok) {
+    warnUnknownProbe("[octo-daemon] warning: continuing restart without pm2 service status", app);
   }
   ensurePM2();
   run("pm2", ["restart", PM2_APP_NAME]);
@@ -328,9 +441,12 @@ function serviceRestart() {
 
 function serviceLogs(args) {
   const app = pm2AppStatus();
-  if (!app.found) {
+  if (app.ok && !app.found) {
     console.error("[octo-daemon] service is not installed. Run `octo-daemon start` first.");
     process.exit(2);
+  }
+  if (!app.ok) {
+    warnUnknownProbe("[octo-daemon] warning: continuing logs without pm2 service status", app);
   }
   ensurePM2();
   run("pm2", ["logs", PM2_APP_NAME, ...args]);
@@ -338,6 +454,10 @@ function serviceLogs(args) {
 
 function serviceStatus() {
   const app = pm2AppStatus();
+  if (!app.ok) {
+    console.error(app.error);
+    process.exit(1);
+  }
   if (!app.found) {
     console.log("Service: not installed");
     return;
@@ -349,9 +469,12 @@ function serviceStatus() {
 
 function serviceRemove() {
   const app = pm2AppStatus();
-  if (!app.found) {
+  if (app.ok && !app.found) {
     console.log("[octo-daemon] service is not installed.");
     return;
+  }
+  if (!app.ok) {
+    warnUnknownProbe("[octo-daemon] warning: continuing remove without pm2 service status", app);
   }
   ensurePM2();
   run("pm2", ["delete", PM2_APP_NAME]);
@@ -406,7 +529,7 @@ function handleNodeCommand(args) {
     return true;
   }
   if (cmd === "start") {
-    if (isHelpArg(subcmd)) {
+    if (args.slice(1).some(isHelpArg)) {
       printServiceHelp();
       return true;
     }
@@ -441,7 +564,7 @@ function handleNodeCommand(args) {
   }
   if (cmd === "service") {
     if (subcmd === "install") {
-      if (rest.length === 1 && isHelpArg(rest[0])) {
+      if (rest.some(isHelpArg)) {
         printServiceHelp();
       } else {
         serviceStart(rest);
