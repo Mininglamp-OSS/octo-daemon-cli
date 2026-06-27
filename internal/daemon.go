@@ -764,6 +764,22 @@ func (d *Daemon) sendHeartbeats(ctx context.Context) {
 		d.mu.Unlock()
 	}
 
+	// Daemon-level heartbeat: maintain device online indicator ("green dot").
+	// Sent unconditionally every tick — even when no runtimes are registered,
+	// this is the liveness signal that keeps the device visible. best-effort:
+	// log failure without interrupting the main loop.
+	daemonHbErr := d.client.DaemonHeartbeat(ctx, DaemonHeartbeatRequest{
+		DaemonID:          d.daemonID,
+		DeviceUUID:        d.deviceID,
+		HeartbeatIntervalMs: d.cfg.HeartbeatInterval.Milliseconds(),
+	})
+	if daemonHbErr != nil {
+		if ctx.Err() != nil {
+			return
+		}
+		log.Printf("[WARN] daemon heartbeat failed: %v", daemonHbErr)
+	}
+
 	if needReRegister {
 		log.Printf("[INFO] heartbeat failure detected, fast re-register + async enrich...")
 		gen, err := d.fastDetectAndRegister(ctx)

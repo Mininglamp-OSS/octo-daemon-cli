@@ -265,6 +265,20 @@ func (c *Client) Heartbeat(ctx context.Context, runtimeID int64) (*HeartbeatResp
 	return &resp, nil
 }
 
+// DaemonHeartbeatRequest carries the payload for a daemon-level liveness heartbeat.
+type DaemonHeartbeatRequest struct {
+	DaemonID          string `json:"daemon_id"`
+	DeviceUUID        string `json:"device_uuid"`
+	HeartbeatIntervalMs int64 `json:"heartbeat_interval_ms"`
+}
+
+// DaemonHeartbeat sends a daemon-level liveness heartbeat to maintain the
+// device-level online indicator ("green dot"). best-effort: caller should log
+// failures without interrupting the main loop.
+func (c *Client) DaemonHeartbeat(ctx context.Context, req DaemonHeartbeatRequest) error {
+	return c.postJSON(ctx, "/v1/daemons/heartbeat", req, nil)
+}
+
 func (c *Client) ReportUpgrade(ctx context.Context, taskID, status, errMsg string) error {
 	return c.postJSON(ctx, "/v1/upgrades/"+taskID+"/report", map[string]string{
 		"status": status, "error": errMsg,
