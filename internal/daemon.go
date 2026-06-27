@@ -800,12 +800,20 @@ func (d *Daemon) deregister() {
 	}
 	d.mu.Unlock()
 
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Mark this daemon offline so the device green dot clears immediately on
+	// graceful shutdown, instead of waiting for fleet's stale-detection window.
+	// Unconditional: an empty device (daemon, no runtimes) still has a daemon
+	// row to clear. best-effort — shutdown proceeds regardless.
+	if err := d.client.DaemonDeregister(ctx, d.daemonID); err != nil {
+		log.Printf("[WARN] daemon deregister failed: %v", err)
+	}
+
 	if len(ids) == 0 {
 		return
 	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
 
 	if err := d.client.Deregister(ctx, ids); err != nil {
 		log.Printf("[WARN] deregister failed: %v", err)

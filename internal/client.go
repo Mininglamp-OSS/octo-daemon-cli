@@ -279,6 +279,18 @@ func (c *Client) DaemonHeartbeat(ctx context.Context, req DaemonHeartbeatRequest
 	return c.postJSON(ctx, "/v1/daemons/heartbeat", req, nil)
 }
 
+// DaemonDeregisterRequest carries the payload for a daemon-level deregister.
+type DaemonDeregisterRequest struct {
+	DaemonID string `json:"daemon_id"`
+}
+
+// DaemonDeregister marks this daemon offline on graceful shutdown so the device
+// green dot clears immediately instead of waiting for fleet's stale-detection
+// window. best-effort: caller logs failures, shutdown proceeds regardless.
+func (c *Client) DaemonDeregister(ctx context.Context, daemonID string) error {
+	return c.postJSON(ctx, "/v1/daemons/_deregister", DaemonDeregisterRequest{DaemonID: daemonID}, nil)
+}
+
 func (c *Client) ReportUpgrade(ctx context.Context, taskID, status, errMsg string) error {
 	return c.postJSON(ctx, "/v1/upgrades/"+taskID+"/report", map[string]string{
 		"status": status, "error": errMsg,
