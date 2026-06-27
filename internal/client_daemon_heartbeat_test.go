@@ -36,8 +36,8 @@ func TestDaemonHeartbeat_SendsCorrectPayload(t *testing.T) {
 
 	c := NewClient(srv.URL, "test-api-key", "0.0.0-test")
 	err := c.DaemonHeartbeat(context.Background(), DaemonHeartbeatRequest{
-		DaemonID:          "daemon-abc123",
-		DeviceUUID:        "device-xyz789",
+		DaemonID:            "daemon-abc123",
+		DeviceUUID:          "device-xyz789",
 		HeartbeatIntervalMs: 5000,
 	})
 	if err != nil {
@@ -67,8 +67,8 @@ func TestDaemonHeartbeat_BestEffortOn5xx(t *testing.T) {
 
 	c := NewClient(srv.URL, "test-api-key", "0.0.0-test")
 	err := c.DaemonHeartbeat(context.Background(), DaemonHeartbeatRequest{
-		DaemonID:          "daemon-abc123",
-		DeviceUUID:        "device-xyz789",
+		DaemonID:            "daemon-abc123",
+		DeviceUUID:          "device-xyz789",
 		HeartbeatIntervalMs: 5000,
 	})
 	if err == nil {
@@ -82,8 +82,8 @@ func TestDaemonHeartbeat_NetworkError(t *testing.T) {
 	c := NewClient("http://127.0.0.1:1", "test-api-key", "0.0.0-test")
 	c.httpClient.Timeout = 0 // use default timeout for faster failure
 	err := c.DaemonHeartbeat(context.Background(), DaemonHeartbeatRequest{
-		DaemonID:          "daemon-abc123",
-		DeviceUUID:        "device-xyz789",
+		DaemonID:            "daemon-abc123",
+		DeviceUUID:          "device-xyz789",
 		HeartbeatIntervalMs: 5000,
 	})
 	if err == nil {

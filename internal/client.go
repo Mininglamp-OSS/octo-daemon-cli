@@ -267,9 +267,9 @@ func (c *Client) Heartbeat(ctx context.Context, runtimeID int64) (*HeartbeatResp
 
 // DaemonHeartbeatRequest carries the payload for a daemon-level liveness heartbeat.
 type DaemonHeartbeatRequest struct {
-	DaemonID          string `json:"daemon_id"`
-	DeviceUUID        string `json:"device_uuid"`
-	HeartbeatIntervalMs int64 `json:"heartbeat_interval_ms"`
+	DaemonID            string `json:"daemon_id"`
+	DeviceUUID          string `json:"device_uuid"`
+	HeartbeatIntervalMs int64  `json:"heartbeat_interval_ms"`
 }
 
 // DaemonHeartbeat sends a daemon-level liveness heartbeat to maintain the
