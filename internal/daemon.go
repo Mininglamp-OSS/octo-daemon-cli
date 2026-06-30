@@ -683,11 +683,15 @@ func (d *Daemon) buildRegisterRequest(runtimes []RuntimeInfo, components []Devic
 
 func (d *Daemon) sendHeartbeats(ctx context.Context) {
 	d.mu.Lock()
-	offlineProviders := make(map[string]bool)
+	// Snapshot each provider's last-detected runtime status so it can ride
+	// along in the heartbeat payload. The heartbeat is sent unconditionally
+	// below (#59): a live daemon must keep heartbeating even when its runtimes
+	// are offline, otherwise fleet's markStaleOffline flaps the whole device
+	// offline after 3× interval. Runtime readiness is reported as data, not by
+	// withholding the daemon-liveness signal.
+	statusByProvider := make(map[string]string)
 	for _, r := range d.lastRuntimes {
-		if r.Status == "offline" {
-			offlineProviders[r.Provider] = true
-		}
+		statusByProvider[r.Provider] = r.Status
 	}
 	registered := make([]RegisteredRuntime, len(d.registeredRuntimes))
 	copy(registered, d.registeredRuntimes)
@@ -706,10 +710,7 @@ func (d *Daemon) sendHeartbeats(ctx context.Context) {
 	anyHeartbeatOK := false
 
 	for _, rt := range registered {
-		if offlineProviders[rt.Provider] {
-			continue
-		}
-		resp, err := d.client.Heartbeat(ctx, rt.ID)
+		resp, err := d.client.Heartbeat(ctx, rt.ID, statusByProvider[rt.Provider])
 		if err != nil {
 			if ctx.Err() != nil {
 				return
