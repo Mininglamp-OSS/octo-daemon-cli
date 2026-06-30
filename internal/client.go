@@ -256,10 +256,22 @@ type ManagedBot struct {
 	WorkspaceID string `json:"workspace_id"`
 }
 
-func (c *Client) Heartbeat(ctx context.Context, runtimeID int64) (*HeartbeatResponse, error) {
+// HeartbeatRequest is the per-runtime heartbeat payload. runtime_status carries
+// the daemon's last-detected readiness for this runtime (e.g. "online",
+// "offline") so fleet can tell "daemon alive but runtime not ready" apart from
+// "daemon gone". The heartbeat is the daemon-liveness signal and is sent
+// unconditionally; runtime readiness rides along as data rather than being
+// expressed by withholding the heartbeat (see #59). The field is additive and
+// omitempty, so older fleet builds that don't read it stay backward compatible.
+type HeartbeatRequest struct {
+	RuntimeStatus string `json:"runtime_status,omitempty"`
+}
+
+func (c *Client) Heartbeat(ctx context.Context, runtimeID int64, runtimeStatus string) (*HeartbeatResponse, error) {
 	var resp HeartbeatResponse
 	path := fmt.Sprintf("/v1/runtimes/%d/heartbeat", runtimeID)
-	if err := c.postJSON(ctx, path, struct{}{}, &resp); err != nil {
+	body := HeartbeatRequest{RuntimeStatus: runtimeStatus}
+	if err := c.postJSON(ctx, path, body, &resp); err != nil {
 		return nil, err
 	}
 	return &resp, nil
