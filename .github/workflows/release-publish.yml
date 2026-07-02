@@ -38,7 +38,7 @@ jobs:
   build-artifacts:
     needs: publish
     if: ${{ inputs.draft == false }}
-    runs-on: ubuntu-latest
+    runs-on: octo-runners
     permissions:
       contents: write
       # actions:write lets the final step dispatch npm-publish.yml. Explicit
